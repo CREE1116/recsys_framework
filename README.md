@@ -35,11 +35,11 @@ git clone https://github.com/your-username/recsys_framework.git
 cd recsys_framework
 
 # 2. 가상환경 생성 및 활성화
-python -m venv .venv
+uv venv --python 3.12.0
 source .venv/bin/activate
 
 # 3. 의존성 설치
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 ### 2. 사용법
@@ -49,7 +49,7 @@ pip install -r requirements.txt
 특정 모델과 데이터셋 설정으로 단일 실험을 실행합니다.
 
 ```bash
-python main.py --dataset_config configs/dataset/ml100k.yaml --model_config configs/model/mf.yaml
+uv run python main.py --dataset_config configs/dataset/ml100k.yaml --model_config configs/model/mf.yaml
 ```
 
 #### 하이퍼파라미터 그리드 서치
@@ -59,7 +59,7 @@ python main.py --dataset_config configs/dataset/ml100k.yaml --model_config confi
 ```yaml
 # 예시: configs/model/csar.yaml
 model:
-  name: 'CSAR'
+  name: "CSAR"
   embedding_dim: 64
   num_layers: [2, 3, 4] # num_layers를 2, 3, 4로 변경하며 실험
 train:
@@ -69,7 +69,7 @@ train:
 위와 같이 설정 후 아래 명령어를 실행합니다.
 
 ```bash
-python grid_search.py --dataset_config configs/dataset/ml100k.yaml --model_config configs/model/csar.yaml
+uv run python grid_search.py --dataset_config configs/dataset/ml100k.yaml --model_config configs/model/csar.yaml
 ```
 
 #### 모든 실험 실행 및 결과 요약
@@ -78,7 +78,7 @@ python grid_search.py --dataset_config configs/dataset/ml100k.yaml --model_confi
 
 ```bash
 # MovieLens 100K 데이터셋으로 모든 실험 실행
-python run_all_experiments.py --dataset_config configs/dataset/ml100k.yaml
+puv run ython run_all_experiments.py --dataset_config configs/dataset/ml100k.yaml
 ```
 
 ## ⚙️ 설정 (Configuration)
