@@ -1,0 +1,6 @@
+trained_model/
+data_cache/
+.venv/
+__pycache__/
+.DS_Store
+data/
