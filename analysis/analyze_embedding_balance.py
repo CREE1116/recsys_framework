@@ -98,6 +98,6 @@ def analyze_soft_cluster_balance(exp_config):
     print(f"Saved plot to: {save_file}")
 
 if __name__ == '__main__':
-    EXPERIMENTS = [{'run_folder_path': 'trained_model/amazon_music/csar-bpr__negative_sampling_strategy=uniform'}]
+    EXPERIMENTS = [{'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar-contrastive__negative_sampling_strategy=uniform'}]
     for exp in EXPERIMENTS:
         if os.path.exists(exp['run_folder_path']): analyze_soft_cluster_balance(exp)

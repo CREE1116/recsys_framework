@@ -42,22 +42,39 @@ class RecSysDataset(Dataset):
             user = self.users[idx]
             pos_item = self.pos_items[idx]
             
+            # [Optimized] Vectorized Negative Sampling
             neg_items = []
+            user_seen = self.user_history[user]
             
+            # 1. Sampling from weights (if applicable)
             if self.sampling_weights is not None:
-                num_candidates = self.num_negatives * 5 
+                # Sample more than needed to account for collisions
+                num_candidates = self.num_negatives * 2
                 candidates = torch.multinomial(self.sampling_weights, num_candidates, replacement=True).tolist()
-                for neg_item in candidates:
+                
+                for cand in candidates:
+                    if cand not in user_seen:
+                        neg_items.append(cand)
+                        if len(neg_items) == self.num_negatives:
+                            break
+            
+            # 2. Uniform Random Sampling (Fill remaining)
+            needed = self.num_negatives - len(neg_items)
+            if needed > 0:
+                # Try to sample all at once
+                while True:
+                    # Sample a bit more to be safe
+                    candidates = np.random.randint(0, self.n_items, size=needed * 2)
+                    for cand in candidates:
+                        if cand not in user_seen:
+                            neg_items.append(cand)
+                            if len(neg_items) == self.num_negatives:
+                                break
                     if len(neg_items) == self.num_negatives:
                         break
-                    if neg_item not in self.user_history[user]:
-                        neg_items.append(neg_item)
-            
-            while len(neg_items) < self.num_negatives:
-                neg_item = np.random.randint(self.n_items)
-                if neg_item not in self.user_history[user]:
-                    neg_items.append(neg_item)
-            
+                    # If we still need more, loop again (rare case for sparse datasets)
+                    needed = self.num_negatives - len(neg_items)
+
             return {
                 'user_id': torch.LongTensor([user]),
                 'pos_item_id': torch.LongTensor([pos_item]),
@@ -253,11 +270,13 @@ class DataLoader:
             self.train_df, self.n_items, self.user_history,
             self.loss_type, self.num_negatives, self.sampling_weights
         )
+        use_pin_memory = self.config.get('device', 'cpu') != 'cpu'
         return PyTorchDataLoader(
             train_dataset, batch_size=batch_size, shuffle=True,
             num_workers=self.config.get('num_workers', 4),
             persistent_workers=self.config.get('num_workers', 4) > 0,
-            prefetch_factor=self.config.get('prefetch_factor', 2)
+            prefetch_factor=self.config.get('prefetch_factor', 2),
+            pin_memory=use_pin_memory
         )
 
     def get_test_df(self):
@@ -270,11 +289,13 @@ class DataLoader:
         if self.test_uni99_negatives is None:
             raise ValueError("Pre-sampled negatives for uni99 not found. Check config and data_loader setup.")
         test_dataset = Uni99RecSysDataset(self.test_df, self.test_uni99_negatives)
+        use_pin_memory = self.config.get('device', 'cpu') != 'cpu'
         return PyTorchDataLoader(
             test_dataset, batch_size=batch_size, shuffle=False,
             num_workers=self.config.get('num_workers', 4),
             persistent_workers=self.config.get('num_workers', 4) > 0,
-            prefetch_factor=self.config.get('prefetch_factor', 2)
+            prefetch_factor=self.config.get('prefetch_factor', 2),
+            pin_memory=use_pin_memory
         )
 
     def get_full_test_loader(self, batch_size):

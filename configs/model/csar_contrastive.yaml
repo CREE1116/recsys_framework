@@ -1,22 +1,26 @@
 model:
   name: "csar-contrastive"
   embedding_dim: 64
-  contrastive_loss_weight: 0.01
-  noise_sigma: 0.1
+  # [수정 1] 핵심! 병목을 주어 클러스터링 효과 극대화
+  num_interests: 32 # (4 ~ 8 권장)
+  # [수정 2] 보조 손실은 아주 은은하게 시작
+  contrastive_loss_weight: 0.005
+  # [수정 3] 노이즈를 줄여서 원본 정보 보존
+  noise_sigma: 0.02
   base_tau: 0.1
-  alpha: 0.1
-  num_interests: 64
+  # [수정 4] 적응형 효과를 확실하게 (Sparse 유저 보호)
+  alpha: 0.2
 
 # 학습 설정
 train:
   epochs: 500
   batch_size: 1024
   lr: 0.001
-  l2_regularization: 0.00001
+  l2_regularization: 0.0001
   optimizer: "adamw"
   loss_type: "pairwise" # 'pairwise', 'pointwise'
   num_negatives: 1 # For pairwise losses
-  negative_sampling_strategy: ["uniform", "popularity"] # 'uniform' or 'popularity'
+  negative_sampling_strategy: "uniform" # 'uniform' or 'popularity'
   negative_sampling_alpha: 0.75
   early_stop_patience: 40
 

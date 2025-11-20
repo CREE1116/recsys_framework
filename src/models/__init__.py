@@ -6,13 +6,16 @@ from .lightgcn import LightGCN
 from .CSAR import CSAR
 from .CSAR_R import CSAR_R
 from .CSAR_R_Softmax import CSAR_R_Softmax
-from .CSAR_contrastive import CSAR_contrastive
+# from .CSAR_contrastive import CSAR_contrastive
 from .CSAR_BPR import CSAR_BPR
 from .CSAR_Deep import CSAR_Deep
 from .most_popular import MostPopular
 from .item_knn import ItemKNN
 from .neumf import NeuMF
 from .rerank_wrapper import ReRankWrapper
+from .CSAR_R_BPR import CSAR_R_BPR
+from .CSAR_R_contrastive import CSAR_R_contrastive
+from .CSAR_GATE import CSAR_GATE
 
 MODEL_REGISTRY = {
     'mf': MF,
@@ -20,13 +23,16 @@ MODEL_REGISTRY = {
     'csar' : CSAR,
     'csar-r' : CSAR_R,
     'csar-r-softmax' : CSAR_R_Softmax,
-    'csar-contrastive' : CSAR_contrastive,
+    # 'csar-contrastive' : CSAR_contrastive,
     'csar-bpr' : CSAR_BPR,
     'csar-deep' : CSAR_Deep,
     'most-popular': MostPopular,
     'ItemKNN': ItemKNN,
     'NeuMF': NeuMF,
     'ReRankWrapper': ReRankWrapper,
+    'csar-r-bpr': CSAR_R_BPR,
+    'csar-r-contrastive': CSAR_R_contrastive,
+    'csar-gate': CSAR_GATE,
 }
 
 def get_model(model_name, config, data_loader):

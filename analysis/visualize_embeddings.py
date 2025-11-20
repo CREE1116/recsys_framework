@@ -87,7 +87,7 @@ def visualize_embeddings(experiment_dir, embedding_type='final', output_file=Non
 if __name__ == '__main__':
     # 분석할 실험 디렉토리 목록
     experiment_dirs_to_visualize = [
-        '/Users/leejongmin/code/recsys_framework/trained_model//amazon_music/csar-bpr__negative_sampling_strategy=uniform',
+        '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar-contrastive__negative_sampling_strategy=uniform'
         # 여기에 다른 실험 디렉토리 경로를 추가할 수 있습니다.
     ]
 

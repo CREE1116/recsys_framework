@@ -51,12 +51,14 @@ class LightGCN(BaseModel):
             new_values = values * row_degrees * col_degrees
             norm_adj = torch.sparse_coo_tensor(indices, new_values, A.shape)
         else:
-            # 밀집 행렬 정규화
+            # [Optimized] 밀집 행렬 정규화 (Broadcasting 사용)
+            # D^-0.5 * A * D^-0.5 = A * d_i * d_j (element-wise)
             D = A.sum(1)
             D_inv_sqrt = torch.pow(D, -0.5)
             D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.
-            D_mat_inv_sqrt = torch.diag(D_inv_sqrt)
-            norm_adj = D_mat_inv_sqrt.matmul(A).matmul(D_mat_inv_sqrt)
+            
+            # Broadcasting: (N, 1) * (N, N) * (1, N)
+            norm_adj = A * D_inv_sqrt.unsqueeze(1) * D_inv_sqrt.unsqueeze(0)
             
         return norm_adj
 

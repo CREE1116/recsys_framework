@@ -1,9 +1,15 @@
 model:
-  name: "csar-bpr"
+  name: "csar-r-contrastive"
   embedding_dim: 64
-  orth_loss_weight: 0.1
-  num_interests: 64
-  scale: [True, False] # 스케일링 적용 여부
+  # [수정 1] 핵심! 병목을 주어 클러스터링 효과 극대화
+  num_interests: 32 # (4 ~ 8 권장)
+  # [수정 2] 보조 손실은 아주 은은하게 시작
+  contrastive_loss_weight: 0.005
+  # [수정 3] 노이즈를 줄여서 원본 정보 보존
+  noise_sigma: 0.02
+  base_tau: 0.1
+  # [수정 4] 적응형 효과를 확실하게 (Sparse 유저 보호)
+  alpha: 0.2
 
 # 학습 설정
 train:
@@ -14,7 +20,7 @@ train:
   optimizer: "adamw"
   loss_type: "pairwise" # 'pairwise', 'pointwise'
   num_negatives: 1 # For pairwise losses
-  negative_sampling_strategy: ["uniform", "popularity"] # 'uniform' or 'popularity'
+  negative_sampling_strategy: "uniform" # 'uniform' or 'popularity'
   negative_sampling_alpha: 0.75
   early_stop_patience: 40
 

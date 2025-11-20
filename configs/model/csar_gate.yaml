@@ -1,9 +1,9 @@
 model:
-  name: "csar-bpr"
+  name: "csar-gate"
   embedding_dim: 64
   orth_loss_weight: 0.1
   num_interests: 64
-  scale: [True, False] # 스케일링 적용 여부
+  scale: True # 스케일링 적용 여부
 
 # 학습 설정
 train:
