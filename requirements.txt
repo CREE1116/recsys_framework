@@ -7,3 +7,7 @@ seaborn
 scipy
 tqdm
 torch_geometric     
+scikit-learn
+tmdbv3api
+wordcloud
+tabulate

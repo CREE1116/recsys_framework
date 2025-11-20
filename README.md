@@ -14,9 +14,9 @@
 
 - **MF (Matrix Factorization)**
 - **LightGCN**
-- **CSAR (Contextual and Sequential Attention-based Recommender)**
+- **CSAR (C0-Support Attention RecSys)**
 - **CSAR-R (CSAR with Residual connections)**
-- **CSAR-R-Softmax (CSAR-R with Softmax for attention)**
+- **CSAR-BPR (CSAR with Bayesian Personalized Ranking loss)**
 
 ## 💾 사용 가능한 데이터셋
 

@@ -1,4 +1,3 @@
-# 모델 하이퍼파라미터 (MF 예시)
 model:
   name: "mf"
   embedding_dim: 64
@@ -12,7 +11,7 @@ train:
   optimizer: "adamw"
   loss_type: "pairwise" # 'pairwise', 'pointwise'
   num_negatives: 1 # For pairwise losses
-  negative_sampling_strategy: "uniform" # 'uniform' or 'popularity'
+  negative_sampling_strategy: ["uniform", "popularity"] # 'uniform' or 'popularity'
   negative_sampling_alpha: 0.75
   early_stop_patience: 20
 
@@ -29,13 +28,10 @@ evaluation:
       "Entropy",
       "ILD",
     ] # 평가할 메트릭 리스트
-  top_k: [10, 20] # 평가할 K 값 리스트
+  top_k: [5, 10, 20] # 평가할 K 값 리스트
   main_metric: "NDCG" # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭
   main_metric_k: 20 # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭의 K 값
   long_tail_percent: 0.2 # 롱테일 아이템 정의를 위한 비율 (인기도 하위 N%)
 
 # 실행 환경 설정
 device: "auto" # 'auto', 'cpu', 'cuda'
-checkpoint_path: "./checkpoints/"
-log_path: "./results/logs/"
-plot_path: "./results/plots/"

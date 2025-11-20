@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from src.loss import orthogonal_loss # 이 임포트는 더 이상 필요 없지만, 혹시 다른 곳에서 사용될까봐 유지
 
 from .base_model import BaseModel
@@ -17,7 +18,8 @@ class CoSupportAttentionLayer(nn.Module):
         # K-Anchor (관심사 키)
         self.interest_keys = nn.Parameter(torch.empty(num_interests, embedding_dim))
         # 학습 가능한 스케일 (온도 파라미터의 역수)
-        self.scale = nn.Parameter(torch.tensor(num_interests ** -0.5))
+        # self.scale = nn.Parameter(torch.tensor(num_interests ** -0.5))
+        # self.scale = torch.tensor(num_interests ** -0.5)
         # 가중치 초기화
         self._init_weights()
 
@@ -36,7 +38,7 @@ class CoSupportAttentionLayer(nn.Module):
         Returns:
             torch.Tensor: [..., K] shape의 비음수 관심사 가중치 텐서.
         """
-        attention_logits = torch.einsum('...d,kd->...k', embedding_tensor, self.interest_keys) * self.scale
+        attention_logits = torch.einsum('...d,kd->...k', embedding_tensor, self.interest_keys)
         interest_weights = F.softplus(attention_logits)
         
         return interest_weights
@@ -112,6 +114,7 @@ class CSAR(BaseModel):
         self.embedding_dim = self.config['model']['embedding_dim']
         self.num_interests = self.config['model']['num_interests']
         self.lamda = self.config['model']['orth_loss_weight']
+        self.ce_temp = self.config['model'].get('cross_entropy_temp', 0.2)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
@@ -151,27 +154,25 @@ class CSAR(BaseModel):
         scores = (user_interests * item_interests).sum(dim=-1)
         return scores
 
-    def predict(self, users):
-        """
-        주어진 사용자들에 대한 모든 아이템 추천 점수를 반환합니다.
-        BaseModel의 추상 메서드 구현.
-        """
-        return self.forward(users)
+    def get_final_item_embeddings(self):
+        """CSAR의 최종 아이템 임베딩 (Topic-space)을 반환합니다."""
+        all_item_embs = self.item_embedding.weight
+        return self.attention_layer(all_item_embs).detach()
 
     def calc_loss(self, batch_data):
         users = batch_data['user_id']
         items = batch_data['item_id']
 
-        preds = self.predict(users) 
-        loss = F.cross_entropy(preds, items) 
+        preds = self.forward(users) 
+        loss = F.cross_entropy(preds/self.ce_temp, items, reduction='mean') 
 
         # attention_layer에서 직교 손실 계산
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2")
+        orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
 
         total_loss = loss + self.lamda * orth_loss
-        params_to_log = {'scale': self.attention_layer.scale.item()}
+        # params_to_log = {'scale': self.attention_layer.scale.item()}
 
-        return (total_loss, self.lamda * orth_loss), params_to_log
+        return (total_loss, self.lamda * orth_loss), None
 
     def __str__(self):
         return f"CSAR(num_interests={self.num_interests}, embedding_dim={self.embedding_dim})"

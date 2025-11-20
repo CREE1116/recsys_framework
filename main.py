@@ -15,15 +15,28 @@ def main(config):
     data_loader = DataLoader(config)
 
     # 2. 모델 생성
-    # config의 모델 이름을 기반으로 src/models/__init__.py에서 모델을 동적으로 가져옴
     model_name = config['model']['name']
     model = get_model(model_name, config, data_loader)
     
     # 3. 트레이너 생성
     trainer = Trainer(config, model, data_loader)
 
-    # 4. 학습 시작
-    trainer.train()
+    # 4. 모델 타입에 따라 학습 또는 바로 평가를 실행
+    if 'train' in config:
+        # 학습 가능한 모델
+        print("Trainable model detected. Starting training process...")
+        trainer.train()
+    else:
+        # 학습이 필요 없는 모델 (e.g., ItemKNN, MostPopular)
+        print("Non-trainable model detected. Proceeding directly to final evaluation...")
+        # ItemKNN과 같은 모델은 fit 과정이 필요
+        if hasattr(model, 'fit'):
+            print(f"Fitting model {model_name}...")
+            # fit() 메소드는 data_loader를 사용할 수 있어야 함
+            # base_model의 fit 메소드는 data_loader를 인자로 받지 않을 수 있으므로,
+            # 모델 내부에서 data_loader에 접근하거나, fit 메소드를 적절히 정의해야 함
+            model.fit(data_loader)
+        trainer.evaluate(is_final_evaluation=True)
 
 if __name__ == '__main__':
     # 커맨드 라인 인자 파싱

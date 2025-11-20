@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 class BPRLoss(nn.Module):
     """
@@ -140,3 +141,76 @@ class orthogonal_loss(nn.Module):
         num_off_diagonal_elements = K * K - K
         normalized_loss = l2_sum_loss / num_off_diagonal_elements 
         return normalized_loss 
+
+class EntropyAdaptiveInfoNCE(nn.Module):
+    """
+    SCI 논문용: Decoupled Adaptive InfoNCE
+    - get_adaptive_tau: 학습 상태(Entropy, Orthogonality)를 진단하여 온도를 결정 (Gradient 차단됨)
+    - forward: 결정된 온도로 실제 Loss 계산 (Unidirectional for efficiency)
+    """
+    def __init__(self, base_tau=0.1, alpha=0.5, eps=1e-8):
+        super().__init__()
+        self.base_tau = base_tau
+        self.alpha = alpha
+        self.eps = eps
+
+    def _calc_uncertainty(self, z):
+        """Interest Vector의 불확실성(Entropy) 측정"""
+        B, K = z.size()
+        p = F.softmax(z, dim=1)
+        log_p = F.log_softmax(z, dim=1)
+        entropy = -(p * log_p).sum(dim=1)
+        max_entropy = math.log(K + self.eps)
+        return entropy / max_entropy # [B]
+
+    def _calc_key_quality(self, W):
+        """Key의 직교성 품질 측정 (1.0 = 완벽)"""
+        K = W.size(0)
+        W_norm = F.normalize(W, dim=1)
+        gram = W_norm @ W_norm.T
+        eye = torch.eye(K, device=W.device)
+        # 비대각 원소의 평균 크기
+        off_diag_mean = (gram - eye).abs().sum() / (K * (K - 1) + self.eps)
+        return 1.0 - off_diag_mean
+
+    def get_adaptive_tau(self, interests, W):
+        """
+        외부에서 호출: 현재 배치의 Interest와 Key 상태를 보고 Tau를 반환
+        """
+        # 1. Key Quality (Global) - 안전장치: no_grad
+        with torch.no_grad():
+            key_quality = self._calc_key_quality(W)
+        
+        # 2. Instance Uncertainty (Local)
+        # interest 자체는 gradient가 필요할 수 있으나, tau 계산 목적으론 끊는게 안전함
+        with torch.no_grad(): 
+            uncertainty = self._calc_uncertainty(interests)
+            
+            # 3. Decoupled Adaptation Logic
+            # Uncertainty 높음(Sparse) -> Tau 증가 (Soft)
+            # Quality 높음(Orthogonal) -> Tau 감소 (Sharp)
+            net_difficulty = uncertainty - key_quality
+            
+            tau = self.base_tau * torch.exp(self.alpha * net_difficulty)
+            tau = torch.clamp(tau, min=0.05, max=0.5).unsqueeze(1) # [B, 1]
+        
+        return tau
+
+    def forward(self, view1, view2, tau):
+        """
+        Unidirectional InfoNCE
+        - view1, view2: [B, K] (Augmented Views)
+        - tau: [B, 1] (Adaptive Temperature)
+        """
+        B = view1.size(0)
+        z1 = F.normalize(view1, dim=1)
+        z2 = F.normalize(view2, dim=1)
+        
+        # Cosine Similarity / Adaptive Tau
+        logits = (z1 @ z2.T) / tau
+        
+        # Labels: Diagonal is positive
+        labels = torch.arange(B, device=z1.device)
+        
+        # One-way Cross Entropy (속도 2배, 메모리 절약)
+        return F.cross_entropy(logits, labels)

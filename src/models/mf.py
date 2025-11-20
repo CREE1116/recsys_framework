@@ -29,7 +29,7 @@ class MF(BaseModel):
         nn.init.normal_(self.user_embedding.weight, std=0.01)
         nn.init.normal_(self.item_embedding.weight, std=0.01)
 
-    def forward(self, users, items):
+    def predict_for_pairs(self, users, items):
         user_embeds = self.user_embedding(users)
         item_embeds = self.item_embedding(items)
         
@@ -41,8 +41,8 @@ class MF(BaseModel):
         pos_items = batch_data['pos_item_id']
         neg_items = batch_data['neg_item_id'] # Trainer에서 이미 처리됨
 
-        pos_scores = self.forward(users, pos_items)
-        neg_scores = self.forward(users, neg_items)
+        pos_scores = self.predict_for_pairs(users, pos_items)
+        neg_scores = self.predict_for_pairs(users, neg_items)
         
         # InfoNCE Loss의 경우 neg_scores가 (batch_size, num_negatives) 형태여야 함
         # BPR Loss의 경우 neg_scores가 (batch_size, 1) 형태여야 함
@@ -56,17 +56,15 @@ class MF(BaseModel):
         
         return (loss,), None
 
-    def predict(self, users):
+    def forward(self, users):
         user_embeds = self.user_embedding(users)
         item_embeds = self.item_embedding.weight
         scores = torch.matmul(user_embeds, item_embeds.transpose(0, 1))
         return scores
 
-    def predict_for_pairs(self, user_ids, item_ids):
-        user_embeds = self.user_embedding(user_ids)
-        item_embeds = self.item_embedding(item_ids)
-        scores = torch.sum(user_embeds * item_embeds, dim=1)
-        return scores
+    def get_final_item_embeddings(self):
+        """MF의 최종 아이템 임베딩은 기본 임베딩과 동일합니다."""
+        return self.item_embedding.weight.detach()
 
     def get_item_embeddings(self):
         return self.item_embedding.weight

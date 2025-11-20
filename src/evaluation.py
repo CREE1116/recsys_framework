@@ -74,42 +74,72 @@ def get_ild(all_top_k_items, item_embeddings):
         return 0.0
 
     all_ild_scores = []
+
     for user_recs in all_top_k_items:
         if len(user_recs) < 2:
             continue
-        
+
         rec_item_embeds = item_embeddings[user_recs]
         rec_item_embeds_norm = F.normalize(rec_item_embeds, p=2, dim=1)
-        cosine_sim_matrix = torch.matmul(rec_item_embeds_norm, rec_item_embeds_norm.transpose(0, 1))
-        
-        num_pairs = 0
-        total_diversity = 0.0
-        for i in range(len(user_recs)):
-            for j in range(i + 1, len(user_recs)):
-                total_diversity += (1 - cosine_sim_matrix[i, j].item())
-                num_pairs += 1
-        
-        if num_pairs > 0:
-            all_ild_scores.append(total_diversity / num_pairs)
-    
-    return np.mean(all_ild_scores) if all_ild_scores else 0.0
+
+        # [최적화] 전체 쌍 유사도는 한 번에 계산
+        cosine_sim_matrix = torch.matmul(rec_item_embeds_norm,
+                                         rec_item_embeds_norm.transpose(0, 1))
+
+        n = cosine_sim_matrix.size(0)
+        if n < 2:
+            continue
+
+        # 대각선(자기 자신)은 0으로
+        cosine_sim_matrix.fill_diagonal_(0.0)
+
+        # 상삼각(or 하삼각)만 사용해서 중복 제거
+        triu_indices = torch.triu_indices(n, n, offset=1)
+        pair_sims = cosine_sim_matrix[triu_indices[0], triu_indices[1]]
+
+        num_pairs = pair_sims.numel()
+        if num_pairs == 0:
+            continue
+
+        # diversity = 1 - cos_sim
+        diversity_vals = 1.0 - pair_sims
+        all_ild_scores.append(diversity_vals.mean().item())
+
+    return float(np.mean(all_ild_scores)) if all_ild_scores else 0.0
+
 
 def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_history):
     results = {f'{metric}@{k}': [] for k in top_k_list for metric in metrics_list}
     all_top_k_items = [] 
 
+    # top_k_list가 비어있으면 평가할 필요 없음
+    if not top_k_list:
+        return {}, []
+
     with torch.no_grad():
         for user_batch, target_item_batch in tqdm(test_loader, desc="Evaluating (full, batched)"):
             user_batch = user_batch.to(device)
-            all_item_scores = model.predict(user_batch) 
+            all_item_scores = model.forward(user_batch)
 
-            for i, user_id in enumerate(user_batch.cpu().numpy()):
-                if user_id in user_history:
-                    train_items_to_mask = list(user_history[user_id])
-                    target_item_id = target_item_batch[i].item()
-                    if target_item_id in train_items_to_mask:
-                        train_items_to_mask.remove(target_item_id)
-                    all_item_scores[i, train_items_to_mask] = -torch.inf
+            # 한 번만 CPU로 내리고 재사용
+            user_batch_cpu = user_batch.cpu().numpy()
+
+            for i, user_id in enumerate(user_batch_cpu):
+                items = user_history.get(user_id)
+                if items is None:
+                    continue
+
+                target_item_id = target_item_batch[i].item()
+
+                # target을 빼고 마스크할 아이템만 만들기
+                if target_item_id in items:
+                    to_mask = [it for it in items if it != target_item_id]
+                else:
+                    to_mask = list(items)
+
+                if to_mask:
+                    all_item_scores[i, to_mask] = -torch.inf
+
 
             _, top_indices = torch.topk(all_item_scores, k=max(top_k_list), dim=1)
             
@@ -128,13 +158,14 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
     return {key: np.mean(value) if value else 0.0 for key, value in results.items()}, all_top_k_items
 
 def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
-    """
-    [최종 최적화] uni99 전용 데이터로더를 사용하여 평가 루프 내의 파이썬 연산을 제거.
-    """
     results = {f'{metric}@{k}': [] for k in top_k_list for metric in metrics_list}
     all_top_k_items = []
     use_fast_path = all(m in ['HitRate', 'NDCG'] for m in metrics_list)
 
+    # top_k_list가 비어있으면 평가할 필요 없음
+    if not top_k_list:
+        return {}, []
+        
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating (uni99)"):
             
@@ -150,7 +181,7 @@ def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
 
             if use_fast_path:
                 target_scores = scores_by_user[:, 0].unsqueeze(1)
-                num_better_negatives = (scores_by_user[:, 1:] > target_scores).sum(dim=1)
+                num_better_negatives = (scores_by_user[:, 1:] >= target_scores).sum(dim=1)
                 ranks = 1 + num_better_negatives
 
                 for k in top_k_list:
@@ -164,8 +195,6 @@ def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
             else:
                 _, top_indices_100 = torch.topk(scores_by_user, k=100, dim=1)
                 
-                # item_ids는 (B, 100) 형태의 텐서.
-                # top_indices_100 (B, 100)를 사용하여 추천 목록 생성
                 pred_lists_100 = torch.gather(item_ids, 1, top_indices_100.cpu()).numpy().tolist()
                 target_items = item_ids[:, 0].cpu().numpy().tolist()
 
@@ -184,13 +213,14 @@ def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
     return {key: np.mean(value) if value else 0.0 for key, value in results.items()}, all_top_k_items
 
 
-def evaluate_metrics(model, data_loader, config, device, test_loader):
+def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
     """
-    [최종 수정] 평가 함수 디스패처. 외부에서 생성된 test_loader를 주입받아 사용.
+    [BUG FIX] The `config` parameter is now treated as the evaluation config directly.
+    Defaults for `metrics` and `top_k` are now empty lists to enforce strict YAML configuration.
     """
-    method = config['evaluation']['method']
-    top_k_list = config['evaluation']['top_k']
-    metrics_list = config['evaluation']['metrics']
+    method = eval_config.get('method', 'full')
+    top_k_list = eval_config.get('top_k', [])
+    metrics_list = eval_config.get('metrics', [])
     
     model.eval()
     
@@ -199,6 +229,9 @@ def evaluate_metrics(model, data_loader, config, device, test_loader):
     elif method == 'uni99':
         core_metrics, all_top_k_items = _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device)
     else:
+        # metrics_list가 비어있으면 평가를 건너뛰고 빈 결과를 반환
+        if not metrics_list:
+            return {}
         raise ValueError(f"Unknown evaluation method: {method}")
 
     final_results = core_metrics
@@ -209,35 +242,29 @@ def evaluate_metrics(model, data_loader, config, device, test_loader):
     item_embeddings_for_ild = None
     if 'ILD' in metrics_list:
         with torch.no_grad():
-            if hasattr(model, 'propagate_embeddings'):
-                _, item_embeddings_for_ild = model.forward()
-            else:
+            if hasattr(model, 'get_embeddings'):
+                _, item_embeddings_for_ild = model.get_embeddings()
+            elif hasattr(model, 'item_embedding') and hasattr(model.item_embedding, 'weight'):
                 item_embeddings_for_ild = model.item_embedding.weight
 
-    if any(m in metrics_list for m in ['GiniIndex', 'Entropy']):
+    # [수정] GiniIndex는 K값과 무관하게 전체 추천 목록에 대해 한 번만 계산
+    if 'GiniIndex' in metrics_list:
         flat_recommended_items_overall = [item for sublist in all_top_k_items for item in sublist]
-        if 'GiniIndex' in metrics_list:
-            final_results['GiniIndex'] = get_gini_index_from_recs(flat_recommended_items_overall)
-        if 'Entropy' in metrics_list:
-            final_results['Entropy'] = get_entropy_from_recs(flat_recommended_items_overall)
+        final_results['GiniIndex'] = get_gini_index_from_recs(flat_recommended_items_overall)
 
     for k in top_k_list:
         all_top_k_items_at_k = [user_recs[:k] for user_recs in all_top_k_items]
         
         if 'ILD' in metrics_list and item_embeddings_for_ild is not None:
             final_results[f'ILD@{k}'] = get_ild(all_top_k_items_at_k, item_embeddings_for_ild)
-
-        if any(m in metrics_list for m in ['Coverage', 'GiniIndex', 'LongTailCoverage', 'Entropy']):
-            flat_recommended_items_at_k = [item for sublist in all_top_k_items_at_k for item in sublist]
-
-            if 'Coverage' in metrics_list:
-                final_results[f'Coverage@{k}'] = get_coverage(flat_recommended_items_at_k, data_loader.n_items)
-            if 'LongTailCoverage' in metrics_list:
-                long_tail_percent = config['evaluation'].get('long_tail_percent', 0.2)
-                final_results[f'LongTailCoverage@{k}'] = get_long_tail_coverage(flat_recommended_items_at_k, data_loader.item_popularity, long_tail_percent)
-            if 'GiniIndex' in metrics_list:
-                final_results[f'GiniIndex@{k}'] = get_gini_index_from_recs(flat_recommended_items_at_k)
-            if 'Entropy' in metrics_list:
-                final_results[f'Entropy@{k}'] = get_entropy_from_recs(flat_recommended_items_at_k)
-
+        
+        # [BUG FIX] Coverage, Entropy 등은 K값에 따라 계산되어야 함
+        flat_recommended_items_at_k = [item for sublist in all_top_k_items_at_k if sublist for item in sublist]
+        if 'Coverage' in metrics_list:
+            final_results[f'Coverage@{k}'] = get_coverage(flat_recommended_items_at_k, data_loader.n_items)
+        if 'LongTailCoverage' in metrics_list:
+            long_tail_percent = eval_config.get('long_tail_percent', 0.2)
+            final_results[f'LongTailCoverage@{k}'] = get_long_tail_coverage(flat_recommended_items_at_k, data_loader.item_popularity, long_tail_percent)
+        if 'Entropy' in metrics_list:
+            final_results[f'Entropy@{k}'] = get_entropy_from_recs(flat_recommended_items_at_k)
     return final_results

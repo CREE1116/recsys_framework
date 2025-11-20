@@ -108,7 +108,9 @@ class DataLoader:
 
         self.data_cache_path = config.get('data_cache_path', './data_cache/')
         os.makedirs(self.data_cache_path, exist_ok=True)
-        cache_file_name = f"{config['dataset_name']}_processed_data.pkl"
+        
+        device = self.config.get('device', 'cpu')
+        cache_file_name = f"{config['dataset_name']}_{device}_processed_data.pkl"
         self.cache_file = os.path.join(self.data_cache_path, cache_file_name)
 
         if os.path.exists(self.cache_file):
@@ -118,6 +120,7 @@ class DataLoader:
             print("Processing data and saving to cache...")
             self._process_data()
             self._save_to_cache()
+            self.test_uni99_negatives = None
 
         self.sampling_weights = None
         if self.neg_sampling_strategy == 'popularity':
@@ -126,7 +129,6 @@ class DataLoader:
             self.sampling_weights = torch.pow(counts, self.neg_sampling_alpha)
             self.sampling_weights /= self.sampling_weights.sum()
             
-        self.test_uni99_negatives = None
         if self.config['evaluation'].get('validation_method') == 'uni99' or self.config['evaluation'].get('final_method') == 'uni99':
             if hasattr(self, 'test_uni99_negatives') and self.test_uni99_negatives is not None:
                 print("Loaded pre-sampled test negatives from cache.")
@@ -146,7 +148,7 @@ class DataLoader:
         self._remap_ids()
         self.train_df, self.test_df = self._split_leave_one_out(self.df)
         self.user_history = self.df.groupby('user_id')['item_id'].apply(set).to_dict()
-        self.interaction_graph = self.get_interaction_graph()
+        # self.interaction_graph = self.get_interaction_graph()
 
     def _save_to_cache(self):
         data_to_cache = {
@@ -154,7 +156,7 @@ class DataLoader:
             'n_users': self.n_users, 'n_items': self.n_items,
             'train_df': self.train_df, 'test_df': self.test_df,
             'user_history': self.user_history, 'item_popularity': self.item_popularity,
-            'interaction_graph': self.interaction_graph
+            # 'interaction_graph': self.interaction_graph
         }
         if hasattr(self, 'test_uni99_negatives') and self.test_uni99_negatives is not None:
             data_to_cache['test_uni99_negatives'] = self.test_uni99_negatives
@@ -200,19 +202,28 @@ class DataLoader:
         print("Pre-sampling negative items for uni99 evaluation...")
         self.test_uni99_negatives = {}
         test_user_item_pairs = self.test_df[['user_id', 'item_id']].to_dict('records')
+
         for row in tqdm(test_user_item_pairs, desc="Sampling uni99 negatives"):
             user_id, pos_item_id = row['user_id'], row['item_id']
-            seen_items = self.user_history.get(user_id, set())
+
+            # BUG FIX: user_history의 set을 직접 쓰지 말고, 복사해서 사용
+            seen_items = set(self.user_history.get(user_id, set()))
             seen_items.add(pos_item_id)
+
             negative_items = []
             num_candidates = 200
+
             while len(negative_items) < 99:
                 candidates = np.random.randint(0, self.n_items, size=num_candidates)
+                # BUG FIX: set 연산은 복사한 seen_items 기준으로만 수행
                 valid_negatives = list(set(candidates) - seen_items)
                 negative_items.extend(valid_negatives)
                 seen_items.update(valid_negatives)
+
             self.test_uni99_negatives[user_id] = negative_items[:99]
+
         print("Pre-sampling complete.")
+
 
     def get_interaction_graph(self):
         use_sparse = self.config.get('device') != 'mps'

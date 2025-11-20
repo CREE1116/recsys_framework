@@ -50,7 +50,7 @@ class BaseModel(nn.Module, ABC):
         pass
 
     @abstractmethod
-    def predict(self, users):
+    def forward(self, users):
         """
         주어진 사용자들에 대한 아이템 추천 점수를 반환합니다.
         평가(evaluation) 시에 사용됩니다.
@@ -78,6 +78,14 @@ class BaseModel(nn.Module, ABC):
         """
         pass
 
+    @abstractmethod
+    def get_final_item_embeddings(self):
+        """
+        모델이 최종적으로 사용하는 아이템 임베딩을 반환합니다.
+        LightGCN이나 CSAR처럼 임베딩을 변환하는 모델은 이 메소드를 오버라이드해야 합니다.
+        """
+        pass
+
     def __str__(self):
         """
         모델의 이름과 주요 하이퍼파라미터를 문자열로 반환합니다.
@@ -93,7 +101,7 @@ class BaseModel(nn.Module, ABC):
         
         with torch.no_grad():
             # 1. 모든 아이템에 대한 사용자별 예측 점수 계산
-            all_scores = self.predict(users) # (batch_size, n_items)
+            all_scores = self.forward(users) # (batch_size, n_items)
 
             # 2. 이미 상호작용한 아이템 마스킹
             users_list = users.cpu().numpy()

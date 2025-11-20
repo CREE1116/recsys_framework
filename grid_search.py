@@ -4,6 +4,7 @@ import itertools
 import os
 import copy
 import pprint
+import torch
 from main import main as run_single_experiment
 
 def _find_list_params_recursive(config_dict, path, list_params):
@@ -19,23 +20,41 @@ def _find_list_params_recursive(config_dict, path, list_params):
 def generate_hyperparameter_combinations(config):
     """
     설정 파일에서 리스트 형태의 하이퍼파라미터를 찾아 모든 조합을 생성합니다.
-    [수정] 'model'과 'train' 섹션 내에서만 하이퍼파라미터를 탐색합니다.
+    'model'과 'train' 섹션 내에서만 하이퍼파라미터를 탐색합니다.
+    리스트에 요소가 하나만 있는 경우(e.g., [[64, 32]])는 하이퍼파라미터로 취급하지 않고,
+    내부 값을 실제 파라미터 값으로 사용합니다.
     """
     list_params = {}
-    # 탐색할 섹션 지정
     search_sections = {'model': config.get('model', {}), 'train': config.get('train', {})}
     
     for section_name, section_config in search_sections.items():
         _find_list_params_recursive(section_config, section_name, list_params)
 
-    if not list_params:
-        # 리스트 파라미터가 없으면 원본 설정을 그대로 반환
+    # 실제 하이퍼파라미터(요소 > 1)와 단일 값 리스트를 분리
+    hyperparams_to_search = {}
+    base_config_modifier = {}
+    
+    for name, values in list_params.items():
+        if len(values) == 1:
+            base_config_modifier[name] = values[0]
+        else:
+            hyperparams_to_search[name] = values
+
+    # 단일 값 리스트는 기본 설정에 미리 적용
+    for param_name, value in base_config_modifier.items():
+        keys = param_name.split('.')
+        temp_conf = config
+        for key in keys[:-1]:
+            temp_conf = temp_conf[key]
+        temp_conf[keys[-1]] = value
+
+    if not hyperparams_to_search:
         config['run_name'] = 'default'
         yield config
         return
 
-    param_names = list(list_params.keys())
-    param_values = list(list_params.values())
+    param_names = list(hyperparams_to_search.keys())
+    param_values = list(hyperparams_to_search.values())
     
     for combo in itertools.product(*param_values):
         new_config = copy.deepcopy(config)
@@ -47,15 +66,12 @@ def generate_hyperparameter_combinations(config):
             for key in keys[:-1]:
                 temp_conf = temp_conf[key]
             
-            # 원본 리스트를 현재 조합의 값으로 교체
             temp_conf[keys[-1]] = combo[i]
             
-            # 실행 이름(run_name) 생성을 위한 문자열 조각
             key_for_path = keys[-1]
             val_for_path = str(combo[i])
             combo_str_parts.append(f"{key_for_path}={val_for_path}")
         
-        # 최종 실행 이름 설정
         new_config['run_name'] = "_".join(combo_str_parts)
         
         yield new_config
@@ -81,6 +97,18 @@ if __name__ == '__main__':
             config[key].update(value)
         else:
             config[key] = value
+
+    # MPS 장치 사용 설정
+    if config.get('device') == 'auto':
+        if torch.backends.mps.is_available():
+            print("MPS is available. Using MPS device.")
+            config['device'] = 'mps'
+        elif torch.cuda.is_available():
+            print("Using CUDA device.")
+            config['device'] = 'cuda'
+        else:
+            print("Using CPU device.")
+            config['device'] = 'cpu'
 
     # 하이퍼파라미터 조합 생성 및 실험 실행
     for i, run_config in enumerate(generate_hyperparameter_combinations(config)):

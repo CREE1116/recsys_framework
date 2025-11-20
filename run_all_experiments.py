@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import argparse
 import re
+import yaml
 
 def run_all_searches(model_config_files, dataset_config_path):
     """
@@ -35,22 +36,28 @@ def run_all_searches(model_config_files, dataset_config_path):
 
 def parse_experiment_name(exp_name):
     """
-    'model_param1=val1_param2=val2' 형식의 폴더 이름에서 파라미터를 파싱합니다.
+    'model__param1=val1_param2=val2' 형식의 폴더 이름에서 파라미터를 파싱합니다.
     """
-    parts = exp_name.split('_')
-    model_name = parts[0]
+    if '__' in exp_name:
+        model_name, params_str = exp_name.split('__', 1)
+    else:
+        model_name = exp_name
+        params_str = ''
+        
     params = {'model': model_name}
     
-    for part in parts[1:]:
-        if '=' in part:
-            key, value = part.split('=', 1)
-            try:
-                if '.' in value:
-                    params[key] = float(value)
-                else:
-                    params[key] = int(value)
-            except ValueError:
-                params[key] = value
+    if params_str:
+        for part in params_str.split('_'):
+            if '=' in part:
+                key, value = part.split('=', 1)
+                try:
+                    # 값에 소수점이 있으면 float, 아니면 int, 둘 다 아니면 string
+                    if '.' in value:
+                        params[key] = float(value)
+                    else:
+                        params[key] = int(value)
+                except ValueError:
+                    params[key] = value
     return params
 
 def aggregate_results(results_base_dir, output_csv):
@@ -102,11 +109,18 @@ def aggregate_results(results_base_dir, output_csv):
 if __name__ == '__main__':
     # 실행할 모델 설정 파일 목록을 여기에 정의합니다.
     model_config_files_to_run = [
+        # 'configs/model/csar_deep.yaml',
+        # 'configs/model/rerank_lightgcn.yaml',
+        # 'configs/model/neumf.yaml',
+        # 'configs/model/item_knn.yaml',
+        # 'configs/model/most_popular.yaml',
+        # 'configs/model/csar_bpr.yaml',
+        'configs/model/csar_contrastive.yaml',
+        # 'configs/model/csar.yaml',
+        # 'configs/model/csar_r.yaml',
+        # 'configs/model/csar_r_softmax.yaml',
         # 'configs/model/mf.yaml',
         # 'configs/model/lightgcn.yaml',
-        # 'configs/model/csar.yaml',
-        'configs/model/csar_r.yaml',
-        'configs/model/csar_r_softmax.yaml',
     ]
 
     parser = argparse.ArgumentParser(description="Run experiments for specified models and a dataset.")
@@ -123,7 +137,10 @@ if __name__ == '__main__':
     run_all_searches(model_config_files_to_run, args.dataset_config)
     
     # 2. 결과 취합
-    # 데이터셋 설정 파일명에서 데이터셋 이름을 추출 (e.g., 'ml-100k.yaml' -> 'ml-100k')
-    dataset_name = os.path.splitext(os.path.basename(args.dataset_config))[0]
+    # dataset_config 파일을 로드하여 dataset_name을 추출
+    with open(args.dataset_config, 'r') as f:
+        loaded_dataset_config = yaml.safe_load(f)
+    dataset_name = loaded_dataset_config['dataset_name']
+
     results_path_for_dataset = os.path.join(args.results_dir, dataset_name)
     aggregate_results(results_path_for_dataset, args.output_file)

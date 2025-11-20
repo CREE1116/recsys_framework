@@ -1,9 +1,9 @@
-# 모델 하이퍼파라미터 (LightGCN)
 model:
   name: "csar-r-softmax"
   embedding_dim: 64
-  orth_loss_weight: 0.2
-  num_interests: [4, 8, 12, 16, 20, 24, 32, 36, 40, 44, 48, 52, 56, 60, 64]
+  orth_loss_weight: 0.1
+  num_interests: 16
+  cross_entropy_temp: 2
 
 # 학습 설정
 train:
@@ -30,7 +30,7 @@ evaluation:
       "Entropy",
       "ILD",
     ] # 평가할 메트릭 리스트
-  top_k: [10, 20] # 평가할 K 값 리스트
+  top_k: [5, 10, 20] # 평가할 K 값 리스트
   main_metric: "NDCG" # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭
   main_metric_k: 20 # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭의 K 값
   long_tail_percent: 0.2 # 롱테일 아이템 정의를 위한 비율 (인기도 하위 N%)

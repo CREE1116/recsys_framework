@@ -97,11 +97,16 @@ class LightGCN(BaseModel):
 
         return final_user_emb, final_item_emb
 
-    def forward(self):
+    def get_embeddings(self):
         return self._propagate_embeddings()
 
+    def get_final_item_embeddings(self):
+        """LightGCN의 최종 아이템 임베딩 (Graph-Propagated)을 반환합니다."""
+        _, item_embeddings = self.get_embeddings()
+        return item_embeddings.detach()
+
     def calc_loss(self, batch_data):
-        user_embeds, item_embeds = self._propagate_embeddings()
+        user_embeds, item_embeds = self.get_embeddings()
 
         users = batch_data['user_id'].squeeze()
         pos_items = batch_data['pos_item_id'].squeeze()
@@ -120,14 +125,14 @@ class LightGCN(BaseModel):
 
         return (loss,), None
 
-    def predict(self, users):
-        user_embeds, item_embeds = self._propagate_embeddings()
+    def forward(self, users):
+        user_embeds, item_embeds = self.get_embeddings()
         user_vecs = user_embeds[users]
         scores = torch.matmul(user_vecs, item_embeds.t())
         return scores
     
     def predict_for_pairs(self, users, items):
-        user_embeds, item_embeds = self._propagate_embeddings()
+        user_embeds, item_embeds = self.get_embeddings()
         
         user_vec = user_embeds[users]
         item_vec = item_embeds[items]
