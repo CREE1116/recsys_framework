@@ -112,3 +112,72 @@ puv run ython run_all_experiments.py --dataset_config configs/dataset/ml100k.yam
 
 - 각 실험의 결과(학습된 모델, 로그, 최종 평가지표)는 `trained_model/{데이터셋명}/{실행명}/` 디렉토리에 저장됩니다.
 - `run_all_experiments.py` 실행 시, 모든 실험의 최종 평가지표가 취합되어 루트 디렉토리의 `results_summary.csv` 파일로 생성됩니다.
+
+
+## CSAR
+
+graph LR
+    %% 스타일 정의
+    classDef input fill:#f9f,stroke:#333,stroke-width:2px,color:black;
+    classDef emb fill:#ff9,stroke:#333,stroke-width:2px,color:black;
+    classDef param fill:#bbf,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5,color:black;
+    classDef op fill:#dfd,stroke:#333,stroke-width:2px,color:black;
+    classDef loss fill:#fbb,stroke:#333,stroke-width:2px,color:black;
+
+    subgraph Inputs [Input Data]
+        U(User ID):::input
+        I(Item ID):::input
+    end
+
+    subgraph Representations [Embedding Layer]
+        U_Emb[User Embedding<br/>d-dim]:::emb
+        I_Emb[Item Embedding<br/>d-dim]:::emb
+    end
+
+    subgraph CSAR_Layer [Co-Support Attention Layer]
+        direction TB
+        Keys{{Global Interest Keys<br/>K x d anchors}}:::param
+        
+        subgraph Mechanism [Attention Mechanism]
+            Dot((Dot Product)):::op
+            Act[Softplus Activation<br/>Non-linear Projection]:::op
+        end
+        
+        U_Int[User Interest Weights<br/>K-dim]:::emb
+        I_Int[Item Interest Weights<br/>K-dim]:::emb
+    end
+
+    subgraph Scoring [Prediction]
+        Match((Weighted Dot Product)):::op
+        Score[Final Score]:::emb
+    end
+
+    subgraph Objectives [Loss Functions]
+        Orth{{Orthogonal Loss<br/>Diversity Reg}}:::loss
+        BPR{{Main Loss<br/>BPR / InfoNCE}}:::loss
+    end
+
+    %% 연결선 (Flow)
+    U --> U_Emb
+    I --> I_Emb
+
+    %% CSAR 내부 로직
+    U_Emb --> Dot
+    I_Emb --> Dot
+    Keys -.-> Dot
+    Dot --> Act
+    Act --> U_Int
+    Act --> I_Int
+
+    %% 점수 계산
+    U_Int --> Match
+    I_Int --> Match
+    Match --> Score
+
+    %% 로스 연결
+    Keys -.-> Orth
+    Score --> BPR
+
+    %% 주석 (Links)
+    linkStyle default stroke-width:2px,fill:none,stroke:gray;
+
