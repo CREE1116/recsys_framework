@@ -113,6 +113,7 @@ puv run ython run_all_experiments.py --dataset_config configs/dataset/ml100k.yam
 - 각 실험의 결과(학습된 모델, 로그, 최종 평가지표)는 `trained_model/{데이터셋명}/{실행명}/` 디렉토리에 저장됩니다.
 - `run_all_experiments.py` 실행 시, 모든 실험의 최종 평가지표가 취합되어 루트 디렉토리의 `results_summary.csv` 파일로 생성됩니다.
 
+
 ```mermaid
 graph LR
     %% 스타일 정의
@@ -186,6 +187,7 @@ graph LR
     Keys -.-> Orth
     Score --> BPR
 
-    %% 주석 (Links)
-    linkStyle default stroke-width:2px,fill:none,stroke:#546E7A;
+    %% 주석 (Links) - # 색상 코드 대신 gray 사용
+    linkStyle default stroke-width:2px,fill:none,stroke:gray;
 ```
+
