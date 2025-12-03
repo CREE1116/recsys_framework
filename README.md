@@ -118,61 +118,42 @@ puv run ython run_all_experiments.py --dataset_config configs/dataset/ml100k.yam
 
 ```mermaid
 graph LR
-    %% 스타일 정의 (Design)
-    classDef input fill:#E1F5FE,stroke:#01579B,stroke-width:2px,color:black,rx:5,ry:5;
-    classDef emb fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px,color:black,rx:5,ry:5;
-    classDef param fill:#B2DFDB,stroke:#00695C,stroke-width:2px,stroke-dasharray: 5 5,color:black,rx:5,ry:5;
-    classDef op fill:#F8BBD0,stroke:#880E4F,stroke-width:2px,color:black,rx:5,ry:5;
-    classDef score fill:#E1BEE7,stroke:#4A148C,stroke-width:2px,color:black,rx:5,ry:5;
-    classDef loss fill:#FFCCBC,stroke:#BF360C,stroke-width:2px,color:black,rx:5,ry:5;
-
-    %% 1. 입력 데이터
     subgraph Inputs [Input Data]
-        direction TB
-        U(User ID):::input
-        I(Item ID):::input
+        U(User ID)
+        I(Item ID)
     end
 
-    %% 2. 임베딩 레이어
     subgraph Representations [Embedding Layer]
-        direction TB
-        U_Emb[User Embedding<br/>d-dim]:::emb
-        I_Emb[Item Embedding<br/>d-dim]:::emb
+        U_Emb[User Embedding]
+        I_Emb[Item Embedding]
     end
 
-    %% 3. CSAR 핵심 로직
     subgraph CSAR_Layer [Co-Support Attention Layer]
-        direction TB
-        Keys{{Global Interest Keys<br/>K x d anchors}}:::param
+        Keys{{Global Interest Keys}}
         
         subgraph Mechanism [Attention Mechanism]
-            Dot((Dot Product)):::op
-            Act[Softplus Activation<br/>Non-linear Projection]:::op
+            Dot((Dot Product))
+            Act[Softplus Activation]
         end
         
-        U_Int[User Interest Weights<br/>K-dim]:::emb
-        I_Int[Item Interest Weights<br/>K-dim]:::emb
+        U_Int[User Interest Weights]
+        I_Int[Item Interest Weights]
     end
 
-    %% 4. 점수 계산
     subgraph Scoring [Prediction]
-        direction TB
-        Match((Weighted Dot Product)):::op
-        Score[Final Score]:::score
+        Match((Weighted Dot Product))
+        Score[Final Score]
     end
 
-    %% 5. 로스 함수
     subgraph Objectives [Loss Functions]
-        direction TB
-        Orth{{Orthogonal Loss<br/>Diversity Reg}}:::loss
-        BPR{{Main Loss<br/>BPR / InfoNCE}}:::loss
+        Orth{{Orthogonal Loss}}
+        BPR{{Main Loss}}
     end
 
-    %% 연결선 (Flow)
+    %% Flow Connections
     U --> U_Emb
     I --> I_Emb
 
-    %% CSAR 내부 로직 연결
     U_Emb --> Dot
     I_Emb --> Dot
     Keys -.-> Dot
@@ -180,15 +161,10 @@ graph LR
     Act --> U_Int
     Act --> I_Int
 
-    %% 점수 계산 연결
     U_Int --> Match
     I_Int --> Match
     Match --> Score
 
-    %% 로스 연결
     Keys -.-> Orth
     Score --> BPR
-
-    %% 주석 (Links)
-    linkStyle default stroke-width:2px,fill:none,stroke:#546E7A;
 ```
