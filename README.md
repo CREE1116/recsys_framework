@@ -116,24 +116,31 @@ puv run ython run_all_experiments.py --dataset_config configs/dataset/ml100k.yam
 
 ## CSAR
 
+```mermaid
 graph LR
-    %% 스타일 정의
-    classDef input fill:#f9f,stroke:#333,stroke-width:2px,color:black;
-    classDef emb fill:#ff9,stroke:#333,stroke-width:2px,color:black;
-    classDef param fill:#bbf,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5,color:black;
-    classDef op fill:#dfd,stroke:#333,stroke-width:2px,color:black;
-    classDef loss fill:#fbb,stroke:#333,stroke-width:2px,color:black;
+    %% 스타일 정의 (Design)
+    classDef input fill:#E1F5FE,stroke:#01579B,stroke-width:2px,color:black,rx:5,ry:5;
+    classDef emb fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px,color:black,rx:5,ry:5;
+    classDef param fill:#B2DFDB,stroke:#00695C,stroke-width:2px,stroke-dasharray: 5 5,color:black,rx:5,ry:5;
+    classDef op fill:#F8BBD0,stroke:#880E4F,stroke-width:2px,color:black,rx:5,ry:5;
+    classDef score fill:#E1BEE7,stroke:#4A148C,stroke-width:2px,color:black,rx:5,ry:5;
+    classDef loss fill:#FFCCBC,stroke:#BF360C,stroke-width:2px,color:black,rx:5,ry:5;
 
+    %% 1. 입력 데이터
     subgraph Inputs [Input Data]
+        direction TB
         U(User ID):::input
         I(Item ID):::input
     end
 
+    %% 2. 임베딩 레이어
     subgraph Representations [Embedding Layer]
+        direction TB
         U_Emb[User Embedding<br/>d-dim]:::emb
         I_Emb[Item Embedding<br/>d-dim]:::emb
     end
 
+    %% 3. CSAR 핵심 로직
     subgraph CSAR_Layer [Co-Support Attention Layer]
         direction TB
         Keys{{Global Interest Keys<br/>K x d anchors}}:::param
@@ -147,12 +154,16 @@ graph LR
         I_Int[Item Interest Weights<br/>K-dim]:::emb
     end
 
+    %% 4. 점수 계산
     subgraph Scoring [Prediction]
+        direction TB
         Match((Weighted Dot Product)):::op
-        Score[Final Score]:::emb
+        Score[Final Score]:::score
     end
 
+    %% 5. 로스 함수
     subgraph Objectives [Loss Functions]
+        direction TB
         Orth{{Orthogonal Loss<br/>Diversity Reg}}:::loss
         BPR{{Main Loss<br/>BPR / InfoNCE}}:::loss
     end
@@ -161,7 +172,7 @@ graph LR
     U --> U_Emb
     I --> I_Emb
 
-    %% CSAR 내부 로직
+    %% CSAR 내부 로직 연결
     U_Emb --> Dot
     I_Emb --> Dot
     Keys -.-> Dot
@@ -169,7 +180,7 @@ graph LR
     Act --> U_Int
     Act --> I_Int
 
-    %% 점수 계산
+    %% 점수 계산 연결
     U_Int --> Match
     I_Int --> Match
     Match --> Score
@@ -179,5 +190,5 @@ graph LR
     Score --> BPR
 
     %% 주석 (Links)
-    linkStyle default stroke-width:2px,fill:none,stroke:gray;
-
+    linkStyle default stroke-width:2px,fill:none,stroke:#546E7A;
+```
