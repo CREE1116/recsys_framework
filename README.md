@@ -115,7 +115,7 @@ puv run ython run_all_experiments.py --dataset_config configs/dataset/ml100k.yam
 
 ```mermaid
 graph LR
-    %% 스타일 정의 (Design)
+    %% 스타일 정의
     classDef input fill:#E1F5FE,stroke:#01579B,stroke-width:2px,color:black,rx:5,ry:5;
     classDef emb fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px,color:black,rx:5,ry:5;
     classDef param fill:#B2DFDB,stroke:#00695C,stroke-width:2px,stroke-dasharray: 5 5,color:black,rx:5,ry:5;
