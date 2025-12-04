@@ -3,28 +3,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 from src.loss import BPRLoss, DynamicMarginBPRLoss
 from .base_model import BaseModel
-from .csar_layers import CoSupportAttentionLayer
+from .csar_layers import CoSupportAttentionLayer,VariationalInterestLayer
 
-class CSAR_R_BPR(BaseModel):
+class CSAR_V_BPR(BaseModel):
     """
-    CSAR_R (Residual Connection) + BPR Loss
+    CSAR_V (Variational Interest) + BPR Loss
     """
     def __init__(self, config, data_loader):
-        super(CSAR_R_BPR, self).__init__(config, data_loader)
+        super(CSAR_V_BPR, self).__init__(config, data_loader)
 
         self.embedding_dim = self.config['model']['embedding_dim']
         self.num_interests = self.config['model']['num_interests']
         self.lamda = self.config['model']['orth_loss_weight']
-        self.soft_relu = self.config['model'].get('soft_relu', False)
-        self.scale = self.config['model'].get('scale', True)
-        self.Dummy = self.config['model'].get('dummy', False)
         self.dynamic_bpr = self.config['model'].get('dynamic_bpr', False)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
         
         # CoSupportAttentionLayer 사용
-        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy, soft_relu=self.soft_relu)
+        self.attention_layer = VariationalInterestLayer(self.num_interests, self.embedding_dim)
 
         self._init_weights()
         self.loss_fn = BPRLoss() if not self.dynamic_bpr else DynamicMarginBPRLoss()
@@ -42,7 +39,7 @@ class CSAR_R_BPR(BaseModel):
 
         # co-support attention layer를 통해 관심사 가중치 계산
         user_interests = self.attention_layer(user_embs)
-        item_interests = self.attention_layer(all_item_embs)
+        item_interests = self.attention_layer(all_item_embs,is_item=True)
 
         # 최종 점수 계산 (Residual Connection 포함)
         # 1. Interest-based Score
@@ -60,7 +57,7 @@ class CSAR_R_BPR(BaseModel):
 
         # co-support attention layer를 통해 관심사 가중치 계산
         user_interests = self.attention_layer(user_embs)
-        item_interests = self.attention_layer(item_embs)
+        item_interests = self.attention_layer(item_embs,is_item=True)
 
         # 1. Interest-based Score
         interest_scores = (user_interests * item_interests).sum(dim=-1)
@@ -78,7 +75,7 @@ class CSAR_R_BPR(BaseModel):
     def _get_item_interests(self, item_ids):
         """ 특정 아이템들의 K-dim 관심사 벡터를 계산합니다. """
         item_embs = self.item_embedding(item_ids)
-        return self.attention_layer(item_embs)
+        return self.attention_layer(item_embs,is_item=True)
     
     def get_final_item_embeddings(self):
         """
@@ -88,7 +85,7 @@ class CSAR_R_BPR(BaseModel):
         여기서는 기존 CSAR과 동일하게 Interest Vector를 반환.
         """
         all_item_embs = self.item_embedding.weight
-        return self.attention_layer(all_item_embs).detach()
+        return self.attention_layer(all_item_embs,is_item=True).detach()
 
     def calc_loss(self, batch_data):
         # DataLoader가 [B, 1] 형태로 반환하므로 차원 축소
@@ -104,8 +101,8 @@ class CSAR_R_BPR(BaseModel):
 
         # 관심사 벡터 계산
         user_interests = self.attention_layer(user_embs)
-        pos_item_interests = self.attention_layer(pos_item_embs)
-        neg_item_interests = self.attention_layer(neg_item_embs)
+        pos_item_interests = self.attention_layer(pos_item_embs,is_item=True)
+        neg_item_interests = self.attention_layer(neg_item_embs,is_item=True)
 
         # Positive Score (Interest + Residual)
         pos_interest_scores = (user_interests * pos_item_interests).sum(dim=-1)
@@ -123,12 +120,6 @@ class CSAR_R_BPR(BaseModel):
         # attention_layer에서 직교 손실 계산
         orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
         
-        # Scale 파라미터 로깅 (Parameter인 경우에만)
-        params_to_log = {}
-        if isinstance(self.attention_layer.scale, nn.Parameter):
-            params_to_log['scale'] = self.attention_layer.scale.item()
-
-        return (loss, self.lamda * orth_loss), params_to_log
-    
+        return (loss, self.lamda * orth_loss), {}
     def __str__(self):
         return f"CSAR_R_BPR(num_interests={self.num_interests}, embedding_dim={self.embedding_dim})"

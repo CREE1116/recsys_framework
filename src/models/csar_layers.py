@@ -7,20 +7,23 @@ class CoSupportAttentionLayer(nn.Module):
     """
     d-차원의 임베딩을 K-차원의 비음수 관심사 가중치 벡터로 변환하는 레이어.
     """
-    def __init__(self, num_interests, embedding_dim, scale=False):
+    def __init__(self, num_interests, embedding_dim, scale=False, Dummy = False, soft_relu = False):
         super(CoSupportAttentionLayer, self).__init__() 
         self.num_interests = num_interests
         self.embedding_dim = embedding_dim
+        self.Dummy = Dummy
+        self.soft_relu = soft_relu
         # K-Anchor (관심사 키)
-        self.interest_keys = nn.Parameter(torch.empty(num_interests, embedding_dim))
-        self.scale = nn.Parameter(torch.tensor(self.num_interests**-0.5)) if scale else torch.tensor(1.0)
+        self.interest_keys = nn.Parameter(torch.empty(num_interests+1, embedding_dim)) if Dummy else nn.Parameter(torch.empty(num_interests, embedding_dim))
+        self.scale = nn.Parameter(torch.tensor(self.num_interests**-0.5)) if scale else torch.tensor(num_interests**-0.5)
         # 가중치 초기화
         self._init_weights()
+
 
     def _init_weights(self):
         """Xavier uniform 초기화를 사용하여 관심사 키를 초기화합니다."""
         nn.init.xavier_uniform_(self.interest_keys)
-
+        
     def forward(self, embedding_tensor):
         """
         입력 텐서를 K-차원 관심사 가중치로 변환합니다.
@@ -35,9 +38,9 @@ class CoSupportAttentionLayer(nn.Module):
         scale_val = self.scale if isinstance(self.scale, torch.Tensor) else 1.0
         
         attention_logits = torch.einsum('...d,kd->...k', embedding_tensor, self.interest_keys) * scale_val
-        interest_weights = F.softplus(attention_logits)
-        
-        return interest_weights
+        if self.soft_relu:
+             return F.relu(attention_logits) + (F.softplus(attention_logits) - F.softplus(attention_logits).detach())
+        return F.softplus(attention_logits) 
     
     @staticmethod
     def l1_orthogonal_loss(keys):
@@ -73,11 +76,97 @@ class CoSupportAttentionLayer(nn.Module):
 
     def get_orth_loss(self, loss_type="l2"):
         """이 레이어가 소유한 관심사 키에 대한 직교 손실을 반환합니다."""
+        interest_keys = self.interest_keys
+        if self.Dummy:
+            interest_keys = self.interest_keys[:-1]
         if loss_type == "l1":
-            return self.l1_orthogonal_loss(self.interest_keys)
+            return self.l1_orthogonal_loss(interest_keys)
         else:
-            return self.l2_orthogonal_loss(self.interest_keys)
+            return self.l2_orthogonal_loss(interest_keys)
 
+class VariationalInterestLayer(nn.Module):
+    """
+    Bayesian Energy-based Interest Layer
+    - Sparse User: Personal 값이 작아서 Global Prior(ACF 효과)가 드러남
+    - Dense User: Personal 값이 커서 Global Prior를 덮어버림(CSAR 효과)
+    """
+    def __init__(self, num_interests, embedding_dim):
+        super().__init__()
+        
+        # 1. Personal Keys (Likelihood 용)
+        self.interest_keys = nn.Parameter(torch.empty(num_interests, embedding_dim))
+        nn.init.xavier_uniform_(self.interest_keys)
+        
+        # 2. Global Prior (Log-scale로 학습)
+        # 초기에는 0(Energy=1) 혹은 작은 값으로 시작
+        self.user_log_prior = nn.Parameter(torch.zeros(num_interests))
+        self.item_log_prior = nn.Parameter(torch.zeros(num_interests))
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Xavier uniform 초기화를 사용하여 관심사 키를 초기화합니다."""
+        nn.init.xavier_uniform_(self.interest_keys)
+
+    def forward(self, emb,is_item=False):
+        # --- A. Likelihood (Personal View) ---
+        # 유저가 직접 보여준 관심사 (Magnitude 보존!)
+        personal_logits = emb @ self.interest_keys.T
+        personal_energy = F.softplus(personal_logits)
+            
+        # --- B. Prior (Global View) ---
+        # 전체 데이터에서 학습된 '평균적인 앵커 중요도' (Magnitude 보존!)
+        # 모든 유저에게 공통적으로 더해지는 '기본 점수(Base Score)'
+        if is_item:
+            global_energy = F.softplus(self.item_log_prior)
+        else:
+            global_energy = F.softplus(self.user_log_prior)
+        
+        # --- C. Posterior (Hybrid View) ---
+        # Additive Smoothing: 관측값(Personal) + 사전지식(Global)
+        # Sparse 유저: Personal이 0에 가까움 -> Global Energy만 남음 (ACF처럼 동작)
+        # Dense 유저: Personal이 10, 20으로 큼 -> Global(1.0)은 티도 안 남 (CSAR처럼 동작)
+        final_interests = personal_energy + global_energy
+        
+        return final_interests
+    @staticmethod
+    def l1_orthogonal_loss(keys):
+        """L1 norm을 사용하여 관심사 키의 직교성을 강제합니다."""
+        K = keys.size(0)
+        keys_normalized = F.normalize(keys, p=2, dim=1)
+        cosine_similarity = torch.matmul(keys_normalized, keys_normalized.t())
+        identity_matrix = torch.eye(K, device=keys.device)
+        
+        # 비대각선 요소의 개수
+        num_off_diagonal_elements = K * K - K
+        
+        # 제곱 대신 절댓값을 사용하여 수치적 안정성 확보
+        loss = torch.abs(cosine_similarity - identity_matrix).sum()
+        return loss / num_off_diagonal_elements 
+    
+    @staticmethod
+    def l2_orthogonal_loss(keys):
+        """L2 norm을 사용하여 관심사 키의 직교성을 강제합니다."""
+        K = keys.size(0)
+        keys_normalized = F.normalize(keys, p=2, dim=1)
+        cosine_similarity = torch.matmul(keys_normalized, keys_normalized.t())
+        identity_matrix = torch.eye(K, device=keys.device)
+        off_diag = cosine_similarity - identity_matrix
+        
+        # 1. 제곱의 합 (L2 Loss)
+        l2_sum_loss = (off_diag ** 2).sum()
+        
+        # 2. 비대각선 요소의 개수로 나누어 정규화
+        num_off_diagonal_elements = K * K - K
+        normalized_loss = l2_sum_loss / num_off_diagonal_elements 
+        return normalized_loss 
+
+    def get_orth_loss(self, loss_type="l2"):
+        """이 레이어가 소유한 관심사 키에 대한 직교 손실을 반환합니다."""
+        interest_keys = self.interest_keys
+        if loss_type == "l1":
+            return self.l1_orthogonal_loss(interest_keys)
+        else:
+            return self.l2_orthogonal_loss(interest_keys)
 
 class AdaptiveContrastiveLoss(nn.Module):
     """

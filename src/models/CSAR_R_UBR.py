@@ -5,12 +5,30 @@ from src.loss import BPRLoss, DynamicMarginBPRLoss
 from .base_model import BaseModel
 from .csar_layers import CoSupportAttentionLayer
 
-class CSAR_R_BPR(BaseModel):
-    """
-    CSAR_R (Residual Connection) + BPR Loss
-    """
+class UncertaintyBPRLoss(nn.Module):
+    def __init__(self, min_sigma_sq=0.5):
+        super().__init__()
+        self.min_sigma_sq = min_sigma_sq
+
+    def forward(self, mf_pos, mf_neg, csar_pos, csar_neg, total_pos, total_neg):
+        # 1. Disagreement → Aleatoric Uncertainty
+        diff_mf = (mf_pos - mf_neg).detach()
+        diff_csar = (csar_pos - csar_neg).detach()
+        disagreement = torch.abs(diff_mf - diff_csar)
+        sigma_sq = torch.square(disagreement) + self.min_sigma_sq
+        
+        # 2. BPR Loss (Main Task Loss)
+        bpr_loss = F.softplus(-(total_pos - total_neg))
+        
+        # 3. Heteroscedastic NLL = Weighted Loss + Regularization
+        # = (Main Loss / 2σ²) + (1/2)log(σ²)
+        uncertainty_weighted_loss = (bpr_loss / (2 * sigma_sq)) + 0.5 * torch.log(sigma_sq)
+        
+        return uncertainty_weighted_loss.mean(), bpr_loss.mean(), disagreement.mean()
+
+class CSAR_R_UBR(BaseModel):
     def __init__(self, config, data_loader):
-        super(CSAR_R_BPR, self).__init__(config, data_loader)
+        super(CSAR_R_UBR, self).__init__(config, data_loader)
 
         self.embedding_dim = self.config['model']['embedding_dim']
         self.num_interests = self.config['model']['num_interests']
@@ -18,7 +36,6 @@ class CSAR_R_BPR(BaseModel):
         self.soft_relu = self.config['model'].get('soft_relu', False)
         self.scale = self.config['model'].get('scale', True)
         self.Dummy = self.config['model'].get('dummy', False)
-        self.dynamic_bpr = self.config['model'].get('dynamic_bpr', False)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
@@ -27,7 +44,7 @@ class CSAR_R_BPR(BaseModel):
         self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy, soft_relu=self.soft_relu)
 
         self._init_weights()
-        self.loss_fn = BPRLoss() if not self.dynamic_bpr else DynamicMarginBPRLoss()
+        self.loss_fn = UncertaintyBPRLoss()
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)
@@ -117,14 +134,21 @@ class CSAR_R_BPR(BaseModel):
         neg_res_scores = (user_embs * neg_item_embs).sum(dim=-1)
         neg_scores = neg_interest_scores + neg_res_scores
         
-        # BPR 손실
-        loss = self.loss_fn(pos_scores, neg_scores)
+        # BPR 손실 (UncertaintyBPRLoss)
+        loss, bpr, disagreement = self.loss_fn(
+            mf_pos=pos_res_scores, 
+            mf_neg=neg_res_scores, 
+            csar_pos=pos_interest_scores, 
+            csar_neg=neg_interest_scores, 
+            total_pos=pos_scores, 
+            total_neg=neg_scores
+        )
 
         # attention_layer에서 직교 손실 계산
         orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
         
         # Scale 파라미터 로깅 (Parameter인 경우에만)
-        params_to_log = {}
+        params_to_log = {'bpr': bpr.item(), 'disagreement': disagreement.item()}
         if isinstance(self.attention_layer.scale, nn.Parameter):
             params_to_log['scale'] = self.attention_layer.scale.item()
 

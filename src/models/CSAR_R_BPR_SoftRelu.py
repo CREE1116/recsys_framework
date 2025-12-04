@@ -15,19 +15,17 @@ class CSAR_R_BPR(BaseModel):
         self.embedding_dim = self.config['model']['embedding_dim']
         self.num_interests = self.config['model']['num_interests']
         self.lamda = self.config['model']['orth_loss_weight']
-        self.soft_relu = self.config['model'].get('soft_relu', False)
         self.scale = self.config['model'].get('scale', True)
         self.Dummy = self.config['model'].get('dummy', False)
-        self.dynamic_bpr = self.config['model'].get('dynamic_bpr', False)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
         
         # CoSupportAttentionLayer 사용
-        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy, soft_relu=self.soft_relu)
+        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy)
 
         self._init_weights()
-        self.loss_fn = BPRLoss() if not self.dynamic_bpr else DynamicMarginBPRLoss()
+        self.loss_fn = DynamicMarginBPRLoss(alpha=0.5)
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)

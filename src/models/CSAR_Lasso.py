@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from src.loss import orthogonal_loss,BPRLoss, DynamicMarginBPRLoss # 이 임포트는 더 이상 필요 없지만, 혹시 다른 곳에서 사용될까봐 유지
+from src.loss import orthogonal_loss,BPRLoss # 이 임포트는 더 이상 필요 없지만, 혹시 다른 곳에서 사용될까봐 유지
 
 from .base_model import BaseModel
 
@@ -10,26 +10,26 @@ from .base_model import BaseModel
 from .csar_layers import CoSupportAttentionLayer
 
 
-class CSAR_BPR(BaseModel):
+class CSAR_Lasso(BaseModel):
     def __init__(self, config, data_loader):
-        super(CSAR_BPR, self).__init__(config, data_loader)
+        super(CSAR_Lasso, self).__init__(config, data_loader)
 
         self.embedding_dim = self.config['model']['embedding_dim']
         self.num_interests = self.config['model']['num_interests']
-        self.lamda = self.config['model']['orth_loss_weight']
+        self.lamda_orth = self.config['model']['orth_loss_weight']
         self.scale = self.config['model'].get('scale', True)
-        self.Dummy = self.config['model'].get('dummy', False)
-        self.soft_relu = self.config['model'].get('soft_relu', False)
-        self.dynamic_bpr = self.config['model'].get('dynamic_bpr', False)
+        self.l1_lambda = self.config['model'].get('l1_lambda', 0.0)
+
+        # self.ce_temp = self.config['model'].get('cross_entropy_temp', 0.2)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
         
         # CoSupportAttentionLayer 사용
-        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy, soft_relu=self.soft_relu)
+        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale)
 
         self._init_weights()
-        self.loss_fn = BPRLoss() if not self.dynamic_bpr else DynamicMarginBPRLoss()
+        self.loss_fn = BPRLoss()
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)
@@ -77,33 +77,31 @@ class CSAR_BPR(BaseModel):
         return self.attention_layer(all_item_embs)
 
     def calc_loss(self, batch_data):
-        # [수정] DataLoader가 [B, 1] 형태로 반환하므로 차원 축소
         users = batch_data['user_id'].squeeze(-1)
         pos_items = batch_data['pos_item_id'].squeeze(-1)
-        neg_items = batch_data['neg_item_id'].squeeze(-1) # [수정] 차원 축소
+        neg_items = batch_data['neg_item_id'].squeeze(-1)
 
-        # --- 1. BPR Loss 계산 ---
-        # 헬퍼 메서드를 사용해 각 관심사 벡터를 *한 번만* 계산
-        user_interests = self._get_user_interests(users)         # [B, K]
-        pos_item_interests = self._get_item_interests(pos_items) # [B, K]
-        neg_item_interests = self._get_item_interests(neg_items) # [B, K]
+        # 점수 계산 및 관심사 벡터 추출
+        pos_scores = self.predict_for_pairs(users, pos_items)
+        neg_scores = self.predict_for_pairs(users, neg_items)
+        u_int_pos = self.attention_layer(self.user_embedding(users))
+        # 1. BPR Loss
+        bpr_loss = self.loss_fn(pos_scores, neg_scores)
 
-        # Pairwise 점수 계산 (predict_for_pairs와 동일한 로직)
-        pos_scores = (user_interests * pos_item_interests).sum(dim=-1) # [B]
-        neg_scores = (user_interests * neg_item_interests).sum(dim=-1) # [B]
-        
-        # BPR 손실
-        loss = self.loss_fn(pos_scores, neg_scores)
+        l1_loss = u_int_pos.abs().mean()
 
-        # attention_layer에서 직교 손실 계산
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
-        params_to_log = {'scale': self.attention_layer.scale.item()}
+        # 3. Orthogonal Loss
+        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2" )
+        params_to_log = {
+            'l1_sparsity': l1_loss.item(), # 이 값이 줄어들수록 모델이 엄격해진 것
+            'scale': self.attention_layer.scale.item()
+        }
 
-        return (loss, self.lamda * orth_loss), params_to_log
+        return (bpr_loss, self.lamda_orth * orth_loss, self.l1_lambda * l1_loss), params_to_log
     
     def get_final_item_embeddings(self):
-        """CSAR_BPR의 최종 아이템 임베딩 (Topic-space)을 반환합니다."""
-        print("Getting final item embeddings from CSAR_BPR...")
+        """CSAR_Lasso의 최종 아이템 임베딩 (Topic-space)을 반환합니다."""
+        print("Getting final item embeddings from CSAR_Lasso...")
         return self._get_all_item_interests().detach()
 
 

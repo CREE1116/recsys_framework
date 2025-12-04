@@ -1,11 +1,9 @@
 model:
-  name: "csar-bpr"
+  name: "acf-nll"
   embedding_dim: 64
-  orth_loss_weight: 0.3
-  num_interests: 64
-  scale: True
-  soft_relu: [True, False] # Soft ReLU 적용 여부
-  dynamic_bpr: [True, False] # Dynamic BPR 적용 여부
+  num_anchors: 64
+  lambda_exclusiveness: 0.01
+  lambda_inclusiveness: 0.01
 
 # 학습 설정
 train:
@@ -14,7 +12,7 @@ train:
   lr: 0.001
   l2_regularization: 0.0001
   optimizer: "adamw"
-  loss_type: "pairwise" # 'pairwise', 'pointwise'
+  loss_type: "pointwise" # 'pairwise', 'pointwise'
   num_negatives: 1 # For pairwise losses
   negative_sampling_strategy: "popularity" # 'uniform' or 'popularity'
   negative_sampling_alpha: 0.75

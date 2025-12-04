@@ -15,7 +15,19 @@ from .neumf import NeuMF
 from .rerank_wrapper import ReRankWrapper
 from .CSAR_R_BPR import CSAR_R_BPR
 from .CSAR_R_contrastive import CSAR_R_contrastive
-from .CSAR_GATE import CSAR_GATE
+from .CSAR_R_Confidence import CSAR_R_Confidence
+from .CSAR_R_Lasso import CSAR_R_Lasso
+from .CSAR_Lasso import CSAR_Lasso
+from .CSAR_STE import CSAR_STE
+from .CSAR_R_L0 import CSAR_R_L0
+from .CSAR_R_KD import CSAR_R_KD
+from .CSAR_R_UBR import CSAR_R_UBR
+from .CSAR_R_CCBPR import CSAR_R_CCBPR
+from .ACF_NLL import ACF_NLL, ACF_BPR
+from .CSAR_V_BPR import CSAR_V_BPR
+from .CSAR_V import CSAR_V
+from .CSAR_VR import CSAR_VR
+
 
 MODEL_REGISTRY = {
     'mf': MF,
@@ -32,7 +44,19 @@ MODEL_REGISTRY = {
     'ReRankWrapper': ReRankWrapper,
     'csar-r-bpr': CSAR_R_BPR,
     'csar-r-contrastive': CSAR_R_contrastive,
-    'csar-gate': CSAR_GATE,
+    'csar-r-confidence': CSAR_R_Confidence,
+    'csar-r-lasso': CSAR_R_Lasso,
+    'csar-lasso': CSAR_Lasso,
+    'csar-ste': CSAR_STE,
+    'csar-r-l0': CSAR_R_L0,
+    'csar-r-kd': CSAR_R_KD,
+    'csar-r-ubr': CSAR_R_UBR,
+    'csar-r-ccbpr': CSAR_R_CCBPR,
+    'acf-nll': ACF_NLL,
+    'acf-bpr': ACF_BPR,
+    'csar-v-bpr': CSAR_V_BPR,
+    'csar-v': CSAR_V,
+    'csar-vr': CSAR_VR
 }
 
 def get_model(model_name, config, data_loader):

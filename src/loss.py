@@ -14,6 +14,52 @@ class BPRLoss(nn.Module):
         loss = -F.logsigmoid(pos_scores - neg_scores).mean()
         return loss
 
+class DynamicMarginBPRLoss(nn.Module):
+    def __init__(self, alpha=0.5):
+        super(DynamicMarginBPRLoss, self).__init__()
+        self.alpha = alpha
+    
+    def forward(self, pos_scores, neg_scores):
+        # 1. 현재 모델이 느끼는 난이도 (점수 차이)
+        with torch.no_grad():
+            diff = pos_scores - neg_scores
+            # 차이가 클수록(잘할수록) 마진을 세게 검
+            dynamic_margin = self.alpha * torch.sigmoid(diff) 
+        # 2. 동적 마진 적용
+        loss = F.softplus(-(pos_scores - neg_scores - dynamic_margin)).mean()
+        return loss
+
+class PolyLoss(nn.Module):
+    def __init__(self, epsilon=1.0, reduction='mean'):
+        """
+        epsilon: 
+          > 0 : 쉬운 문제도 더 파고들어라! (희소 데이터 추천, Gradient 강화)
+          < 0 : 어려운 문제에 집중해라! (Focal Loss 느낌)
+        """
+        super().__init__()
+        self.epsilon = epsilon
+        self.reduction = reduction
+        self.ce = nn.CrossEntropyLoss(reduction='none')
+
+    def forward(self, logits, targets):
+        # 1. 기본 CE Loss 계산 (Base)
+        ce_loss = self.ce(logits, targets)
+        
+        # 2. 정답 클래스의 확률(Pt) 계산
+        # Softmax를 통과시킨 후 정답 인덱스의 확률만 가져옴
+        pt = torch.gather(F.softmax(logits, dim=-1), 1, targets.unsqueeze(1)).squeeze(1)
+        
+        # 3. PolyLoss 수식 적용
+        # Loss = CE + eps * (1 - Pt)
+        poly_loss = ce_loss + self.epsilon * (1 - pt)
+        
+        if self.reduction == 'mean':
+            return poly_loss.mean()
+        elif self.reduction == 'sum':
+            return poly_loss.sum()
+        else:
+            return poly_loss
+
 class MSELoss(nn.Module):
     """
     Mean Squared Error (MSE) 손실 함수

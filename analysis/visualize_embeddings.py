@@ -68,7 +68,7 @@ def visualize_embeddings(experiment_dir, embedding_type='final', output_file=Non
 
     # 6. 시각화 및 저장
     plt.figure(figsize=(12, 12))
-    plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], alpha=0.6)
+    plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], alpha=0.6,s=2)
     title = (f't-SNE Visualization of {embedding_type.capitalize()} Item Embeddings\n'
              f'(Experiment: {os.path.basename(experiment_dir)})')
     plt.title(title)
@@ -87,7 +87,7 @@ def visualize_embeddings(experiment_dir, embedding_type='final', output_file=Non
 if __name__ == '__main__':
     # 분석할 실험 디렉토리 목록
     experiment_dirs_to_visualize = [
-        '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar-contrastive__negative_sampling_strategy=uniform'
+        'csar-r-confidence__num_interests=4_scale=True_negative_sampling_strategy=popularity'
         # 여기에 다른 실험 디렉토리 경로를 추가할 수 있습니다.
     ]
 
@@ -102,3 +102,4 @@ if __name__ == '__main__':
         print("-" * 60)
 
     print("All visualizations completed.")
+ 

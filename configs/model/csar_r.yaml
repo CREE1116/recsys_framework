@@ -2,8 +2,9 @@ model:
   name: "csar-r"
   embedding_dim: 64
   orth_loss_weight: 0.1
-  num_interests: 16
-  cross_entropy_temp: 2
+  num_interests: 64
+  scale: True
+  # soft_relu: [True, False] # Soft ReLU 적용 여부
 
 # 학습 설정
 train:
@@ -14,7 +15,8 @@ train:
   optimizer: "adamw"
   loss_type: "pointwise" # 'pairwise', 'pointwise'
   num_negatives: 1 # For pairwise losses
-  temperature: 0.1 # For InfoNCE
+  # negative_sampling_strategy: "popularity"
+  # negative_sampling_alpha: 0.75
   early_stop_patience: 30
 
 # 평가 설정

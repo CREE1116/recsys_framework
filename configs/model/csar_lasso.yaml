@@ -1,11 +1,10 @@
 model:
-  name: "csar-bpr"
+  name: "csar-lasso"
   embedding_dim: 64
   orth_loss_weight: 0.3
-  num_interests: 64
-  scale: True
-  soft_relu: [True, False] # Soft ReLU 적용 여부
-  dynamic_bpr: [True, False] # Dynamic BPR 적용 여부
+  num_interests: [4, 64]
+  scale: [True, False] # 스케일링 적용 여부
+  l1_lambda: 0.0001 # L1 정규화 강도
 
 # 학습 설정
 train:
@@ -16,9 +15,9 @@ train:
   optimizer: "adamw"
   loss_type: "pairwise" # 'pairwise', 'pointwise'
   num_negatives: 1 # For pairwise losses
-  negative_sampling_strategy: "popularity" # 'uniform' or 'popularity'
+  negative_sampling_strategy: ["uniform", "popularity"] # 'uniform' or 'popularity'
   negative_sampling_alpha: 0.75
-  early_stop_patience: 30
+  early_stop_patience: 40
 
 # 평가 설정
 evaluation:

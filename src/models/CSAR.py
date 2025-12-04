@@ -17,13 +17,15 @@ class CSAR(BaseModel):
         self.embedding_dim = self.config['model']['embedding_dim']
         self.num_interests = self.config['model']['num_interests']
         self.lamda = self.config['model']['orth_loss_weight']
-        self.ce_temp = self.config['model'].get('cross_entropy_temp', 0.2)
+        self.scale = self.config['model'].get('scale', True)
+        self.Dummy = self.config['model'].get('dummy', False)
+        self.soft_relu = self.config['model'].get('soft_relu', False)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
         
         # CoSupportAttentionLayer 사용
-        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim)
+        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy, soft_relu=self.soft_relu)
 
         self._init_weights()
 
@@ -67,15 +69,15 @@ class CSAR(BaseModel):
         items = batch_data['item_id']
 
         preds = self.forward(users) 
-        loss = F.cross_entropy(preds/self.ce_temp, items, reduction='mean') 
+        loss = F.cross_entropy(preds, items) 
 
         # attention_layer에서 직교 손실 계산
         orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
 
         total_loss = loss + self.lamda * orth_loss
-        # params_to_log = {'scale': self.attention_layer.scale.item()}
+        params_to_log = {'scale': self.attention_layer.scale.item()}
 
-        return (total_loss, self.lamda * orth_loss), None
+        return (total_loss, self.lamda * orth_loss), params_to_log
 
     def __str__(self):
         return f"CSAR(num_interests={self.num_interests}, embedding_dim={self.embedding_dim})"
