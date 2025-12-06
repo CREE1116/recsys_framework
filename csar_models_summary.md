@@ -7,21 +7,21 @@
 
 ```mermaid
 graph TD
-    Core[<b>Core: Co-Support Attention Layer</b><br>Embedding -> Interest Energy (Non-negative)] --> Base
+    Core["<b>Core: Co-Support Attention Layer</b><br>Embedding -> Interest Energy (Non-negative)"] --> Base
 
     subgraph "Objective Function Strategy"
-        Base{<b>Model Architecture</b>}
-        Base -->|Pure Interest| Pure[<b>CSAR</b><br>Score = Interest Interaction]
-        Base -->|Residual Interest| Res[<b>CSAR_R</b><br>Score = MF + Interest Interaction]
+        Base{"<b>Model Architecture</b>"}
+        Base -->|Pure Interest| Pure["<b>CSAR</b><br>Score = Interest Interaction"]
+        Base -->|Residual Interest| Res["<b>CSAR_R</b><br>Score = MF + Interest Interaction"]
     end
 
     subgraph "Learning Strategy (Loss)"
-        Pure -->|Pointwise| CSAR[<b>CSAR</b><br>(MSE/BCE)]
-        Pure -->|Pairwise Ranking| BPR[<b>CSAR_BPR</b><br>(BPR + Ortho Loss)]
-        Pure -->|Listwise / Distribution| Sampled[<b>CSAR_Sampled</b><br>(Sampled Softmax + LogQ Correction)]
+        Pure -->|Pointwise| CSAR_Point["<b>CSAR</b><br>(MSE/BCE)"]
+        Pure -->|Pairwise Ranking| BPR["<b>CSAR_BPR</b><br>(BPR + Ortho Loss)"]
+        Pure -->|Listwise / Distribution| Sampled["<b>CSAR_Sampled</b><br>(Sampled Softmax + LogQ Correction)"]
 
-        Res -->|Pointwise| CSAR_R[<b>CSAR_R</b><br>(MSE/BCE)]
-        Res -->|Pairwise Ranking| RBPR[<b>CSAR_R_BPR</b><br>(BPR)]
+        Res -->|Pointwise| CSAR_R_Point["<b>CSAR_R</b><br>(MSE/BCE)"]
+        Res -->|Pairwise Ranking| RBPR["<b>CSAR_R_BPR</b><br>(BPR)"]
     end
 ```
 
