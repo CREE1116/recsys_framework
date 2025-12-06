@@ -16,11 +16,11 @@ graph TD
     end
 
     subgraph "Learning Strategy (Loss)"
-        Pure -->|Pointwise| CSAR_Point["<b>CSAR</b><br>(MSE/BCE)"]
+        Pure -->|Pointwise| CSAR_Point["<b>CSAR</b><br>(NLL)"]
         Pure -->|Pairwise Ranking| BPR["<b>CSAR_BPR</b><br>(BPR + Ortho Loss)"]
         Pure -->|Listwise / Distribution| Sampled["<b>CSAR_Sampled</b><br>(Sampled Softmax + LogQ Correction)"]
 
-        Res -->|Pointwise| CSAR_R_Point["<b>CSAR_R</b><br>(MSE/BCE)"]
+        Res -->|Pointwise| CSAR_R_Point["<b>CSAR_R</b><br>(NLL)"]
         Res -->|Pairwise Ranking| RBPR["<b>CSAR_R_BPR</b><br>(BPR)"]
     end
 ```
