@@ -50,8 +50,9 @@ def generate_interest_report_section(report, interest_k, item_interests, inv_ite
             top_items_info.append({
                 'Rank': i + 1, 
                 'Title': title_cleaned,
-                'Year': int(item_info['year']) if pd.notna(item_info['year']) else None,
-                'Genres': item_info['genres'], 
+                'Title': title_cleaned,
+                'Year': int(item_info['year']) if 'year' in item_info and pd.notna(item_info['year']) else None,
+                'Genres': item_info.get('genres', []), 
                 'Popularity': pop_count,
                 'Weight': top_weights[i].item()
             })
@@ -172,7 +173,7 @@ def generate_interest_report_section(report, interest_k, item_interests, inv_ite
     report.add_section("Qualitative Summary", level=4)
     summary_parts = []
     if not genre_enrichment_df.empty:
-        summary_parts.append(f"**{genre_enrichment_df.iloc[0]['Genre']}** movies")
+        summary_parts.append(f"**{genre_enrichment_df.iloc[0]['Genre']}** items")
     if 'decade_enrichment_df' in locals() and not decade_enrichment_df.empty:
         summary_parts.append(f"from the **{decade_enrichment_df.iloc[0]['Decade']}s**")
         

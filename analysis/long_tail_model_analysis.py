@@ -158,7 +158,7 @@ def run_long_tail_model_analysis(exp_config):
 if __name__ == '__main__':
     EXPERIMENTS_TO_RUN = [
         {
-            'run_folder_path': 'trained_model/ml-1m/csar-bpr__negative_sampling_strategy=popularity',
+            'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar-bpr-ce__temperature=0.8',
             'max_cases_to_find': 5,
             'top_k_for_rec': 50,
             'long_tail_percentage': 0.2,

@@ -9,6 +9,8 @@ import seaborn as sns
 from collections import Counter
 from scipy.stats import chi2_contingency, pearsonr
 
+import argparse
+
 # 프로젝트의 src 및 analysis 폴더를 python 경로에 추가
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -127,16 +129,16 @@ def run_full_analysis(exp_config):
     print(f"Analysis complete. Report saved to {output_path}")
 
 if __name__ == '__main__':
-    # 분석할 실험 경로 설정
-    EXPERIMENTS_TO_RUN = [
-        {
-            'run_folder_path': 'trained_model/ml-1m/csar-bpr__negative_sampling_strategy=popularity',
-            'top_n': 20, # 통계적 유의성을 위해 20~50 권장
-        },
-    ]
+    parser = argparse.ArgumentParser(description='Analyze Item Interests')
+    parser.add_argument('--run_path', type=str, required=True, help='Path to the trained model run folder')
+    parser.add_argument('--top_n', type=int, default=20, help='Number of top items to analyze per interest')
+    
+    args = parser.parse_args()
 
-    for exp_config in EXPERIMENTS_TO_RUN:
-        if os.path.exists(exp_config['run_folder_path']):
-            run_full_analysis(exp_config)
-        else:
-            print(f"[Error] Path not found: {exp_config['run_folder_path']}")
+    if os.path.exists(args.run_path):
+        run_full_analysis({
+            'run_folder_path': args.run_path,
+            'top_n': args.top_n
+        })
+    else:
+        print(f"[Error] Path not found: {args.run_path}")

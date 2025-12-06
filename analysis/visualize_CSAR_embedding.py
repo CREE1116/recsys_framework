@@ -160,7 +160,7 @@ def visualize_embeddings_advanced(experiment_dir, output_file=None):
 
 if __name__ == '__main__':
     # 실험 경로 설정
-    target_dir = '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar-lasso__num_interests=8_scale=True_negative_sampling_strategy=popularity'
+    target_dir = '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar-bpr-ce__temperature=0.8'
     
     if os.path.isdir(target_dir):
         visualize_embeddings_advanced(target_dir)

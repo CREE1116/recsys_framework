@@ -109,33 +109,21 @@ def aggregate_results(results_base_dir, output_csv):
 if __name__ == '__main__':
     # 실행할 모델 설정 파일 목록을 여기에 정의합니다.
     model_config_files_to_run = [
-        # 'configs/model/csar_deep.yaml',
-        # 'configs/model/rerank_lightgcn.yaml',
-        # 'configs/model/neumf.yaml',
-        # 'configs/model/item_knn.yaml',
-        # 'configs/model/most_popular.yaml',
-        # 'configs/model/mf.yaml',
-        # 'configs/model/csar_lasso.yaml',
-        # 'configs/model/csar_r_lasso.yaml',
-        # 'configs/model/csar_v.yaml',
-        # 'configs/model/csar_vr.yaml',
-        # 'configs/model/csar_v_bpr.yaml',
-        # 'configs/model/acf_nll.yaml',
-        # 'configs/model/acf_bpr.yaml',
-        # 'configs/model/csar_r_ccbpr.yaml',
-        # 'configs/model/csar_r_ubr.yaml',
-        # 'configs/model/csar_r_bpr.yaml',
-        # 'configs/model/csar_bpr.yaml',
-        # 'configs/model/csar_r_confidence.yaml',
-        # 'configs/model/csar_r_l0.yaml',
-        # 'configs/model/csar_ste.yaml',
-        # 'configs/model/csar_r_contrastive.yaml',
-        # 'configs/model/csar_contrastive.yaml',
-        'configs/model/csar_r.yaml',
-        'configs/model/csar.yaml',
-        # 'configs/model/csar_r_kd.yaml',
-        # 'configs/model/csar_r_softmax.yaml',
-        # 'configs/model/lightgcn.yaml',
+        # 'configs/model/general/neumf.yaml',
+        # 'configs/model/general/item_knn.yaml',
+        # 'configs/model/general/lightgcn.yaml',
+        # 'configs/model/general/most_popular.yaml',
+        # 'configs/model/general/mf.yaml',
+        # 'configs/model/general/multvae.yaml',
+        # 'configs/model/general/protomf.yaml',
+        # 'configs/model/general/acf_nll.yaml',
+        # 'configs/model/general/acf_bpr.yaml',
+        
+        'configs/model/csar/csar_bpr.yaml',
+        'configs/model/csar/csar_r_bpr.yaml',
+        'configs/model/csar/csar.yaml',
+        'configs/model/csar/csar_r.yaml'
+
     ]
 
     parser = argparse.ArgumentParser(description="Run experiments for specified models and a dataset.")

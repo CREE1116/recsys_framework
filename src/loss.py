@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np  
 import torch.nn.functional as F
 import math
 
@@ -121,6 +122,125 @@ class InfoNCELoss(nn.Module):
         
         loss = F.cross_entropy(all_scores, labels)
         return loss
+
+class CSARLoss(nn.Module):
+    """
+    CSAR 모델 전용 Log-Energy InfoNCE Loss
+    
+    Theoretical Background:
+    1. Energy-based Model: Softplus 활성화를 통한 Intensity 내적(Energy)을 점수로 사용.
+    2. Log-Space Transform: 곱셈 기반 에너지(Energy)를 덧셈 기반 로짓(Log-Energy)으로 변환하여
+       Softmax의 지수 폭발(Explosion)을 방지하고 Magnitude 정보를 비율(Ratio)로 학습.
+    3. Fixed Temperature: 학습 가능한 스케일 대신 고정된 온도를 사용하여 
+       Gradient가 온전히 임베딩 학습에 집중되도록 강제 (Gradient Stealing 방지).
+    
+    * Note: CSAR 모델의 Co-Support 구조가 이미 내부적으로 관심사 필터링을 수행하므로, 
+      LogQ Correction을 통한 강제적인 인기도 편향 제거는 오히려 성능을 저해할 수 있어 제거함.
+    """
+    def __init__(self, temperature=0.1):
+        """
+        Args:
+            temperature (float): 고정된 온도 값. 
+                                 값이 작을수록(0.1) 분포가 뾰족해져 Hard Negative에 집중하고,
+                                 값이 클수록(1.0) 분포가 부드러워짐.
+        """
+        super(CSARLoss, self).__init__()
+        
+        # Fixed Temperature
+        # 학습 가능한 파라미터를 제거하여 Gradient가 임베딩 업데이트에만 쓰이도록 함.
+        self.temperature = temperature
+
+    def forward(self, user_intensities, batch_item_intensities):
+        """
+        Args:
+            user_intensities (Tensor): [Batch, K] - Softplus 통과된 유저 벡터 (Intensity)
+            batch_item_intensities (Tensor): [Batch, K] - 배치 내 아이템들의 벡터 (Candidates)
+            
+        Returns:
+            loss (Tensor): Scalar Loss
+        """
+        # 1. Energy Score Calculation (Co-Support)
+        # In-Batch Negative Sampling: 배치 내 모든 유저 vs 배치 내 모든 아이템
+        # scores: [B, B] (i행 j열 = 유저 i와 아이템 j의 에너지)
+        # Softplus * Softplus 구조라 값이 매우 클 수 있음 (0 ~ inf)
+        energy_scores = torch.matmul(user_intensities, batch_item_intensities.t())
+        
+        # 3. Fixed Temperature Scaling
+        # Log로 변환된 에너지(비율)를 온도로 나누어 분포의 선명도(Sharpness) 조절
+        # Scale 학습을 제거하고 고정된 상수로 나눔
+        final_logits = energy_scores / self.temperature
+        
+        # 4. Cross Entropy (Standard InfoNCE)
+        # In-Batch 상황이므로 유저 i의 정답은 i번째 아이템임 (Diagonal is positive)
+        labels = torch.arange(len(user_intensities), device=user_intensities.device)
+        loss = F.cross_entropy(final_logits, labels)
+        
+        return loss
+
+class NormalizedSampledSoftmaxLoss(nn.Module):
+    """
+    Normalized Sampled Softmax Loss
+    
+    특징:
+    1. Z-Score Normalization: 입력된 에너지 점수의 분포를 정규화하여(Mean=0, Std=1) 학습 안정성을 극대화함.
+       - Temperature 의존성 문제를 해결하고, Gradient Explosion을 방지.
+    2. Sampled Softmax Correction: In-Batch Negative Sampling으로 인한 편향을 보정.
+       - Correction Term: log((N-1)/(B-1))을 Negative Logits에 더해줌으로써, 
+         마치 전체 아이템(N)에 대해 Softmax를 수행하는 것과 유사한 효과를 냄.
+    3. Fixed Temperature: 정규화된 분포에 맞춰 고정된 온도를 사용하여 학습의 일관성 유지.
+    """
+    def __init__(self, n_items, temperature=0.1):
+        """
+        Args:
+            n_items (int): 전체 아이템 수 (Sampled Softmax 보정용)
+            temperature (float): 고정된 온도 값.
+        """
+        super(NormalizedSampledSoftmaxLoss, self).__init__()
+        
+        self.n_items = n_items
+        self.temperature = temperature
+
+    def forward(self, user_intensities, batch_item_intensities):
+        """
+        Args:
+            user_intensities (Tensor): [Batch, K] - Softplus 통과된 유저 벡터
+            batch_item_intensities (Tensor): [Batch, K] - 배치 내 아이템 벡터
+        """
+        # 1. Energy Score Calculation
+        # scores: [B, B] (0 ~ inf)
+        energy_scores = torch.matmul(user_intensities, batch_item_intensities.t())
+        
+        # 2. Global Z-Score Normalization (Standardization)
+        # Final Score Matrix 자체를 정규화하여 스케일 문제를 원천 차단
+        mean = energy_scores.mean()
+        std = energy_scores.std()
+        energy_scores = (energy_scores - mean) / (std + 1e-9)
+        
+        # 3. Fixed Temperature Scaling
+        logits = energy_scores / self.temperature
+        
+        # 4. Sampled Softmax Correction (Consistent Estimation)
+        # In-Batch Negative들이 전체 Negative의 일부임을 감안하여 점수 보정
+        # 보정: Neg Logits += log((N-1)/(B-1))
+        if self.training:
+            batch_size = logits.size(0)
+            # 정확한 추정을 위해 (N-1)/(B-1) 사용 (User 본인의 Pos 제외)
+            correction = math.log((self.n_items - 1) / (batch_size - 1 + 1e-9))
+            
+            # Diagonal(Pos)은 건드리지 않고, Off-Diagonal(Neg)에만 보정항 추가
+            # Mask 생성: Identity Matrix (1 on diagonal)
+            mask = torch.eye(batch_size, device=logits.device, dtype=torch.bool)
+            
+            # Negatives(False in mask) apply correction
+            # In-place add to save memory
+            logits = logits + (~mask) * correction
+        
+        # 5. Cross Entropy
+        labels = torch.arange(len(user_intensities), device=user_intensities.device)
+        loss = F.cross_entropy(logits, labels)
+        
+        return loss
+
 
 
 class orthogonal_loss(nn.Module):

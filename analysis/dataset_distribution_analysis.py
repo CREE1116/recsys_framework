@@ -21,6 +21,12 @@ def run_dataset_distribution_analysis(dataset_config_path):
     with open(dataset_config_path, 'r') as f:
         config = yaml.safe_load(f)
     
+    # [FIX] DataLoader requires 'evaluation' and 'train' keys to be present
+    if 'evaluation' not in config:
+        config['evaluation'] = {'validation_method': 'uni99', 'final_method': 'full'}
+    if 'train' not in config:
+        config['train'] = {}
+    
     data_loader = DataLoader(config)
     dataset_name = config['dataset_name']
     
@@ -97,6 +103,9 @@ if __name__ == '__main__':
     DATASETS_TO_ANALYZE = [
         'configs/dataset/ml1m.yaml',
         'configs/dataset/ml100k.yaml',
+        'configs/dataset/amazon_books.yaml',
+        'configs/dataset/ml20m.yaml',
+        'configs/dataset/amazon_music.yaml',
     ]
 
     for d_config in DATASETS_TO_ANALYZE:

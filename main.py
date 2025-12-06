@@ -43,7 +43,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Recommendation System Framework")
     parser.add_argument('--dataset_config', type=str, default='configs/dataset/ml100k.yaml',
                         help='Path to the dataset configuration file.')
-    parser.add_argument('--model_config', type=str, default='configs/model/csar.yaml',
+    parser.add_argument('--model_config', type=str, default='configs/model/csar/csar.yaml',
                         help='Path to the model configuration file.')
     args = parser.parse_args()
 
@@ -62,7 +62,7 @@ if __name__ == '__main__':
             config[key] = value
 
     # MPS 장치 사용 설정
-    if config.get('device') == 'auto':
+    if config.get('device', 'auto') == 'auto':
         if torch.backends.mps.is_available():
             print("MPS is available. Using MPS device.")
             config['device'] = 'mps'

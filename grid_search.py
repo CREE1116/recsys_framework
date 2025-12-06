@@ -80,7 +80,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Hyperparameter Grid Search for Recommendation System")
     parser.add_argument('--dataset_config', type=str, default='configs/dataset/ml100k.yaml',
                         help='Path to the dataset configuration file.')
-    parser.add_argument('--model_config', type=str, default='configs/model/csar.yaml',
+    parser.add_argument('--model_config', type=str, default='configs/model/csar/csar.yaml',
                         help='Path to the model configuration file for grid search.')
     args = parser.parse_args()
 

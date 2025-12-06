@@ -97,6 +97,68 @@ def load_item_metadata(dataset_name, data_path):
         movies_df['genres'] = movies_df.apply(get_genres, axis=1, genre_cols=genre_cols)
         movies_df.set_index('item_id', inplace=True)
 
+    elif 'amazon' in dataset_name or 'Books' in dataset_name:
+        # Amazon Metadata (JSON format)
+        # Expected file: meta_Books.json (or similar depending on dataset name)
+        # Standard format: {'asin': '...', 'title': '...', 'categories': [['Books', ...]], ...}
+        
+        meta_filename = 'meta_Books.json' # Default
+        if 'Books' in dataset_name: meta_filename = 'meta_Books.json'
+        
+        metadata_path = os.path.join(os.path.dirname(data_path), meta_filename)
+        
+        if not os.path.exists(metadata_path):
+            # Try .gz
+            metadata_path_gz = metadata_path + '.gz'
+            if os.path.exists(metadata_path_gz):
+                metadata_path = metadata_path_gz
+            else:
+                 print(f"[Warning] Amazon metadata file not found at: {metadata_path} (or .gz)")
+                 return pd.DataFrame()
+
+        print(f"Loading Amazon metadata from: {metadata_path}")
+        try:
+            # lines=True for JSON Lines format
+            movies_df = pd.read_json(metadata_path, lines=True)
+            
+            # Standardization
+            if 'asin' in movies_df.columns:
+                movies_df.rename(columns={'asin': 'item_id'}, inplace=True)
+            
+            # Categories to Genres
+            # Amazon categories are often: [['Books', 'Fiction', ...], ['Books', ...]]
+            # We take the unique set of sub-categories
+            if 'categories' in movies_df.columns:
+                def process_amazon_categories(cats):
+                    if not isinstance(cats, list) or not cats: return []
+                    # Flatten list of lists and remove 'Books'
+                    flat = set()
+                    for c_list in cats:
+                        for c in c_list:
+                             if c != 'Books': flat.add(c)
+                    return list(flat)
+                movies_df['genres'] = movies_df['categories'].apply(process_amazon_categories)
+            else:
+                movies_df['genres'] = [[] for _ in range(len(movies_df))]
+
+            # [NEW] Brand (Author/Publisher)
+            if 'brand' in movies_df.columns:
+                movies_df['brand'] = movies_df['brand'].fillna('')
+
+            # [NEW] Description (for keywords)
+            if 'description' in movies_df.columns:
+                def process_description(desc):
+                    if isinstance(desc, list): return ' '.join(desc)
+                    if isinstance(desc, str): return desc
+                    return ''
+                movies_df['description'] = movies_df['description'].apply(process_description)
+
+            movies_df.set_index('item_id', inplace=True)
+            
+        except Exception as e:
+             print(f"[Error] Failed to load Amazon metadata: {e}")
+             return pd.DataFrame()
+
     else:
         # 다른 데이터셋에 대한 메타데이터 로딩 로직 추가 가능
         print(f"[Warning] Metadata loading not implemented for '{dataset_name}'. Returning empty DataFrame.")

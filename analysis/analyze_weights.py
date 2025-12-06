@@ -45,11 +45,17 @@ def analyze_csar_interests(experiment_dir, output_file=None):
     print("Model loaded successfully.")
 
     # 4. Interest Key (self.C) 임베딩 추출
-    if not hasattr(model, 'C'):
-        print("Error: Could not find interest keys ('C' attribute) in the model.")
+    # 4. Interest Key 추출
+    # 모델 구조에 따라 저장 위치가 다를 수 있음
+    if hasattr(model, 'attention_layer') and hasattr(model.attention_layer, 'interest_keys'):
+        interest_keys_tensor = model.attention_layer.interest_keys
+    elif hasattr(model, 'C') and hasattr(model.C, 'weight'):
+        interest_keys_tensor = model.C.weight
+    else:
+        print("Error: Could not find interest keys (checked 'attention_layer.interest_keys' and 'C.weight').")
         return
         
-    interest_keys = model.C.weight.detach().cpu().numpy()
+    interest_keys = interest_keys_tensor.detach().cpu().numpy()
     n_keys, dim = interest_keys.shape
     print(f"Extracted {n_keys} interest keys with dimension {dim}.")
 

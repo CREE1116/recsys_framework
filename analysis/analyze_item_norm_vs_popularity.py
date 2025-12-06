@@ -139,7 +139,7 @@ def analyze_nonlinear_transition(exp_config):
 
 if __name__ == '__main__':
     EXPERIMENTS = [
-        {'run_folder_path': 'trained_model//amazon_music/csar-bpr__negative_sampling_strategy=uniform'}
+        {'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/ml-1m/csar-sampled'}
     ]
     for exp in EXPERIMENTS:
         if os.path.exists(exp['run_folder_path']):

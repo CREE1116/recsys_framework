@@ -1,0 +1,38 @@
+model:
+  name: "csar"
+  embedding_dim: 64
+  orth_loss_weight: 0.1
+  num_interests: [2, 4, 8, 16, 32, 64]
+  scale: True
+
+# 학습 설정
+train:
+  epochs: 500
+  batch_size: 1024
+  lr: 0.001
+  l2_regularization: 0.0001
+  optimizer: "adamw"
+  loss_type: "pointwise" # 'pairwise', 'pointwise'
+  num_negatives: 1 # For pairwise losses
+  early_stop_patience: 20
+
+# 평가 설정
+evaluation:
+  validation_method: "uni99" # 검증 시 평가 방법
+  final_method: "full" # 최종 평가 시 평가 방법
+  metrics: [
+      "NDCG",
+      "HitRate",
+      "Coverage",
+      "GiniIndex",
+      "LongTailCoverage",
+      "Entropy",
+      "ILD",
+    ] # 평가할 메트릭 리스트
+  top_k: [5, 10, 20] # 평가할 K 값 리스트
+  main_metric: "NDCG" # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭
+  main_metric_k: 20 # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭의 K 값
+  long_tail_percent: 0.2 # 롱테일 아이템 정의를 위한 비율 (인기도 하위 N%)
+
+# 실행 환경 설정
+device: "auto"

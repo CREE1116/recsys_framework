@@ -1,4 +1,5 @@
 import os
+import argparse
 import re
 import sys
 import torch
@@ -12,32 +13,53 @@ from scipy.stats import chi2_contingency, pearsonr
 # 프로젝트 경로 설정
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from analysis.utils import load_model_from_run, get_analysis_output_path, AnalysisReport
+from analysis.utils import load_model_from_run, get_analysis_output_path, AnalysisReport, load_item_metadata
 
 
 # --------------------------------------------------------------------------------
 # 1. 데이터 로드 함수 (증강된 메타데이터 로드용)
 # --------------------------------------------------------------------------------
-def load_augmented_metadata(data_dir):
-    """ 크롤링된 movies_augmented.csv 파일을 로드합니다. (경로 에러 수정판) """
+def load_augmented_metadata(data_dir, dataset_name='ml-1m'):
+    """ 
+    우선순위:
+    1. movies_augmented.csv (Rich Metadata for ML-1M)
+    2. analysis.utils.load_item_metadata (Generic/Amazon support)
+    """
     
     # [핵심 수정] data_dir가 파일(ratings.dat)을 가리키면 부모 폴더 경로로 보정
     if os.path.isfile(data_dir):
         data_dir = os.path.dirname(data_dir)
 
-    path = os.path.join(data_dir, 'movies_augmented.csv')
+    # 1. Try Augmented Metadata (Custom for ML-1M)
+    aug_path = os.path.join(data_dir, 'movies_augmented.csv')
+    if os.path.exists(aug_path):
+        print(f"Loading augmented metadata from {aug_path}")
+        df = pd.read_csv(aug_path)
+        df = df.fillna('')
+        return df.set_index('item_id')
     
-    if not os.path.exists(path):
-        print(f"[Warning] Augmented metadata not found at {path}. Using basic metadata.")
-        # 없으면 기본 movies.dat 로드 (기존 로직 fallback)
-        # 인코딩 에러 방지를 위해 latin-1 사용
-        return pd.read_csv(os.path.join(data_dir, 'movies.dat'), sep='::', engine='python', 
-                           names=['item_id', 'title', 'genres'], encoding='latin-1').set_index('item_id')
+    # 2. Fallback to Standard/Amazon Metadata
+    print(f"[Info] Augmented metadata not found. Falling back to standard metadata for '{dataset_name}'.")
     
-    df = pd.read_csv(path)
-    # 전처리: NaN 채우기
-    df = df.fillna('')
-    return df.set_index('item_id')
+    # Re-construct file path logic if needed, but utils.load_item_metadata handles generic paths well
+    # We pass the directory or file path as passed to this function (which originates from config['data_path'])
+    # utils.load_item_metadata expects 'data_path' (usually the interaction file), 
+    # but here we might have a dir. Let's rely on utils logic which handles dirname internally.
+    # However, utils.load_item_metadata expects the FULL path to interaction file usually.
+    # Let's pass 'data_dir' joined with a dummy file if needed, or rely on it.
+    # Actually utils.load_item_metadata does `os.path.dirname(data_path)` internally.
+    # So if we pass a directory, dirname(directory) might be parent.
+    # To be safe, let's pass a dummy file path inside this dir so dirname works, 
+    # OR better: call load_item_metadata with a constructed path that works.
+    
+    # Actually, simpler: load_item_metadata is robust.
+    # But wait, config['data_path'] is usually '.../ratings.dat'. 
+    # Here `data_dir` is already `dirname`.
+    # Let's just pass `os.path.join(data_dir, 'dummy_file')` so utils can strip it.
+    # Or just fix utils to handle directories? No, don't touch utils now if possible.
+    
+    dummy_path = os.path.join(data_dir, 'dummy_interaction_file.dat')
+    return load_item_metadata(dataset_name, dummy_path)
 
 # --------------------------------------------------------------------------------
 # 2. 핵심 분석 함수 (장르/연도 + 감독/배우/키워드 추가)
@@ -65,7 +87,7 @@ def generate_deep_interest_report(report, interest_k, item_interests, inv_item_m
     
     # Top-N 아이템들의 메타데이터 수집
     current_features = {
-        'genres': [], 'decades': [], 'directors': [], 'cast': [], 'keywords': []
+        'genres': [], 'decades': [], 'directors': [], 'cast': [], 'keywords': [], 'brands': [] # [NEW] Brand (Author)
     }
 
     for i, model_item_id in enumerate(top_indices.cpu().numpy()):
@@ -77,7 +99,7 @@ def generate_deep_interest_report(report, interest_k, item_interests, inv_item_m
             row = metadata_df.loc[original_item_id]
             
             # 제목 정제
-            title = row['title']
+            title = str(row.get('title', ''))
             title_cleaned = re.sub(r'\s*\(\d{4}\)', '', title).strip()
             
             # 연도/연대 처리
@@ -91,28 +113,47 @@ def generate_deep_interest_report(report, interest_k, item_interests, inv_item_m
             genres = row['genres'].split('|') if row['genres'] else []
             current_features['genres'].extend(genres)
 
-            # [추가] 감독 처리
+            # [Director] or [Brand/Author] (for Books)
             director = row.get('director', '')
+            brand = row.get('brand', '') # [NEW]
+            
             if director: current_features['directors'].append(director)
+            if brand: current_features['brands'].append(brand)
 
             # [추가] 배우 처리
             cast = row.get('cast', '').split('|') if row.get('cast') else []
             current_features['cast'].extend(cast)
 
-            # [추가] 키워드 처리
+            # [추가] 키워드 처리 (Movies: keywords column / Books: extract from description?)
             kws = row.get('keywords', '').split('|') if row.get('keywords') else []
+            
+            # Fallback for books: simple keyword extraction from description/title if keywords empty
+            if not kws and (row.get('description') or title_cleaned):
+                text = (str(row.get('description', '')) + ' ' + title_cleaned).lower()
+                # Simple extraction: words > 4 chars, not common stop words (very basic)
+                words = re.findall(r'\b[a-z]{5,}\b', text)
+                # Filter out some very common words if needed (optional)
+                kws = list(set(words))
+                
             current_features['keywords'].extend(kws)
 
             top_items_info.append({
                 'Rank': i + 1, 'Title': title_cleaned, 'Year': year, 'Genres': ', '.join(genres[:2]),
-                'Director': director, 'Weight': f"{top_weights[i].item():.4f}"
+                'Director/Author': director if director else brand, 
+                'Weight': f"{top_weights[i].item():.4f}"
             })
 
     # 테이블 출력
     if top_items_info:
         df_show = pd.DataFrame(top_items_info)
         report.add_text(f"**Top {top_n} Items**")
-        report.add_table(df_show[['Rank', 'Title', 'Year', 'Genres', 'Director', 'Weight']]) # 감독 컬럼 추가
+        
+        # Dynamic column selection
+        cols_to_show = ['Rank', 'Title', 'Year', 'Genres', 'Weight']
+        if 'Director/Author' in df_show.columns and df_show['Director/Author'].any():
+            cols_to_show.insert(4, 'Director/Author')
+            
+        report.add_table(df_show[cols_to_show])
 
     # 인기도 요약
     if top_item_pops:
@@ -179,6 +220,9 @@ def generate_deep_interest_report(report, interest_k, item_interests, inv_item_m
     # (2) 감독 (Director) - 핵심!
     top_director = run_test(current_features['directors'], global_stats['directors'], "Directors", min_count=2)
     
+    # [NEW] Brand (Author)
+    top_brand = run_test(current_features['brands'], global_stats['brands'], "Authors/Brands", min_count=2)
+    
     # (3) 배우 (Cast)
     top_cast = run_test(current_features['cast'], global_stats['cast'], "Cast", min_count=3)
     
@@ -193,6 +237,7 @@ def generate_deep_interest_report(report, interest_k, item_interests, inv_item_m
     
     points = []
     if top_director: points.append(f"films by **{top_director}**")
+    if top_brand: points.append(f"books by **{top_brand}**") # [NEW]
     if top_genre: points.append(f"**{top_genre}** genre")
     if top_decade: points.append(f"from the **{top_decade}s**")
     if top_keyword: points.append(f"related to **'{top_keyword}'**")
@@ -217,28 +262,48 @@ def run_full_analysis(exp_config):
     if not model: return
 
     # 데이터 로드 (증강된 데이터)
-    metadata_df = load_augmented_metadata(config['data_path'])
+    metadata_df = load_augmented_metadata(config['data_path'], config['dataset_name'])
     inv_item_map = {v: k for k, v in data_loader.item_map.items()}
+    
+    # [Optimization] Filter metadata to only items in the dataset
+    # metadata_df index is 'item_id' (original string ID)
+    # inv_item_map.values() contains original user/item IDs? No, inv_item_map[model_id] = original_id
+    valid_original_ids = set(inv_item_map.values())
+    
+    # Filter metadata (Intersection of metadata and dataset items)
+    original_len = len(metadata_df)
+    metadata_df = metadata_df[metadata_df.index.isin(valid_original_ids)]
+    print(f"[Optimization] Filtered metadata from {original_len} to {len(metadata_df)} items (matching dataset).")
+    
+    # Deduplicate metadata index to prevent duplicate lookups
+    if metadata_df.index.duplicated().any():
+        print(f"[Info] Deduplicating metadata index. Found {metadata_df.index.duplicated().sum()} duplicates.")
+        metadata_df = metadata_df[~metadata_df.index.duplicated(keep='first')]
     
     # 전역 통계 계산 (비교군 생성을 위해 미리 한 번 훑기)
     print("Calculating global statistics...")
     global_stats = {
         'item_counts': data_loader.df['item_id'].value_counts().to_dict(),
         'genres': Counter(), 'decades': Counter(), 
-        'directors': Counter(), 'cast': Counter(), 'keywords': Counter()
+        'directors': Counter(), 'cast': Counter(), 'keywords': Counter(), 'brands': Counter() # [NEW]
     }
     
     for idx, row in metadata_df.iterrows():
         # Genre
-        if row['genres']: global_stats['genres'].update(row['genres'].split('|'))
+        if row.get('genres'): global_stats['genres'].update(row['genres'].split('|'))
         # Decade
-        match = re.search(r'\((\d{4})\)', str(row['title']))
+        # Decade
+        match = re.search(r'\((\d{4})\)', str(row.get('title', '')))
         if match: global_stats['decades'].update([int(np.floor(int(match.group(1))/10)*10)])
         # Director
         if row.get('director'): global_stats['directors'].update([row['director']])
+        # Brand (Author) [NEW]
+        if row.get('brand'): global_stats['brands'].update([row['brand']])
         # Cast
         if row.get('cast'): global_stats['cast'].update(str(row['cast']).split('|'))
-        # Keywords
+        # Keywords (Fallback to description logic handled in generating report, but for global stats we stick to explicit keywords if any)
+        # Note: If we use description extraction globally, it would be too slow here. 
+        # So we only use explicit keywords for global stats, or accept that 'significance' test for description-keywords is approximate (using explicit only as background).
         if row.get('keywords'): global_stats['keywords'].update(str(row['keywords']).split('|'))
 
     # 리포트 생성
@@ -307,7 +372,20 @@ def run_full_analysis(exp_config):
     print(f"Analysis complete. Report saved to {output_path}")
 
 if __name__ == '__main__':
-    EXPERIMENTS = [{'run_folder_path': 'trained_model/ml-1m/csar-bpr__negative_sampling_strategy=popularity'}]
-    for exp in EXPERIMENTS:
-        if os.path.exists(exp['run_folder_path']): run_full_analysis(exp)
-        else: print(f"[Error] Path not found: {exp['run_folder_path']}")
+    parser = argparse.ArgumentParser(description="Run Deep Semantic Analysis on CSAR model interests.")
+    parser.add_argument('--exp_dir', type=str, help='Path to the experiment directory.')
+    
+    args = parser.parse_args()
+
+    if args.exp_dir:
+        # Run specific experiment from CLI
+        if os.path.exists(args.exp_dir):
+            run_full_analysis({'run_folder_path': args.exp_dir})
+        else:
+            print(f"[Error] Path not found: {args.exp_dir}")
+    else:
+        # Default behavior (Hardcoded list - optional, kept for backward compat)
+        EXPERIMENTS = [{'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar'}]
+        for exp in EXPERIMENTS:
+            if os.path.exists(exp['run_folder_path']): run_full_analysis(exp)
+            else: print(f"[Error] Path not found: {exp['run_folder_path']}")

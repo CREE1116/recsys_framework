@@ -46,58 +46,84 @@ def analyze_soft_cluster_balance(exp_config):
     # 각 관심사가 전체 아이템 공간에서 차지하는 "총 에너지(Total Energy)"
     interest_volumes = torch.sum(item_interests, dim=0).numpy() # (Num_Interests,)
     
-    # 4. 지표 계산
-    num_interests = model.num_interests
+    # 4. Hard Assignment Calculation (User Request)
+    num_interests = model.num_interests  # Moved up
+    
+    # 아이템별로 가장 강한 관심사(argmax)를 카운트
+    # (Num_Items,)
+    hard_assignments = torch.argmax(item_interests, dim=1).numpy()
+    hard_counts = np.bincount(hard_assignments, minlength=num_interests)
+    
+    # 5. 지표 계산
     total_volume = np.sum(interest_volumes)
+    total_items = len(hard_assignments)
     
     # 정규화된 분포 (Probability Distribution)
     interest_probs = interest_volumes / total_volume
     
-    gini = calculate_gini(interest_volumes)
-    entropy = calculate_entropy(interest_volumes)
+    gini_soft = calculate_gini(interest_volumes)
+    entropy_soft = calculate_entropy(interest_volumes)
+    
+    gini_hard = calculate_gini(hard_counts)
+    entropy_hard = calculate_entropy(hard_counts)
+    
     max_entropy = np.log2(num_interests)
-    utilization_rate = entropy / max_entropy * 100
+    utilization_rate = entropy_soft / max_entropy * 100
 
     print(f"\n[Soft Cluster Balance Stats]")
     print(f"- Total Weight Volume: {total_volume:.2f}")
-    print(f"- Gini Index (Soft): {gini:.4f}")
-    print(f"- Entropy (Soft): {entropy:.4f} (Max: {max_entropy:.4f})")
+    print(f"- Gini Index (Soft): {gini_soft:.4f}")
+    print(f"- Entropy (Soft): {entropy_soft:.4f} (Max: {max_entropy:.4f})")
     print(f"- Soft Utilization: {utilization_rate:.2f}%")
     print(f"- Min Volume: {np.min(interest_volumes):.2f}")
     print(f"- Max Volume: {np.max(interest_volumes):.2f}")
+    
+    print(f"\n[Hard Cluster Balance Stats]")
+    print(f"- Total Items: {total_items}")
+    print(f"- Gini Index (Hard): {gini_hard:.4f}")
+    print(f"- Entropy (Hard): {entropy_hard:.4f}")
+    print(f"- Min Count: {np.min(hard_counts)}")
+    print(f"- Max Count: {np.max(hard_counts)}")
+    print(f"- Empty Clusters: {np.sum(hard_counts == 0)}")
 
-    # 5. 시각화 (Bar Chart)
+    # 6. 시각화 (Dual Axis Chart)
     output_path = get_analysis_output_path(config['dataset_name'], os.path.basename(run_folder_path))
-    save_file = os.path.join(output_path, "soft_cluster_balance.png")
+    save_file = os.path.join(output_path, "soft_vs_hard_balance.png")
     
-    plt.figure(figsize=(12, 6))
+    fig, ax1 = plt.subplots(figsize=(14, 7))
     
-    # 막대 그래프 (Soft Volume)
-    colors = plt.cm.viridis(interest_probs / np.max(interest_probs)) # 비중에 따라 색상 진하게
-    bars = plt.bar(range(num_interests), interest_volumes, color=colors, edgecolor='black', alpha=0.8)
+    # Axis 1: Soft Volume (Bar)
+    colors = plt.cm.viridis(interest_probs / np.max(interest_probs))
+    bars = ax1.bar(range(num_interests), interest_volumes, color=colors, alpha=0.7, label='Soft Volume (Sum)')
     
-    # 평균선
-    avg_vol = np.mean(interest_volumes)
-    plt.axhline(y=avg_vol, color='red', linestyle='--', label=f'Average Volume ({avg_vol:.1f})')
+    ax1.set_xlabel("Interest Key ID", fontsize=12)
+    ax1.set_ylabel("Soft Volume (Total Weight)", fontsize=12, color='tab:blue')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+    ax1.set_title(f"Interest Balance: Soft Sum vs Hard Count\n(Soft Gini: {gini_soft:.2f}, Hard Gini: {gini_hard:.2f})", fontsize=14)
+    ax1.grid(axis='y', linestyle='--', alpha=0.3)
+
+    # Axis 2: Hard Count (Line/Marker)
+    ax2 = ax1.twinx()
+    ax2.plot(range(num_interests), hard_counts, color='tab:red', marker='o', linestyle='-', linewidth=2, markersize=6, label='Hard Count (Items)')
+    ax2.set_ylabel("Hard Count (Num Items)", fontsize=12, color='tab:red')
+    ax2.tick_params(axis='y', labelcolor='tab:red')
     
-    plt.title(f"Soft Interest Distribution (Total Weight Sum)\n(Entropy: {entropy:.2f}, Gini: {gini:.2f})", fontsize=14)
-    plt.xlabel("Interest Key ID", fontsize=12)
-    plt.ylabel("Total Attention Weight (Sum)", fontsize=12)
-    plt.xticks(range(num_interests))
-    plt.legend()
-    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    # 레전드 통합
+    lines, labels = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines + lines2, labels + labels2, loc='upper right')
     
-    # 비율 표시
-    for bar, prob in zip(bars, interest_probs):
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height,
-                 f'{prob*100:.1f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    # X축 틱 (너무 많으면 생략)
+    if num_interests <= 50:
+        ax1.set_xticks(range(num_interests))
+    else:
+        ax1.set_xticks(range(0, num_interests, 5))
 
     plt.tight_layout()
     plt.savefig(save_file, dpi=300)
     print(f"Saved plot to: {save_file}")
 
 if __name__ == '__main__':
-    EXPERIMENTS = [{'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar-contrastive__negative_sampling_strategy=uniform'}]
+    EXPERIMENTS = [{'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/ml-1m/csar-bpr-ce__temperature=0.8'}]
     for exp in EXPERIMENTS:
         if os.path.exists(exp['run_folder_path']): analyze_soft_cluster_balance(exp)
