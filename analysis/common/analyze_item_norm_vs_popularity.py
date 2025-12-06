@@ -9,7 +9,7 @@ from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 
 # 프로젝트 경로 설정
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from analysis.utils import load_model_from_run, get_analysis_output_path
 
@@ -25,6 +25,14 @@ def analyze_nonlinear_transition(exp_config):
     # 1. 모델 로드
     model, data_loader, config = load_model_from_run(run_folder_path)
     if not model: return
+
+    model_name = config['model']['name']
+    
+    # [Check] 이 스크립트는 임베딩의 Norm과 Popularity 관계를 보는 것이 핵심이므로,
+    # 임베딩 기반인 LightGCN과 CSAR 계열에서만 유효합니다.
+    if 'LightGCN' not in model_name and 'CSAR' not in model_name:
+        print(f"[Warning] This script is optimized for LightGCN or CSAR models.")
+        print(f"Current model: {model_name}. Use with caution.")
 
     # 2. 데이터 준비
     item_counts = data_loader.df['item_id'].value_counts()

@@ -12,7 +12,7 @@ from scipy.stats import chi2_contingency, pearsonr
 import argparse
 
 # 프로젝트의 src 및 analysis 폴더를 python 경로에 추가
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from analysis.utils import (
     load_item_metadata, 

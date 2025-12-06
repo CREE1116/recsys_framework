@@ -84,13 +84,25 @@ train:
 
 ---
 
-## 🛠 유틸리티 도구 (Utility Scripts)
+## 🛠 유틸리티 및 분석 도구 (Utility & Analysis)
 
-데이터셋 분석 및 전처리를 돕기 위한 스크립트들이 `util/` 폴더에 준비되어 있습니다.
+### 1. 데이터셋 유틸리티 (`util/`)
 
-- **`analyze_dataset.py`**: 데이터셋의 밀도(Density), 희소성(Sparsity), 롱테일 분포(Gini Index, Entropy)를 상세하게 분석하여 JSON/TXT로 리포팅합니다.
-- **`create_subset.py`**: 대용량 데이터셋에서 지정된 비율(%)만큼 랜덤 샘플링하여, 개발용 서브셋 데이터를 빠르게 생성합니다. (Line-based / User-based 지원)
-- **`detect_delimiter.py`**: CSV/TSV 파일의 구분자를 자동으로 감지합니다.
+- **`analyze_dataset.py`**: 데이터셋의 밀도, 희소성, 롱테일 분포(Gini, Entropy) 분석 리포트 생성.
+- **`create_subset.py`**: 대용량 데이터셋에서 가볍게 실험할 수 있는 서브셋 생성.
+- **`detect_delimiter.py`**: CSV/TSV 파일 구분자 자동 감지.
+
+### 2. 실험 결과 분석 (`analysis/`)
+
+실험 결과를 심층 분석하기 위한 스크립트가 기능별로 분류되어 있습니다.
+
+- **`analysis/common/` (공통 분석)**
+  - `plot_losses.py`: 학습 Loss 변화 곡선 시각화.
+  - `visualize_embeddings.py`: 기본 t-SNE 임베딩 시각화.
+  - `long_tail_model_analysis.py`: 모델별 Long-tail 아이템 추천 성능 비교.
+- **`analysis/csar/` (CSAR 전용 분석)**
+  - `visualize_CSAR_embedding.py`: Interest Key와 아이템 임베딩의 관계를 시각화.
+  - `analyze_interests.py`: 학습된 관심사 벡터(Topic)의 의미 분석.
 
 ---
 

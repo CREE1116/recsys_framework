@@ -11,7 +11,7 @@ from collections import Counter
 from scipy.stats import chi2_contingency, pearsonr
 
 # 프로젝트 경로 설정
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from analysis.utils import load_model_from_run, get_analysis_output_path, AnalysisReport, load_item_metadata
 

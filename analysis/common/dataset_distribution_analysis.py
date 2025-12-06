@@ -7,7 +7,7 @@ import seaborn as sns
 import sys
 
 # 프로젝트의 src 및 analysis 폴더를 python 경로에 추가
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.data_loader import DataLoader
 from analysis.utils import get_analysis_output_path, AnalysisReport

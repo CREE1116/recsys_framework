@@ -6,7 +6,7 @@ import numpy as np
 import sys
 
 # 프로젝트 루트 경로를 sys.path에 추가
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 def plot_losses(experiment_dir, output_dir=None):
     """

@@ -5,26 +5,6 @@
 
 ---
 
-```mermaid
-graph TD
-    Core["<b>Core: Co-Support Attention Layer</b><br>Embedding -> Interest Energy (Non-negative)"] --> Base
-
-    subgraph "Objective Function Strategy"
-        Base{"<b>Model Architecture</b>"}
-        Base -->|Pure Interest| Pure["<b>CSAR</b><br>Score = Interest Interaction"]
-        Base -->|Residual Interest| Res["<b>CSAR_R</b><br>Score = MF + Interest Interaction"]
-    end
-
-    subgraph "Learning Strategy (Loss)"
-        Pure -->|Pointwise| CSAR_Point["<b>CSAR</b><br>(NLL)"]
-        Pure -->|Pairwise Ranking| BPR["<b>CSAR_BPR</b><br>(BPR + Ortho Loss)"]
-        Pure -->|Listwise / Distribution| Sampled["<b>CSAR_Sampled</b><br>(Sampled Softmax + LogQ Correction)"]
-
-        Res -->|Pointwise| CSAR_R_Point["<b>CSAR_R</b><br>(NLL)"]
-        Res -->|Pairwise Ranking| RBPR["<b>CSAR_R_BPR</b><br>(BPR)"]
-    end
-```
-
 ## 1. 핵심 레이어 (Core Layer)
 
 ### **CoSupportAttentionLayer**

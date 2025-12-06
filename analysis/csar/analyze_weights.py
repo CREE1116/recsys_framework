@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import sys
 
 # 프로젝트 루트 경로를 sys.path에 추가
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.data_loader import DataLoader
 from src.models import get_model
