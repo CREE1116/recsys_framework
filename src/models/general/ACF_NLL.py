@@ -81,10 +81,10 @@ class ACF_BPR(BaseModel):
     def __init__(self, config, data_loader):
         super(ACF_BPR, self).__init__(config, data_loader)
         
-        self.embedding_dim = self.config['model']['embedding_dim']
-        self.num_anchors = self.config['model']['num_anchors']  # K
-        self.lambda_exc = self.config['model'].get('lambda_exclusiveness', 0.01)
-        self.lambda_inc = self.config['model'].get('lambda_inclusiveness', 0.01)
+        self.embedding_dim = int(self.config['model']['embedding_dim'])
+        self.num_anchors = int(self.config['model']['num_anchors'])  # K
+        self.lambda_exc = float(self.config['model'].get('lambda_exclusiveness', 0.01))
+        self.lambda_inc = float(self.config['model'].get('lambda_inclusiveness', 0.01))
         
         # 원본 임베딩 (raw embeddings)
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
@@ -173,9 +173,6 @@ class ACF_BPR(BaseModel):
         
         # 로깅용 파라미터
         params_to_log = {
-            'bpr_loss': bpr_loss.item(),
-            'exclusiveness_loss': exc_loss.item(),
-            'inclusiveness_loss': inc_loss.item(),
             'avg_coeff_entropy': -(item_coeffs * torch.log(item_coeffs + 1e-10)).sum(dim=-1).mean().item()
         }
         
@@ -194,10 +191,10 @@ class ACF_NLL(BaseModel):
     def __init__(self, config, data_loader):
         super(ACF_NLL, self).__init__(config, data_loader)
         
-        self.embedding_dim = self.config['model']['embedding_dim']
-        self.num_anchors = self.config['model']['num_anchors']
-        self.lambda_exc = self.config['model'].get('lambda_exclusiveness', 0.01)
-        self.lambda_inc = self.config['model'].get('lambda_inclusiveness', 0.01)
+        self.embedding_dim = int(self.config['model']['embedding_dim'])
+        self.num_anchors = int(self.config['model']['num_anchors'])
+        self.lambda_exc = float(self.config['model'].get('lambda_exclusiveness', 0.01))
+        self.lambda_inc = float(self.config['model'].get('lambda_inclusiveness', 0.01))
         
         # 원본 임베딩
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
@@ -271,9 +268,6 @@ class ACF_NLL(BaseModel):
         
         # 로깅
         params_to_log = {
-            'nll_loss': nll_loss.item(),
-            'exclusiveness_loss': exc_loss.item(),
-            'inclusiveness_loss': inc_loss.item(),
             'avg_anchor_usage': all_item_coeff.mean(dim=0).std().item()  # 앵커 사용 불균형
         }
         

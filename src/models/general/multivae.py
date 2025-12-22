@@ -55,42 +55,65 @@ class MultiVAE(BaseModel):
             return mu
 
     def forward(self, users):
-        # Multi-VAE operates on the FULL user history vector (Multinomial)
-        # We need to construct the bag-of-words vector for the batch of users
-        
-        # 1. Construct input vector x (batch_size, n_items)
         x = self._get_user_history_matrix(users)
+        h = F.normalize(x, p=2, dim=1)
         
-        # 2. Encode
-        h = F.normalize(x, p=2, dim=1) # L2 Normalization is common preprocessing for VAE inputs
         if self.training:
-            h = F.dropout(h, p=self.dropout_rate, training=self.training)
+            h = F.dropout(h, p=self.dropout_rate, training=True)
             
+        # [DEBUG] Leakage Check (Only during eval)
+        if not self.training:
+            # Check if input 'x' contains any items from test set for these users
+            # This is expensive, so only do it once or for first batch
+            if not hasattr(self, '_leakage_checked'):
+                self._leakage_checked = True
+                test_df = self.data_loader.test_df
+                # Create a lookup for test items: user_id -> test_item_id
+                test_items_map = test_df.set_index('user_id')['item_id'].to_dict()
+                
+                users_np = users.cpu().numpy()
+                leak_count = 0
+                for i, u_id in enumerate(users_np):
+                    if u_id in test_items_map:
+                        test_item = test_items_map[u_id]
+                        if x[i, test_item] > 0:
+                            leak_count += 1
+                            print(f"[CRITICAL WARNING] Data Leakage detected for user {u_id}: Test item {test_item} is in input!")
+                
+                if leak_count > 0:
+                     print(f"[CRITICAL] Total leaked users in batch: {leak_count}")
+                else:
+                     print("[INFO] No data leakage detected in MultiVAE input (checked first batch).")
+
         mu_logvar = self.encoder(h)
         mu, logvar = torch.chunk(mu_logvar, 2, dim=1)
         
-        # 3. Sample z
-        z = self.reparameterize(mu, logvar)
-        
-        # 4. Decode
-        logits = self.decoder(z)
-        
-        return logits, mu, logvar
+        if self.training:
+            z = self.reparameterize(mu, logvar)
+            logits = self.decoder(z)
+            return logits, mu, logvar
+        else:
+            z = mu 
+            logits = self.decoder(z)
+            return logits
 
     def _get_user_history_matrix(self, users):
         batch_size = users.size(0)
         x = torch.zeros(batch_size, self.n_items, device=users.device)
-        users_list = users.cpu().numpy()
         for i, u_id in enumerate(users_list):
-            hist_items = list(self.data_loader.user_history.get(u_id, []))
+            # Ensure u_id is a native python int for dictionary lookup
+            uid_key = int(u_id)
+            hist_items = list(self.data_loader.train_user_history.get(uid_key, []))
             x[i, hist_items] = 1.0
         return x
 
     def predict_for_pairs(self, user_ids, item_ids):
         # Evaluation helper
-        logits, _, _ = self.forward(user_ids)
-        # We generally use the logits (or softmax) as scores. 
-        # Since standard ranking metrics are rank-invariant, logits are fine.
+        out = self.forward(user_ids)
+        if isinstance(out, tuple):
+            logits = out[0]
+        else:
+            logits = out
         
         scores = logits[torch.arange(len(user_ids)), item_ids]
         return scores
@@ -123,41 +146,17 @@ class MultiVAE(BaseModel):
         self.update_count += 1
         anneal = min(self.anneal_cap, 1. * self.update_count / self.total_anneal_steps)
         
-        total_loss = nll_loss + anneal * kl_loss
-        
         params_to_log = {
             'nll': nll_loss.item(),
             'kl': kl_loss.item(),
             'anneal': anneal
         }
         
-        return (total_loss,), params_to_log
+        return (nll_loss , anneal * kl_loss,), params_to_log
 
     def forward_eval_all(self, users):
         # for evaluation override if base_model assumes something else
-        logits, _, _ = self.forward(users)
-        scores = logits
-        # Mask input items to avoid recommending seen items?
-        # Usually handled by Trainer, but VAE specifically reconstructs INPUT.
-        # So input items will have high scores. We must let Trainer handle filtering.
-        return scores
-        
-    # Override regular forward to return just scores for evaluation compatibility
-    def forward(self, users):
-         x = self._get_user_history_matrix(users)
-         h = F.normalize(x, p=2, dim=1)
-         
-         # For eval, we just use mu usually, or sample. Standard is mu.
-         mu_logvar = self.encoder(h)
-         mu, logvar = torch.chunk(mu_logvar, 2, dim=1)
-         z = mu # Deterministic at eval
-         
-         if self.training:
-              z = self.reparameterize(mu, logvar)
-         
-         logits = self.decoder(z)
-         
-         if self.training:
-             return logits, mu, logvar
-         else:
-             return logits
+        out = self.forward(users)
+        if isinstance(out, tuple):
+            return out[0]
+        return out

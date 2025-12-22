@@ -15,16 +15,16 @@ class CSAR_R_BPR(BaseModel):
         self.embedding_dim = self.config['model']['embedding_dim']
         self.num_interests = self.config['model']['num_interests']
         self.lamda = self.config['model']['orth_loss_weight']
-        self.soft_relu = self.config['model'].get('soft_relu', False)
         self.scale = self.config['model'].get('scale', True)
         self.Dummy = self.config['model'].get('dummy', False)
         self.dynamic_bpr = self.config['model'].get('dynamic_bpr', False)
+        self.emb_dropout = self.config['model'].get('emb_dropout', 0.0)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
         
         # CoSupportAttentionLayer 사용
-        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy, soft_relu=self.soft_relu)
+        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale)
 
         self._init_weights()
         self.loss_fn = BPRLoss() if not self.dynamic_bpr else DynamicMarginBPRLoss()
@@ -39,6 +39,10 @@ class CSAR_R_BPR(BaseModel):
         # 사용자 임베딩과 아이템 임베딩 가져오기
         user_embs = self.user_embedding(users)
         all_item_embs = self.item_embedding.weight
+        
+        # Embedding Dropout (Training only)
+        if self.training and self.emb_dropout > 0:
+            user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
 
         # co-support attention layer를 통해 관심사 가중치 계산
         user_interests = self.attention_layer(user_embs)
@@ -57,6 +61,11 @@ class CSAR_R_BPR(BaseModel):
         # Evaluation용 (Pairwise Score)
         user_embs = self.user_embedding(user_ids)
         item_embs = self.item_embedding(item_ids)
+        
+        # Embedding Dropout (Training only)
+        if self.training and self.emb_dropout > 0:
+            user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
+            item_embs = F.dropout(item_embs, p=self.emb_dropout, training=True)
 
         # co-support attention layer를 통해 관심사 가중치 계산
         user_interests = self.attention_layer(user_embs)
@@ -101,6 +110,12 @@ class CSAR_R_BPR(BaseModel):
         user_embs = self.user_embedding(users)
         pos_item_embs = self.item_embedding(pos_items)
         neg_item_embs = self.item_embedding(neg_items)
+        
+        # Embedding Dropout (Training only)
+        if self.emb_dropout > 0:
+            user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
+            pos_item_embs = F.dropout(pos_item_embs, p=self.emb_dropout, training=True)
+            neg_item_embs = F.dropout(neg_item_embs, p=self.emb_dropout, training=True)
 
         # 관심사 벡터 계산
         user_interests = self.attention_layer(user_embs)

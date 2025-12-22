@@ -2,16 +2,8 @@ model:
   name: ease
   reg_lambda: 500.0
 
-train:
-  # EASE doesn't use epoch-based training for the model itself,
-  # but fit() will be called.
-  # We omit 'batch_size' and 'epochs' as they are irrelevant for the closed-form solver,
-  # but we might keep them for evaluation phase consistency.
-  epochs: 0 # Explicitly 0 implies no training loop needed by Trainer
-  batch_size: 1024 # For evaluation
-
 evaluation:
-  validation_method: "uni99" # 검증 시 평가 방법
+  validation_method: "full_subset" # 검증 시 평가 방법
   final_method: "full" # 최종 평가 시 평가 방법
   metrics: [
       "NDCG",
@@ -22,10 +14,11 @@ evaluation:
       "Entropy",
       "ILD",
       "GiniIndex_emb",
+      "Novelty",
     ] # 평가할 메트릭 리스트
-  top_k: [5, 10, 20] # 평가할 K 값 리스트
+  top_k: [5, 10, 20, 50] # 평가할 K 값 리스트
   main_metric: "NDCG" # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭
-  main_metric_k: 20 # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭의 K 값
+  main_metric_k: 10 # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭의 K 값
   long_tail_percent: 0.2 # 롱테일 아이템 정의를 위한 비율 (인기도 하위 N%)
 
 # 실행 환경 설정

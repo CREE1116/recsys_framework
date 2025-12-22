@@ -17,7 +17,7 @@ class LightGCN(BaseModel):
         self.num_items = self.data_loader.n_items
         
         # 희소/밀집 행렬을 모델의 device로 이동
-        self.adj_matrix = self.data_loader.interaction_graph.to(self.device)
+        self.adj_matrix = self.data_loader.get_interaction_graph().to(self.device)
         
         # 정규화된 인접 행렬 계산
         self.norm_adj_matrix = self._get_normalized_adj_matrix()
@@ -118,6 +118,9 @@ class LightGCN(BaseModel):
         pos_vec = item_embeds[pos_items]
         neg_vec = item_embeds[neg_items]
 
+        if neg_vec.dim() == 2:
+            neg_vec = neg_vec.unsqueeze(1)
+            
         pos_scores = torch.sum(user_vec * pos_vec, dim=1)
         neg_scores = torch.einsum('bd,bnd->bn', user_vec, neg_vec)
 

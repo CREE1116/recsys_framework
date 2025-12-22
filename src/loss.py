@@ -123,60 +123,6 @@ class InfoNCELoss(nn.Module):
         loss = F.cross_entropy(all_scores, labels)
         return loss
 
-class CSARLoss(nn.Module):
-    """
-    CSAR 모델 전용 Log-Energy InfoNCE Loss
-    
-    Theoretical Background:
-    1. Energy-based Model: Softplus 활성화를 통한 Intensity 내적(Energy)을 점수로 사용.
-    2. Log-Space Transform: 곱셈 기반 에너지(Energy)를 덧셈 기반 로짓(Log-Energy)으로 변환하여
-       Softmax의 지수 폭발(Explosion)을 방지하고 Magnitude 정보를 비율(Ratio)로 학습.
-    3. Fixed Temperature: 학습 가능한 스케일 대신 고정된 온도를 사용하여 
-       Gradient가 온전히 임베딩 학습에 집중되도록 강제 (Gradient Stealing 방지).
-    
-    * Note: CSAR 모델의 Co-Support 구조가 이미 내부적으로 관심사 필터링을 수행하므로, 
-      LogQ Correction을 통한 강제적인 인기도 편향 제거는 오히려 성능을 저해할 수 있어 제거함.
-    """
-    def __init__(self, temperature=0.1):
-        """
-        Args:
-            temperature (float): 고정된 온도 값. 
-                                 값이 작을수록(0.1) 분포가 뾰족해져 Hard Negative에 집중하고,
-                                 값이 클수록(1.0) 분포가 부드러워짐.
-        """
-        super(CSARLoss, self).__init__()
-        
-        # Fixed Temperature
-        # 학습 가능한 파라미터를 제거하여 Gradient가 임베딩 업데이트에만 쓰이도록 함.
-        self.temperature = temperature
-
-    def forward(self, user_intensities, batch_item_intensities):
-        """
-        Args:
-            user_intensities (Tensor): [Batch, K] - Softplus 통과된 유저 벡터 (Intensity)
-            batch_item_intensities (Tensor): [Batch, K] - 배치 내 아이템들의 벡터 (Candidates)
-            
-        Returns:
-            loss (Tensor): Scalar Loss
-        """
-        # 1. Energy Score Calculation (Co-Support)
-        # In-Batch Negative Sampling: 배치 내 모든 유저 vs 배치 내 모든 아이템
-        # scores: [B, B] (i행 j열 = 유저 i와 아이템 j의 에너지)
-        # Softplus * Softplus 구조라 값이 매우 클 수 있음 (0 ~ inf)
-        energy_scores = torch.matmul(user_intensities, batch_item_intensities.t())
-        
-        # 3. Fixed Temperature Scaling
-        # Log로 변환된 에너지(비율)를 온도로 나누어 분포의 선명도(Sharpness) 조절
-        # Scale 학습을 제거하고 고정된 상수로 나눔
-        final_logits = energy_scores / self.temperature
-        
-        # 4. Cross Entropy (Standard InfoNCE)
-        # In-Batch 상황이므로 유저 i의 정답은 i번째 아이템임 (Diagonal is positive)
-        labels = torch.arange(len(user_intensities), device=user_intensities.device)
-        loss = F.cross_entropy(final_logits, labels)
-        
-        return loss
-
 class NormalizedSampledSoftmaxLoss(nn.Module):
     """
     Normalized Sampled Softmax Loss
@@ -200,21 +146,19 @@ class NormalizedSampledSoftmaxLoss(nn.Module):
         self.n_items = n_items
         self.temperature = temperature
 
-    def forward(self, user_intensities, batch_item_intensities):
+    def forward(self, scores, is_explicit=False):
         """
         Args:
-            user_intensities (Tensor): [Batch, K] - Softplus 통과된 유저 벡터
-            batch_item_intensities (Tensor): [Batch, K] - 배치 내 아이템 벡터
+            scores (Tensor): 
+                - If is_explicit=False: [Batch, Batch] (User x Item Matrix)
+                - If is_explicit=True:  [Batch, 1 + NumNegatives] (Column 0 is Pos)
+            is_explicit (bool): Whether input scores use explicit negative sampling.
         """
-        # 1. Energy Score Calculation
-        # scores: [B, B] (0 ~ inf)
-        energy_scores = torch.matmul(user_intensities, batch_item_intensities.t())
+        # 1. Energy Score Calculation (Removed internal matmul)
+        energy_scores = scores
         
-        # 2. Global Z-Score Normalization (Standardization)
-        # Final Score Matrix 자체를 정규화하여 스케일 문제를 원천 차단
-        mean = energy_scores.mean()
-        std = energy_scores.std()
-        energy_scores = (energy_scores - mean) / (std + 1e-9)
+        # 2. Global Z-Score Normalization removed
+
         
         # 3. Fixed Temperature Scaling
         logits = energy_scores / self.temperature
@@ -222,7 +166,8 @@ class NormalizedSampledSoftmaxLoss(nn.Module):
         # 4. Sampled Softmax Correction (Consistent Estimation)
         # In-Batch Negative들이 전체 Negative의 일부임을 감안하여 점수 보정
         # 보정: Neg Logits += log((N-1)/(B-1))
-        if self.training:
+        # [Condition] Correction is ONLY for In-Batch Sampling (Implicit)
+        if self.training and not is_explicit:
             batch_size = logits.size(0)
             # 정확한 추정을 위해 (N-1)/(B-1) 사용 (User 본인의 Pos 제외)
             correction = math.log((self.n_items - 1) / (batch_size - 1 + 1e-9))
@@ -236,77 +181,230 @@ class NormalizedSampledSoftmaxLoss(nn.Module):
             logits = logits + (~mask) * correction
         
         # 5. Cross Entropy
-        labels = torch.arange(len(user_intensities), device=user_intensities.device)
+        if is_explicit:
+            # Explicit: Column 0 is always Positive
+            labels = torch.zeros(scores.size(0), device=scores.device, dtype=torch.long)
+        else:
+            # In-Batch: Diagonal is Positive
+            labels = torch.arange(scores.size(0), device=scores.device)
+            
         loss = F.cross_entropy(logits, labels)
         
         return loss
 
 
-
-class orthogonal_loss(nn.Module):
+class NDCGWeightedListwiseBPR(nn.Module):
     """
-    직교성(Orthogonality) 손실 함수
+    Listwise BPR with NDCG-style position weighting
+    (Optimized version)
     """
-    def __init__(self, losstype):
-        super(orthogonal_loss, self).__init__()
-        self.loss_type = losstype
+    def __init__(self, k=10, use_zscore=False, is_explicit=False):
+        super().__init__()
+        self.k = k
+        self.use_zscore = use_zscore
+        self.is_explicit = is_explicit
+    
+    def forward(self, scores):
+        """
+        Args:
+            scores (Tensor): [Batch, Batch] - 점수 행렬 (User x Item)
+        """
+        # 0. Score matrix (Taken as input)
+        # Apply Z-score Normalization if requested
+        if self.use_zscore:
+            mean = scores.mean()
+            std = scores.std()
+            scores = (scores - mean) / (std + 1e-9)
 
-    def forward(self, keys):
-        K = keys.size(0)
-        keys_normalized = F.normalize(keys, p=2, dim=1)
-        cosine_similarity = torch.matmul(keys_normalized, keys_normalized.t())
-        identity_matrix = torch.eye(K, device=keys.device)
-        num_off_diagonal_elements = K * K - K
-        if self.loss_type == 'l1':
-            identity_matrix = torch.eye(keys.size(0), device=keys.device)
-        # 제곱 대신 절댓값을 사용하여 수치적 안정성 확보    
-            loss = torch.abs(cosine_similarity - identity_matrix).sum()
-            return loss / num_off_diagonal_elements 
-        elif self.loss_type == 'l2':
-            l2_sum_loss = ((cosine_similarity - identity_matrix) ** 2).sum()
-            return l2_sum_loss / num_off_diagonal_elements 
+        B = scores.size(0)
+        device = scores.device
         
-    def l1_orthogonal_loss(keys):
+        if self.is_explicit:
+            # Case 1: Explicit Negative Sampling input [B, 1 + NumNeg]
+            # Column 0 is Positive. Columns 1..N are Negatives.
+            pos_scores = scores[:, 0].unsqueeze(1) # [B, 1]
+            neg_scores = scores[:, 1:]             # [B, N]
+            
+            # Pairwise differences
+            diff = pos_scores - neg_scores         # [B, N]
+            
+            # Ranking: Sort all scores (Pos + Negs) row-wise
+            # We want to know the rank of items.
+            # But wait, weights depend on rank.
+            # Ranks are calculated over (1 + N) items.
+            sorted_indices = scores.argsort(dim=1, descending=True)
+            ranks = torch.empty_like(scores)
+            ranks.scatter_(
+                dim=1,
+                index=sorted_indices,
+                src=torch.arange(scores.size(1), device=device, dtype=scores.dtype).view(1, -1).expand(B, -1)
+            )
+            
+            # We only care about weights for the Negatives (Columns 1..N)
+            neg_ranks = ranks[:, 1:] # [B, N]
+            
+            # NDCG Weights for Negatives
+            # Note: The weight depends on WHERE the negative is ranked.
+            # If Rank is 0 (it beat the positive), weight is high.
+            ndcg_weights = 1.0 / torch.log2(neg_ranks + 2.0)
+            
+            # Top-K Masking (on Negatives)
+            # If negative rank is >= K, mask it out.
+            topk_mask = neg_ranks < self.k
+            
+            # Final Mask
+            final_mask = topk_mask.float()
+            
+            # Loss
+            # bpr_term = -log(sigmoid(pos - neg))
+            bpr_term = -torch.log(torch.sigmoid(diff).clamp(min=1e-8))
+            weighted_loss = bpr_term * ndcg_weights * final_mask
+            
+            return weighted_loss.sum() / final_mask.sum().clamp(min=1.0)
+
+        else:
+            # Case 2: Implicit / In-Batch (Square Matrix [B, B])
+            # Diagonal is Positive.
+            labels = torch.arange(B, device=device)
+            pos_scores = scores[labels, labels].unsqueeze(1)  # [B, 1]
+            
+            # Pairwise differences
+            diff = pos_scores - scores  # [B, B]
+            
+            # 4. Efficient ranking computation
+            # Method 1: Direct argsort (current)
+            sorted_indices = scores.argsort(dim=1, descending=True)
+            ranks = torch.empty_like(scores)
+            ranks.scatter_(
+                dim=1,
+                index=sorted_indices,
+                src=torch.arange(B, device=device, dtype=scores.dtype).view(1, -1).expand(B, -1)
+            )
+            
+            # 5. NDCG discount weights
+            ndcg_weights = 1.0 / torch.log2(ranks + 2.0)  # [B, B]
+            
+            # 6. Masking
+            # Self-pairs 제외
+            self_mask = ~torch.eye(B, device=device, dtype=torch.bool)
+            
+            # Top-K만
+            topk_mask = ranks < self.k
+            
+            # Optional: Violation만 (negative > positive)
+            # User Feedback: "Remove only_violation entirely, allow learning from all Top-K items"
+            # This enforces a margin even for easy negatives.
+            final_mask = (self_mask & topk_mask).float()
+            
+            # 7. Weighted BPR Loss
+            bpr_term = -torch.log(torch.sigmoid(diff).clamp(min=1e-8))
+            weighted_loss = bpr_term * ndcg_weights * final_mask
+            
+            # 8. Normalization
+            return weighted_loss.sum() / final_mask.sum().clamp(min=1.0)
+
+class TopK_NDCG_BPR(nn.Module):
+    def __init__(self, k=20, only_violation=False):
+        super().__init__()
+        self.k = k
+        self.only_violation = only_violation
+        
+    def forward(self, scores):
         """
-        Enforces orthogonality on the interest keys.
-
-        Args:
-            keys (torch.Tensor): The global interest keys tensor. [num_interests, D]
-
-        Returns:
-            torch.Tensor: The orthogonality loss.
+        scores: [Batch, Batch] (User x Item Matrix)
         """
-        K = keys.size(0)
-        keys_normalized = F.normalize(keys, p=2, dim=1)
-        cosine_similarity = torch.matmul(keys_normalized, keys_normalized.t())
-        identity_matrix = torch.eye(K, device=keys.device)
-        num_off_diagonal_elements = K * K - K
-        identity_matrix = torch.eye(keys.size(0), device=keys.device)
-        # 제곱 대신 절댓값을 사용하여 수치적 안정성 확보
-        loss = torch.abs(cosine_similarity - identity_matrix).sum()
-        return loss / num_off_diagonal_elements 
+        B = scores.size(0)
+        device = scores.device
+        
+        # 1. Positive Score (대각선) 추출 [B, 1]
+        # 내 정답 점수는 미리 챙겨둡니다.
+        labels = torch.arange(B, device=device)
+        pos_scores = scores[labels, labels].unsqueeze(1)
+        
+        # 2. Top-(K+1) 추출 (Efficient Hard Negative Mining)
+        # 내 정답이 Top-K 안에 포함될 수도 있으니 넉넉하게 K+1개를 뽑습니다.
+        # 이렇게 하면 전체 정렬(Argsort) 없이 상위권 놈들만 딱 데려옵니다.
+        # topk_vals: [B, K+1], topk_inds: [B, K+1]
+        k_val = min(self.k + 1, B)
+        topk_vals, topk_inds = torch.topk(scores, k=k_val, dim=1)
+        
+        # 3. 가중치 계산 (LambdaRank Style)
+        # 뽑힌 애들은 무조건 0등, 1등, 2등... 순서대로입니다.
+        # 따라서 랭킹 계산을 따로 할 필요 없이 그냥 arange로 주면 됩니다.
+        ranks = torch.arange(k_val, device=device).unsqueeze(0).expand(B, -1)
+        weights = 1.0 / torch.log2(ranks + 2.0) # [B, K+1]
+        
+        # 4. 비교 (Positive vs Top-K Negatives)
+        # [B, 1] vs [B, K+1] -> Broadcasting -> [B, K+1]
+        # 내 정답 점수와, 상위권 랭커들의 점수를 비교합니다.
+        diff = pos_scores - topk_vals
+        
+        # 5. 마스킹 (자기 자신 제외)
+        # Top-K 안에 내 정답(Positive)이 섞여 있을 수 있습니다. 걔는 Loss에서 빼야 합니다.
+        # topk_inds(후보 인덱스)가 labels(내 인덱스)와 같으면 True
+        is_self = (topk_inds == labels.unsqueeze(1))
+        
+        # 기본 마스크: 자기 자신이 아닌 것들만 살림
+        mask = (~is_self).float()
+        
+        # (옵션) Violation 마스크: 나보다 점수 높은 놈만 살림
+        if self.only_violation:
+            mask = mask * (topk_vals > pos_scores).float()
+            
+        # 6. 최종 Weighted BPR Loss
+        # 상위권 놈들에 대해 BPR을 구하고, 순위 가중치를 곱합니다.
+        loss_map = -F.logsigmoid(diff) * weights * mask
+        
+        # 7. 평균 내서 리턴
+        # 유효한 샘플 수로 나눠줍니다 (division by zero 방지)
+        return loss_map.sum() / mask.sum().clamp(min=1.0)
 
-    def l2_orthogonal_loss(keys):
+
+class InBatchHardBPR(nn.Module):
+    """
+    Stable In-Batch BPR:
+    - pos: diagonal
+    - neg: batch의 모든 item
+    - only hard negatives
+    - no rank, no ndcg, no top-k
+    """
+    def __init__(self, temperature=1.0):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, scores):
         """
-        Enforces orthogonality on the interest keys.
-
-        Args:
-            keys (torch.Tensor): The global interest keys tensor. [num_interests, D]
-
-        Returns:
-            torch.Tensor: The orthogonality loss.
+        scores: [B, B]  (i-th row: scores of user i over items in batch)
+        diagonal entry = positive
         """
-        K = keys.size(0)
-        keys_normalized = F.normalize(keys, p=2, dim=1)
-        cosine_similarity = torch.matmul(keys_normalized, keys_normalized.t())
-        identity_matrix = torch.eye(K, device=keys.device)
-        off_diag = cosine_similarity - identity_matrix
-            # 1. 제곱의 합 (L2 Loss)
-        l2_sum_loss = (off_diag ** 2).sum()
-            # 2. 비대각선 요소의 개수로 나누어 정규화 (Normalization)
-        num_off_diagonal_elements = K * K - K
-        normalized_loss = l2_sum_loss / num_off_diagonal_elements 
-        return normalized_loss 
+        B = scores.size(0)
+        device = scores.device
+        
+        # 1. positive
+        labels = torch.arange(B, device=device)
+        pos = scores[labels, labels].unsqueeze(1)   # [B, 1]
+        
+        # 2. all negatives
+        neg = scores                                # [B, B]
+
+        # 3. diff = pos - neg (broadcasting)
+        diff = (pos - neg) / self.temperature       # [B, B]
+        
+        # 4. mask self-comparison
+        self_mask = ~torch.eye(B, dtype=torch.bool, device=device)
+        
+        # 5. hard negatives: neg > pos
+        hard_mask = (neg > pos).detach()
+        
+        mask = self_mask & hard_mask                # [B, B]
+        mask = mask.float()
+        
+        # 6. BPR loss
+        loss_map = -F.logsigmoid(diff) * mask
+        
+        # 7. normalization
+        return loss_map.sum() / mask.sum().clamp(min=1.0)
+
 
 class EntropyAdaptiveInfoNCE(nn.Module):
     """
@@ -380,3 +478,70 @@ class EntropyAdaptiveInfoNCE(nn.Module):
         
         # One-way Cross Entropy (속도 2배, 메모리 절약)
         return F.cross_entropy(logits, labels)
+
+
+
+class orthogonal_loss(nn.Module):
+    """
+    직교성(Orthogonality) 손실 함수
+    """
+    def __init__(self, losstype):
+        super(orthogonal_loss, self).__init__()
+        self.loss_type = losstype
+
+    def forward(self, keys):
+        K = keys.size(0)
+        keys_normalized = F.normalize(keys, p=2, dim=1)
+        cosine_similarity = torch.matmul(keys_normalized, keys_normalized.t())
+        identity_matrix = torch.eye(K, device=keys.device)
+        num_off_diagonal_elements = K * K - K
+        if self.loss_type == 'l1':
+            identity_matrix = torch.eye(keys.size(0), device=keys.device)
+        # 제곱 대신 절댓값을 사용하여 수치적 안정성 확보    
+            loss = torch.abs(cosine_similarity - identity_matrix).sum()
+            return loss / num_off_diagonal_elements 
+        elif self.loss_type == 'l2':
+            l2_sum_loss = ((cosine_similarity - identity_matrix) ** 2).sum()
+            return l2_sum_loss / num_off_diagonal_elements 
+        
+    def l1_orthogonal_loss(keys):
+        """
+        Enforces orthogonality on the interest keys.
+
+        Args:
+            keys (torch.Tensor): The global interest keys tensor. [num_interests, D]
+
+        Returns:
+            torch.Tensor: The orthogonality loss.
+        """
+        K = keys.size(0)
+        keys_normalized = F.normalize(keys, p=2, dim=1)
+        cosine_similarity = torch.matmul(keys_normalized, keys_normalized.t())
+        identity_matrix = torch.eye(K, device=keys.device)
+        num_off_diagonal_elements = K * K - K
+        identity_matrix = torch.eye(keys.size(0), device=keys.device)
+        # 제곱 대신 절댓값을 사용하여 수치적 안정성 확보
+        loss = torch.abs(cosine_similarity - identity_matrix).sum()
+        return loss / num_off_diagonal_elements 
+
+    def l2_orthogonal_loss(keys):
+        """
+        Enforces orthogonality on the interest keys.
+
+        Args:
+            keys (torch.Tensor): The global interest keys tensor. [num_interests, D]
+
+        Returns:
+            torch.Tensor: The orthogonality loss.
+        """
+        K = keys.size(0)
+        keys_normalized = F.normalize(keys, p=2, dim=1)
+        cosine_similarity = torch.matmul(keys_normalized, keys_normalized.t())
+        identity_matrix = torch.eye(K, device=keys.device)
+        off_diag = cosine_similarity - identity_matrix
+            # 1. 제곱의 합 (L2 Loss)
+        l2_sum_loss = (off_diag ** 2).sum()
+            # 2. 비대각선 요소의 개수로 나누어 정규화 (Normalization)
+        num_off_diagonal_elements = K * K - K
+        normalized_loss = l2_sum_loss / num_off_diagonal_elements 
+        return normalized_loss 

@@ -58,19 +58,34 @@ class NeuMF(BaseModel):
     def forward(self, users):
         """
         주어진 사용자들에 대한 모든 아이템의 점수를 계산합니다.
+        메모리 효율성을 위해 아이템을 청크 단위로 나누어 처리합니다.
         """
         batch_size = users.size(0)
-        all_items = torch.arange(self.n_items, device=self.device)
+        chunk_size = 5000 # 메모리 보호를 위한 청크 사이즈 (조절 가능)
         
-        # 모든 (사용자, 아이템) 쌍 생성
-        user_ids_repeated = users.repeat_interleave(self.n_items)
-        item_ids_tiled = all_items.repeat(batch_size)
+        all_scores_list = []
         
-        # predict_for_pairs를 사용하여 모든 쌍의 점수 계산
-        scores = self.predict_for_pairs(user_ids_repeated, item_ids_tiled)
+        for i in range(0, self.n_items, chunk_size):
+            end = min(i + chunk_size, self.n_items)
+            items_chunk = torch.arange(i, end, device=self.device)
+            current_chunk_size = len(items_chunk)
+            
+            # (사용자, 청크 아이템) 쌍 생성
+            user_ids_repeated = users.repeat_interleave(current_chunk_size)
+            item_ids_tiled = items_chunk.repeat(batch_size)
+            
+            # predict_for_pairs를 사용하여 청크에 대한 점수 계산
+            chunk_scores_flat = self.predict_for_pairs(user_ids_repeated, item_ids_tiled)
+            
+            # [batch_size, current_chunk_size] 형태로 변환
+            chunk_scores = chunk_scores_flat.view(batch_size, current_chunk_size)
+            all_scores_list.append(chunk_scores)
+            
+            # 중간 메모리 해제
+            del user_ids_repeated, item_ids_tiled, chunk_scores_flat
         
-        # 결과를 [batch_size, n_items] 형태로 재구성
-        return scores.view(batch_size, self.n_items)
+        # 모든 청크 결과를 결합
+        return torch.cat(all_scores_list, dim=1)
 
     def predict_for_pairs(self, users, items):
         """
@@ -79,11 +94,22 @@ class NeuMF(BaseModel):
         # GMF 경로
         user_embed_gmf = self.user_embedding_gmf(users)
         item_embed_gmf = self.item_embedding_gmf(items)
-        gmf_output = user_embed_gmf * item_embed_gmf
+
+        # Handle multiple negatives: if items has extra dim (Batch, K, Emb) vs User (Batch, Emb)
+        if item_embed_gmf.ndim == user_embed_gmf.ndim + 1:
+            user_embed_gmf = user_embed_gmf.unsqueeze(1) # (B, 1, D)
+        
+        gmf_output = user_embed_gmf * item_embed_gmf # Broadcasting (B, 1, D) * (B, K, D) -> (B, K, D)
 
         # MLP 경로
         user_embed_mlp = self.user_embedding_mlp(users)
         item_embed_mlp = self.item_embedding_mlp(items)
+        
+        if item_embed_mlp.ndim == user_embed_mlp.ndim + 1:
+            user_embed_mlp = user_embed_mlp.unsqueeze(1) # (B, 1, D)
+            # For concatenation, we must explicitly expand to match item dimension
+            user_embed_mlp = user_embed_mlp.expand(-1, item_embed_mlp.size(1), -1) # (B, K, D)
+
         mlp_input = torch.cat((user_embed_mlp, item_embed_mlp), dim=-1)
         mlp_output = self.mlp_layers_module(mlp_input)
 
@@ -118,6 +144,9 @@ class NeuMF(BaseModel):
 
         pos_scores = self.predict_for_pairs(users, pos_items)
         neg_scores = self.predict_for_pairs(users, neg_items)
+        
+        if neg_scores.ndim > 1 and pos_scores.ndim == 1:
+             pos_scores = pos_scores.unsqueeze(1)
 
         loss = self.loss_fn(pos_scores, neg_scores)
         return (loss,), None

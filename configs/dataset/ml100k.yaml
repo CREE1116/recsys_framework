@@ -9,5 +9,4 @@ rating_threshold: 4 # 이 값 이상의 평점만 상호작용으로 간주
 min_user_interactions: 5
 min_item_interactions: 5
 split_method: "loo" # Leave-One-Out
-data_cache_path: "./data_cache/" # 데이터셋 전처리 결과를 캐싱할 경로
-
+data_cache_path: "./data_cache/"

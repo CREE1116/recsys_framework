@@ -3,8 +3,12 @@
 
 # General Models
 from .general.mf import MF
+from .general.mf_listwise import MF_Listwise
 from .general.lightgcn import LightGCN
+from .general.lightgcn_listwise import LightGCN_Listwise
+from .general.lightgcn_sampled import LightGCN_Sampled
 from .general.most_popular import MostPopular
+from .general.random_rec import RandomRec
 from .general.item_knn import ItemKNN
 from .general.neumf import NeuMF
 from .general.rerank_wrapper import ReRankWrapper
@@ -12,7 +16,20 @@ from .general.ACF_NLL import ACF_NLL, ACF_BPR
 from .general.softplusmf import softplusMF
 from .general.ease import EASE
 from .general.protomf import ProtoMF
+from .general.protomf_sampled import ProtoMF_Sampled
 from .general.multivae import MultiVAE
+from .general.macrid_vae import MacridVAE
+from .general.dice import DICE
+from .general.macr import MACR
+from .general.ddp import DPP
+from .general.mmr import MMR
+from .general.pd import PD
+from .general.dgcf import DGCF
+from .general.random_rec import RandomRec
+from .general.pure_svd import PureSVD
+from .general.naive_bayes import NaiveBayes
+
+from .general.normalized_mf import NormalizedMF
 
 # CSAR Models
 from .csar.CSAR import CSAR
@@ -20,6 +37,11 @@ from .csar.CSAR_Sampled import CSAR_Sampled
 from .csar.CSAR_R import CSAR_R
 from .csar.CSAR_BPR import CSAR_BPR
 from .csar.CSAR_R_BPR import CSAR_R_BPR
+from .csar.CSAR_Listwise import CSAR_Listwise
+from .csar.CSAR_R_Sampled import CSAR_R_Sampled
+from .csar.CSAR_R_Listwise import CSAR_R_Listwise
+from .csar.CSAR_DualView import CSAR_DualView
+from .csar.CSAR_Hard import CSAR_Hard
 
 # Legacy Models (Commented out)
 # from .legacy.CSAR_R_Softmax import CSAR_R_Softmax
@@ -43,7 +65,11 @@ from .csar.CSAR_R_BPR import CSAR_R_BPR
 
 MODEL_REGISTRY = {
     'mf': MF,
+    'mf-listwise': MF_Listwise,
+    'normalized-mf': NormalizedMF,
     'lightgcn': LightGCN,
+    'lightgcn-listwise': LightGCN_Listwise,
+    'lightgcn-sampled': LightGCN_Sampled,
     'most-popular': MostPopular,
     'ItemKNN': ItemKNN,
     'NeuMF': NeuMF,
@@ -54,11 +80,27 @@ MODEL_REGISTRY = {
     'softplusmf': softplusMF,
     'ease': EASE,
     'protomf': ProtoMF,
+    'protomf-sampled': ProtoMF_Sampled,
     'multivae': MultiVAE,
+    'MacridVAE': MacridVAE,
+    'DICE': DICE,
+    'macr': MACR,
+    'DPP': DPP,
+    'MMR': MMR,
+    'PD': PD,
+    'DGCF': DGCF,
     'csar' : CSAR,
     'csar-sampled': CSAR_Sampled,
     'csar-r' : CSAR_R,
     'csar-bpr' : CSAR_BPR,
+    'csar-listwise' : CSAR_Listwise,
+    'csar-r-sampled' : CSAR_R_Sampled,
+    'csar-r-listwise' : CSAR_R_Listwise,
+    'csar-dualview': CSAR_DualView,
+    'csar-hard': CSAR_Hard,
+    'random-rec' : RandomRec,
+    'pure-svd': PureSVD,
+    'naive-bayes': NaiveBayes,
 }
 
 def get_model(model_name, config, data_loader):

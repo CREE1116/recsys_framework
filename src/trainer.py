@@ -61,9 +61,13 @@ class Trainer:
 
         # BUG FIX: 학습 관련 설정은 'train' 블록이 있을 때만 초기화
         if 'train' in self.config:
-            self.optimizer = self._get_optimizer(self.config['train']['optimizer'])
-            self.epochs = self.config['train']['epochs']
-            self.early_stop_patience = self.config['train']['early_stop_patience']
+            self.epochs = self.config['train'].get('epochs', 0)
+            self.early_stop_patience = self.config['train'].get('early_stop_patience', 10)
+            
+            if 'optimizer' in self.config['train']:
+                self.optimizer = self._get_optimizer(self.config['train']['optimizer'])
+            else:
+                self.optimizer = None
             
             self.train_losses = collections.defaultdict(list)
             self.eval_metrics = collections.defaultdict(list)
@@ -79,8 +83,13 @@ class Trainer:
 
     def _get_optimizer(self, optimizer_name):
         # 이 메소드는 self.config['train']이 존재할 때만 호출됨
-        lr = self.config['train']['lr']
-        weight_decay = self.config['train']['l2_regularization']
+        lr = self.config['train'].get('lr', self.config['train'].get('learning_rate'))
+        if lr is None:
+             raise ValueError("Learning rate not found in config. Please specify 'lr' or 'learning_rate'.")
+        lr = float(lr)
+
+        weight_decay = self.config['train'].get('l2_regularization', self.config['train'].get('weight_decay', 0.0))
+        weight_decay = float(weight_decay)
         if optimizer_name.lower() == 'adam':
             return optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         elif optimizer_name.lower() == 'sgd':
@@ -98,7 +107,18 @@ class Trainer:
 
         print(f"Training started on device: {self.device}")
         
+        # [Bug Fix] Trainable models with closed-form initialization (e.g., EASE, ItemKNN)
+        # require fit() to be called even if 'train' config exists (for epochs=0 or hybrid cases).
+        if hasattr(self.model, 'fit'):
+            print("Model has 'fit' method. Calling fit() before training loop...")
+            self.model.fit(self.data_loader)
+
+        
         for epoch in range(self.epochs):
+            # Optional: Curriculum learning callback
+            if hasattr(self.model, 'on_epoch_start'):
+                self.model.on_epoch_start(epoch)
+
             self.model.train()
             epoch_losses = collections.defaultdict(float)
             epoch_params = collections.defaultdict(list)
@@ -163,7 +183,14 @@ class Trainer:
             if self._check_early_stopping(current_metrics):
                 break
         
-        print("Training finished. Performing final evaluation...")
+        print("Training finished. Loading best model for final evaluation...")
+        best_model_path = os.path.join(self.output_path, "best_model.pt")
+        if os.path.exists(best_model_path):
+            self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
+            print(f"Best model loaded from {best_model_path}")
+        else:
+            print("[Warning] Best model checkpoint not found. Using last epoch model.")
+        
         self.evaluate(is_final_evaluation=True)
         
         self._visualize_results()
@@ -175,11 +202,14 @@ class Trainer:
         
         if loader is None:
             print("Creating a new loader for evaluation...")
-            batch_size = self.config.get('train', {}).get('batch_size', 512) * 2
+            eval_batch_size = eval_config.get('batch_size')
+            if eval_batch_size is None:
+                eval_batch_size = self.config.get('train', {}).get('batch_size', 512) * 2
+            
             if is_final_evaluation:
-                loader = self.data_loader.get_final_loader(batch_size)
+                loader = self.data_loader.get_final_loader(eval_batch_size)
             else: 
-                loader = self.data_loader.get_validation_loader(batch_size)
+                loader = self.data_loader.get_validation_loader(eval_batch_size)
 
         # 평가에 사용할 설정 결정
         if is_final_evaluation:
@@ -229,6 +259,7 @@ class Trainer:
         return False
 
     def _save_checkpoint(self):
+        os.makedirs(self.output_path, exist_ok=True)
         checkpoint_file = os.path.join(self.output_path, "best_model.pt")
         torch.save(self.model.state_dict(), checkpoint_file)
         print(f"Best performance updated. Checkpoint saved to {checkpoint_file}")
@@ -238,6 +269,7 @@ class Trainer:
             return 
             
         losses_history_path = os.path.join(self.output_path, 'losses_history.json')
+        os.makedirs(self.output_path, exist_ok=True)
         with open(losses_history_path, 'w') as f:
             json.dump(_convert_numpy_types_to_python_types(dict(self.train_losses)), f, indent=4)
 

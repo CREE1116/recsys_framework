@@ -7,22 +7,31 @@ class CoSupportAttentionLayer(nn.Module):
     """
     d-차원의 임베딩을 K-차원의 비음수 관심사 가중치 벡터로 변환하는 레이어.
     """
-    def __init__(self, num_interests, embedding_dim, scale=False, Dummy = False, soft_relu = False):
+    def __init__(self, num_interests, embedding_dim, scale=False, normalize=False, init_method = "xavier"):
         super(CoSupportAttentionLayer, self).__init__() 
         self.num_interests = num_interests
         self.embedding_dim = embedding_dim
-        self.Dummy = Dummy
-        self.soft_relu = soft_relu
+        self.normalize = normalize
+        self.init_method = init_method
         # K-Anchor (관심사 키)
-        self.interest_keys = nn.Parameter(torch.empty(num_interests+1, embedding_dim)) if Dummy else nn.Parameter(torch.empty(num_interests, embedding_dim))
-        self.scale = nn.Parameter(torch.tensor(self.num_interests**-0.5)) if scale else torch.tensor(num_interests**-0.5)
+        self.interest_keys = nn.Parameter(torch.empty(num_interests, embedding_dim))
+        
+        init_scale = num_interests ** -0.5
+        if scale:
+            self.scale = nn.Parameter(torch.tensor(init_scale))
+        else:
+            self.register_buffer("scale", torch.tensor(init_scale))
+        
         # 가중치 초기화
         self._init_weights()
 
-
     def _init_weights(self):
+        gain = 1.45
         """Xavier uniform 초기화를 사용하여 관심사 키를 초기화합니다."""
-        nn.init.xavier_uniform_(self.interest_keys)
+        if self.init_method == "xavier":
+            nn.init.xavier_uniform_(self.interest_keys, gain=gain)
+        elif self.init_method == "orthogonal":
+            nn.init.orthogonal_(self.interest_keys, gain=gain)
         
     def forward(self, embedding_tensor):
         """
@@ -35,12 +44,10 @@ class CoSupportAttentionLayer(nn.Module):
             torch.Tensor: [..., K] shape의 비음수 관심사 가중치 텐서.
         """
         # scale이 Parameter인 경우와 Tensor인 경우 모두 처리
-        scale_val = self.scale if isinstance(self.scale, torch.Tensor) else 1.0
-        
-        attention_logits = torch.einsum('...d,kd->...k', embedding_tensor, self.interest_keys) * scale_val
-        if self.soft_relu:
-             return F.relu(attention_logits) + (F.softplus(attention_logits) - F.softplus(attention_logits).detach())
-        return F.softplus(attention_logits) 
+        attention_logits =F.softplus(torch.einsum('...d,kd->...k', embedding_tensor, self.interest_keys) * self.scale)
+        if self.normalize:
+            return F.normalize(attention_logits, p=2, dim=-1)
+        return attention_logits 
     
     @staticmethod
     def l1_orthogonal_loss(keys):
@@ -77,8 +84,6 @@ class CoSupportAttentionLayer(nn.Module):
     def get_orth_loss(self, loss_type="l2"):
         """이 레이어가 소유한 관심사 키에 대한 직교 손실을 반환합니다."""
         interest_keys = self.interest_keys
-        if self.Dummy:
-            interest_keys = self.interest_keys[:-1]
         if loss_type == "l1":
             return self.l1_orthogonal_loss(interest_keys)
         else:
@@ -148,3 +153,80 @@ class AdaptiveContrastiveLoss(nn.Module):
         labels = torch.arange(logits.size(0), device=logits.device)
         
         return F.cross_entropy(logits, labels)
+
+class DualViewCoSupportAttentionLayer(nn.Module):
+    """
+    긍정,부정 뷰를 제공하는 CSA레이어
+    Positive View: 좋아하는 관심사
+    Negative View: 싫어하는 관심사
+    Score = Pos - Neg
+    """
+    def __init__(self, num_interests, embedding_dim, scale=False, normalize=False):
+        super(DualViewCoSupportAttentionLayer, self).__init__() 
+        self.num_interests = num_interests
+        self.embedding_dim = embedding_dim
+        self.normalize = normalize
+        # K-Anchor (관심사 키) - Pos/Neg 각각 K개
+        self.pos_keys = nn.Parameter(torch.empty(num_interests, embedding_dim))
+        self.neg_keys = nn.Parameter(torch.empty(num_interests, embedding_dim))
+        
+        init_val = float(num_interests)**-0.5
+        if scale:
+            self.pos_scale = nn.Parameter(torch.tensor(init_val))
+            self.neg_scale = nn.Parameter(torch.tensor(init_val))
+        else:
+            self.register_buffer("pos_scale", torch.tensor(init_val))
+            self.register_buffer("neg_scale", torch.tensor(init_val))
+            
+        # 가중치 초기화
+        self._init_weights()
+
+
+    def _init_weights(self):
+        """Xavier uniform 초기화를 사용하여 관심사 키를 초기화합니다."""
+        nn.init.xavier_uniform_(self.pos_keys)
+        nn.init.xavier_uniform_(self.neg_keys)  
+        
+    def forward(self, embedding_tensor):
+        """
+        입력 텐서를 K-차원 관심사 가중치로 변환합니다.
+        
+        Args:
+            embedding_tensor (torch.Tensor): [..., d] shape의 임베딩 텐서.
+        
+        Returns:
+            torch.Tensor: [..., K] shape의 비음수 관심사 가중치 텐서.
+        """
+        # scale이 Parameter인 경우와 Tensor인 경우 모두 처리
+        pos_logits =F.softplus(torch.einsum('...d,kd->...k', embedding_tensor, self.pos_keys) * self.pos_scale)
+        neg_logits =F.softplus(torch.einsum('...d,kd->...k', embedding_tensor, self.neg_keys) * self.neg_scale)
+        if self.normalize:
+            return F.normalize(pos_logits, p=2, dim=-1), F.normalize(neg_logits, p=2, dim=-1)
+        return pos_logits, neg_logits   
+
+    def get_orth_loss(self, loss_type="l2"):
+        """이 레이어가 소유한 관심사 키에 대한 직교 손실을 반환합니다."""
+        # 1. 두 키를 합칩니다. (Shape: [2*num_interests, embedding_dim])
+        all_keys = torch.cat([self.pos_keys, self.neg_keys], dim=0)
+        
+        # 2. 이 거대한 행렬에 대해 직교 로스를 한 방에 계산합니다.
+        # 모든 키가 서로서로 달라지도록 강제합니다.
+        
+        # 정규화
+        keys_norm = F.normalize(all_keys, p=2, dim=-1)
+        
+        # 내적 (Gram Matrix: [2K, 2K])
+        gram_matrix = torch.matmul(keys_norm, keys_norm.t())
+        
+        # 항등 행렬 (Identity Matrix)
+        identity = torch.eye(gram_matrix.size(0), device=gram_matrix.device)
+        if loss_type == "l1":
+        # 차이의 절대값 합 (L1 Loss 추천 - 희소성 유도에 좋음)
+            loss = torch.abs(gram_matrix - identity).sum()
+        elif loss_type == "l2":
+        # 차이의 제곱합 (L2 Loss 추천 - 수렴 속도 유도에 좋음)
+            loss = torch.pow(gram_matrix - identity, 2).sum()
+        
+        # 요소 개수로 나누어 스케일 맞춤 (선택)
+        num_elements = gram_matrix.numel() - gram_matrix.size(0) # 대각선 제외 개수
+        return loss / num_elements

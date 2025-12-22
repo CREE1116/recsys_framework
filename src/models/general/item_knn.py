@@ -16,6 +16,7 @@ class ItemKNN(BaseModel):
         super(ItemKNN, self).__init__(config, data_loader)
         
         self.k = self.config['model'].get('k', 50)
+        self.similarity_metric = self.config['model'].get('similarity_metric', 'cosine')
         self.n_users = self.data_loader.n_users
         self.n_items = self.data_loader.n_items
         
@@ -38,9 +39,57 @@ class ItemKNN(BaseModel):
             shape=(data_loader.n_users, data_loader.n_items)
         )
         
-        print("Calculating item-item similarity matrix...")
-        self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T, dense_output=False)
-        
+        print(f"Calculating item-item similarity matrix using {self.similarity_metric}...")
+        if self.similarity_metric == 'jaccard':
+            # Manual Jaccard Calculation using Sparse Matrix Multiplication
+            # Much faster than sklearn pairwise_distances for sparse data
+            
+            # 1. Ensure binary matrix (Items x Users)
+            # self.user_item_matrix is (Users x Items). We need (Items x Users) for item-item similarity.
+            # actually similarity between columns of user_item_matrix.
+            # Let X = user_item_matrix (Users x Items).
+            # We want similarity between items i and j. Be careful with orientation.
+            # sklearn cosine_similarity(X.T) computes sim between rows of X.T (which are items).
+            
+            X = self.user_item_matrix.T # (Items x Users)
+            X.data = np.ones_like(X.data) # Ensure binary
+            
+            # 2. Intersection: X @ X.T -> (Items x Items) element (i, j) is number of users who interacted with both i and j.
+            print("Calculating intersection (X @ X.T)...")
+            intersection = X @ X.T 
+
+            # 3. Union: |A| + |B| - Intersection
+            # |A| is number of users for item A (row sum of X)
+            item_counts = np.array(X.sum(axis=1)).flatten() # (n_items,)
+            
+            # We need matrix where M[i, j] = count[i] + count[j]
+            # Use broadcasting: (N, 1) + (1, N) -> (N, N)
+            print("Calculating union...")
+            count_matrix = item_counts[:, None] + item_counts[None, :]
+            
+            # interaction is sparse, count_matrix is dense.
+            # But we only need values where union > 0.
+            # However, Jaccard is dense if we want full matrix.
+            # But usually we only care about non-zero intersections for KNN?
+            # Actually weak generalization: 0 intersection -> 0 similarity.
+            # So we can just operate on sparse structure of intersection?
+            # BUT intersection is likely denser than X.
+            # 3000 items -> 9M entries. Dense is fine (72MB).
+            
+            intersection_dense = intersection.toarray()
+            union_dense = count_matrix - intersection_dense
+            
+            # Avoid division by zero
+            valid_mask = union_dense > 0
+            self.item_similarity_matrix = np.zeros_like(intersection_dense, dtype=np.float32)
+            self.item_similarity_matrix[valid_mask] = intersection_dense[valid_mask] / union_dense[valid_mask]
+            
+            
+        elif self.similarity_metric == 'cosine':
+            self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T, dense_output=False)
+        else:
+            raise ValueError(f"Unsupported similarity metric: {self.similarity_metric}")
+            
         print("ItemKNN model fitted successfully.")
 
     def _scipy_sparse_to_torch_sparse(self, sparse_mx):

@@ -1,16 +1,36 @@
 import argparse
 import yaml
 import pprint
-import torch # torch.set_default_device를 위해 추가
+import torch
+import numpy as np
+import random
 
 from src.data_loader import DataLoader
 from src.models import get_model
 from src.trainer import Trainer
 
+
+def set_seed(seed=42):
+    """재현성을 위한 전역 Seed 고정"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    # Deterministic 설정 (속도가 느려질 수 있음)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 def main(config):
     """
     메인 실행 함수
     """
+    # 0. 재현성을 위한 Seed 고정
+    seed = config.get('seed', 42)
+    set_seed(seed)
+    print(f"Random seed set to: {seed}")
+    
     # 1. 데이터 로딩 및 전처리
     data_loader = DataLoader(config)
 

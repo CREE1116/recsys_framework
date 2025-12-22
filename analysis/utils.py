@@ -82,7 +82,7 @@ def load_item_metadata(dataset_name, data_path):
         movies_df['genres'] = movies_df['genres'].apply(lambda x: x.split('|'))
         movies_df.set_index('item_id', inplace=True)
 
-    elif 'ml100k' in dataset_name:
+    elif 'ml100k' in dataset_name or 'ml-100k' in dataset_name:
         metadata_path = os.path.join(os.path.dirname(data_path), 'u.item')
         genre_cols = ['unknown', 'Action', 'Adventure', 'Animation', 'Children\'s', 'Comedy', 'Crime', 
                       'Documentary', 'Drama', 'Fantasy', 'Film-Noir', 'Horror', 'Musical', 'Mystery', 

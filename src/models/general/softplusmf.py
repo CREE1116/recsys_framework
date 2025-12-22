@@ -40,18 +40,12 @@ class softplusMF(BaseModel):
     def calc_loss(self, batch_data):
         users = batch_data['user_id']
         pos_items = batch_data['pos_item_id']
-        neg_items = batch_data['neg_item_id'] # Trainer에서 이미 처리됨
+        neg_items = batch_data['neg_item_id']
 
         pos_scores = self.predict_for_pairs(users, pos_items)
         neg_scores = self.predict_for_pairs(users, neg_items)
         
-        # InfoNCE Loss의 경우 neg_scores가 (batch_size, num_negatives) 형태여야 함
-        # BPR Loss의 경우 neg_scores가 (batch_size, 1) 형태여야 함
-        if self.num_negatives == 1 and neg_scores.dim() > 1: # BPR인데 하드 네거티브가 여러개일 경우 첫번째만 사용
-            neg_scores = neg_scores[:, 0].unsqueeze(1)
-        elif self.num_negatives > 1 and neg_scores.dim() == 1: # InfoNCE인데 neg_scores가 1차원일 경우 (batch_size, 1)로 변경
-            neg_scores = neg_scores.unsqueeze(1)
-
+        # neg_scores is [B, N] (where N=1 for BPR, or N>1 for InfoNCE)
         loss = self.loss_fn(pos_scores, neg_scores)
        
         

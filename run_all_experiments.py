@@ -109,21 +109,58 @@ def aggregate_results(results_base_dir, output_csv):
 if __name__ == '__main__':
     # 실행할 모델 설정 파일 목록을 여기에 정의합니다.
     model_config_files_to_run = [
-        # 'configs/model/general/neumf.yaml',
-        # 'configs/model/general/item_knn.yaml',
-        # 'configs/model/general/lightgcn.yaml',
-        # 'configs/model/general/most_popular.yaml',
-        # 'configs/model/general/mf.yaml',
-        # 'configs/model/general/multvae.yaml',
-        # 'configs/model/general/protomf.yaml',
-        # 'configs/model/general/acf_nll.yaml',
-        # 'configs/model/general/acf_bpr.yaml',
-        
-        'configs/model/csar/csar_bpr.yaml',
-        'configs/model/csar/csar_r_bpr.yaml',
-        'configs/model/csar/csar.yaml',
-        'configs/model/csar/csar_r.yaml'
 
+        
+        # --- [6] One-Shot Models (원샷) ---
+        # 'configs/model/general/most_popular.yaml',
+        # 'configs/model/general/random_rec.yaml',
+        # 'configs/model/general/ease.yaml',
+        # 'configs/model/general/pure_svd.yaml',
+        # 'configs/model/general/item_knn_jaccard.yaml',
+        # 'configs/model/general/naive_bayes.yaml',
+        #  'configs/model/general/item_knn.yaml',
+
+        # # --- [1] General Models (일반) ---
+        # 'configs/model/general/mf.yaml',
+        # 'configs/model/general/lightgcn.yaml',
+        # 'configs/model/general/neumf.yaml',
+        # 'configs/model/general/acf_nll.yaml', 
+        # 'configs/model/general/normalized_mf.yaml', # Normalized MF (Sampled Softmax + Z-Score)
+
+        # # # --- [3] Explainability Models (설명가능성) ---
+        # 'configs/model/general/protomf_sampled.yaml',
+        # 'configs/model/general/protomf.yaml',        # Prototype-based Explainability
+
+        # --- [4] CSAR Models (CSAR 연구) ---
+        # 'configs/model/csar/csar.yaml',
+        # 'configs/model/csar/csar_r.yaml',
+        # 'configs/model/csar/csar_dualview.yaml',
+        'configs/model/csar/csar_hard.yaml',
+        'configs/model/csar/csar_sampled.yaml',
+        # 'configs/model/csar/csar_r_sampled.yaml',
+        # 'configs/model/csar/csar_listwise.yaml',
+        # 'configs/model/csar/csar_r_listwise.yaml',
+        # 'configs/model/csar/csar_bpr.yaml',
+        # 'configs/model/csar/csar_r_bpr.yaml',
+        # 'configs/model/csar/softplusmf.yaml',
+        # 'configs/model/general/protomf_sampled.yaml',
+        # 'configs/model/general/protomf.yaml',        # Prototype-based Explainability
+        # 'configs/model/general/lightgcn_sampled.yaml',
+
+        # "configs/model/general/mf_listwise.yaml",
+        # "configs/model/general/lightgcn_listwise.yaml",
+        # "configs/model/general/lightgcn_sampled.yaml",
+
+        # --- [2] Diversity Models (다양성) ---
+        # 'configs/model/general/dice.yaml',           # Robustness/Diversity (Bias reduction)
+        # 'configs/model/general/ddp.yaml',            # Determinantal Point Process
+        # 'configs/model/general/mmr.yaml',            # Maximal Marginal Relevance
+        # 'configs/model/general/pd.yaml',             # Personalized Diversification
+        # 'configs/model/general/dgcf.yaml',           # Disentangled Graph CF
+
+        # --- [5] VAE (학습이 오래걸려서 일단 빼둠) ---
+        # 'configs/model/general/multivae.yaml',
+        # 'configs/model/general/macrid_vae.yaml', 
     ]
 
     parser = argparse.ArgumentParser(description="Run experiments for specified models and a dataset.")

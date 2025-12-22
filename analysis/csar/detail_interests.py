@@ -64,13 +64,13 @@ def load_augmented_metadata(data_dir, dataset_name='ml-1m'):
 # --------------------------------------------------------------------------------
 # 2. 핵심 분석 함수 (장르/연도 + 감독/배우/키워드 추가)
 # --------------------------------------------------------------------------------
-def generate_deep_interest_report(report, interest_k, item_interests, inv_item_map, metadata_df, global_stats, top_n=20, interest_key_norm=None):
+def generate_deep_interest_report(report, interest_k, item_interests, inv_item_map, metadata_df, global_stats, top_n=20, interest_key_norm=None, view_name="Interest"):
     """
     모든 메타데이터(장르, 연도, 감독, 배우, 키워드)에 대해 과잉 표집 분석을 수행합니다.
     """
-    report.add_section(f"Interest #{interest_k} Deep Analysis", level=3)
+    report.add_section(f"{view_name} #{interest_k} Deep Analysis", level=3)
     
-    stats_summary = {'k': interest_k}
+    stats_summary = {'k': interest_k, 'view': view_name}
 
     # [1] Norm & Popularity
     if interest_key_norm is not None:
@@ -110,7 +110,14 @@ def generate_deep_interest_report(report, interest_k, item_interests, inv_item_m
                 current_features['decades'].append(int(np.floor(year / 10) * 10))
 
             # 장르 처리
-            genres = row['genres'].split('|') if row['genres'] else []
+            raw_genres = row['genres']
+            if isinstance(raw_genres, list):
+                genres = raw_genres
+            elif isinstance(raw_genres, str):
+                genres = raw_genres.split('|') if raw_genres else []
+            else:
+                genres = []
+            
             current_features['genres'].extend(genres)
 
             # [Director] or [Brand/Author] (for Books)
@@ -233,7 +240,7 @@ def generate_deep_interest_report(report, interest_k, item_interests, inv_item_m
     # 4. 정성적 요약 (자동 생성)
     # ---------------------------------------------------------
     report.add_section("Qualitative Summary", level=4)
-    summary = f"Interest #{interest_k} shows specific preferences."
+    summary = f"{view_name} #{interest_k} shows specific preferences."
     
     points = []
     if top_director: points.append(f"films by **{top_director}**")
@@ -243,7 +250,7 @@ def generate_deep_interest_report(report, interest_k, item_interests, inv_item_m
     if top_keyword: points.append(f"related to **'{top_keyword}'**")
     
     if points:
-        summary = f"Interest #{interest_k} captures **{', '.join(points)}**."
+        summary = f"{view_name} #{interest_k} captures **{', '.join(points)}**."
     
     report.add_text(summary)
     return stats_summary
@@ -290,7 +297,10 @@ def run_full_analysis(exp_config):
     
     for idx, row in metadata_df.iterrows():
         # Genre
-        if row.get('genres'): global_stats['genres'].update(row['genres'].split('|'))
+        if row.get('genres'): 
+            g_val = row['genres']
+            if isinstance(g_val, list): global_stats['genres'].update(g_val)
+            elif isinstance(g_val, str): global_stats['genres'].update(g_val.split('|'))
         # Decade
         # Decade
         match = re.search(r'\((\d{4})\)', str(row.get('title', '')))
@@ -313,15 +323,54 @@ def run_full_analysis(exp_config):
     
     # 분석 루프
     with torch.no_grad():
-        item_interests = model.attention_layer(model.item_embedding.weight)
-        keys_norm = torch.norm(model.attention_layer.interest_keys, p=2, dim=1).cpu()
-    
+        attention_output = model.attention_layer(model.item_embedding.weight)
+        
+        # [DualView Check]
+        if isinstance(attention_output, tuple):
+            print("[Info] Dual-View Model Detected. Analyzing both Like and Dislike views.")
+            # DualView: (like_interests, dislike_interests)
+            item_interests_tuple = attention_output
+            # Keys: model.attention_layer.pos_keys, neg_keys
+            keys_tuple = (model.attention_layer.pos_keys, model.attention_layer.neg_keys)
+            view_names = ["Like Interest", "Dislike Interest"]
+        else:
+            # Single View
+            item_interests_tuple = (attention_output,)
+            # Keys: model.attention_layer.interest_keys usually, but handle Dummy/Tensor cases generic
+            # Check if interest_keys exists (Standard CSAR)
+            if hasattr(model.attention_layer, 'interest_keys'):
+                keys_tuple = (model.attention_layer.interest_keys,)
+            else:
+                # Fallback if no interest_keys param found (unlikely for standard)
+                keys_tuple = (None,)
+            view_names = ["Interest"]
+
     collected_stats = []
-    for k in range(model.num_interests):
-        stats = generate_deep_interest_report(
-            report, k, item_interests, inv_item_map, metadata_df, global_stats, top_n, keys_norm[k]
-        )
-        if stats: collected_stats.append(stats)
+    
+    for i, item_interests in enumerate(item_interests_tuple):
+        view_name = view_names[i]
+        curr_keys = keys_tuple[i]
+        
+        # Calculate Norms if keys exist
+        keys_norm = None
+        if curr_keys is not None:
+            # Handle if keys is parameter/tensor and handle Dummy (extra key)
+            if hasattr(model.attention_layer, 'Dummy') and model.attention_layer.Dummy and i==0: # Only for single view Dummy usually
+                 curr_keys_real = curr_keys[:-1] 
+            else:
+                 curr_keys_real = curr_keys
+            
+            keys_norm = torch.norm(curr_keys_real, p=2, dim=1).cpu()
+
+        report.add_section(f"=== {view_name} View Analysis ===", level=1)
+        
+        for k in range(model.num_interests):
+            k_norm = keys_norm[k] if keys_norm is not None else None
+            
+            stats = generate_deep_interest_report(
+                report, k, item_interests, inv_item_map, metadata_df, global_stats, top_n, k_norm, view_name
+            )
+            if stats: collected_stats.append(stats)
         
     # 글로벌 상관관계 그래프 (이전 코드와 동일)
     if collected_stats:
@@ -385,7 +434,7 @@ if __name__ == '__main__':
             print(f"[Error] Path not found: {args.exp_dir}")
     else:
         # Default behavior (Hardcoded list - optional, kept for backward compat)
-        EXPERIMENTS = [{'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/amazon_books/csar'}]
+        EXPERIMENTS = [{'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/ml-1m/csar-hard'}]
         for exp in EXPERIMENTS:
             if os.path.exists(exp['run_folder_path']): run_full_analysis(exp)
             else: print(f"[Error] Path not found: {exp['run_folder_path']}")

@@ -21,25 +21,58 @@ def get_coverage(all_recommended_items, n_items):
     """추천된 아이템의 고유 개수를 전체 아이템 수로 나눈 값."""
     return len(set(all_recommended_items)) / n_items
 
-def get_gini_index_from_recs(recommended_items):
-    """추천된 아이템 목록의 지니 계수."""
+def get_gini_index(values):
+    """일반적인 Gini Index 계산 함수."""
+    if len(values) == 0:
+        return 0.0
+    
+    values = np.sort(values)
+    n = len(values)
+    index = np.arange(1, n + 1)
+    
+    if np.sum(values) == 0:
+        return 0.0
+        
+    gini = (np.sum((2 * index - n - 1) * values)) / (n * np.sum(values))
+    return gini
+
+def get_gini_index_from_recs(recommended_items, num_items):
+    """
+    추천된 아이템 목록의 Gini Index (전체 아이템 기준).
+    추천되지 않은 아이템(count=0)도 포함하여 계산해야 정확한 불평등도를 측정할 수 있음.
+    """
     if not recommended_items:
         return 0.0
     
-    item_counts = {}
+    item_counts = np.zeros(num_items)
     for item in recommended_items:
-        item_counts[item] = item_counts.get(item, 0) + 1
+        # 범위를 벗어나는 아이템 ID 방지
+        if item < num_items:
+            item_counts[item] += 1
     
-    popularity = np.array(list(item_counts.values()))
-    if len(popularity) == 0:
+    return get_gini_index(item_counts)
+
+def get_novelty(recommended_items, item_popularity, num_users=None):
+    """
+    Novelty (Self-Information): -log2(P(i))
+    P(i) = (train_count(i) + 1) / (total_interactions + N) (Smoothing 적용)
+    """
+    if not recommended_items:
         return 0.0
+        
+    # item_popularity: pd.Series or dict of train counts
+    # recommended_items: list of strict item IDs
     
-    popularity = np.sort(popularity)
-    n = len(popularity)
-    index = np.arange(1, n + 1)
+    epsilon = 1e-10
+    total_interactions = item_popularity.sum() if num_users is None else num_users # 근사치
     
-    gini = (np.sum((2 * index - n - 1) * popularity)) / (n * np.sum(popularity))
-    return gini
+    novelty_scores = []
+    for item in recommended_items:
+        count = item_popularity.get(item, 0)
+        p_i = (count + 1) / (total_interactions + len(item_popularity))
+        novelty_scores.append(-math.log2(p_i + epsilon))
+        
+    return np.mean(novelty_scores) if novelty_scores else 0.0
 
 def get_long_tail_coverage(all_recommended_items, item_popularity, long_tail_percent=0.2):
     if not all_recommended_items:
@@ -69,6 +102,18 @@ def get_entropy_from_recs(recommended_items):
     entropy = -np.sum(probabilities * np.log2(probabilities))
     return entropy
 
+def get_gini_index_emb(item_embeddings):
+    """
+    아이템 임베딩 Norm의 Gini Index.
+    임베딩 공간 상에서 아이템들이 얼마나 고르게 분포(Magnitude 기준)되어 있는지 측정.
+    일부 아이템(Popular)의 Norm만 비대해지는 현상을 감지할 수 있음.
+    """
+    if item_embeddings is None:
+        return 0.0
+    
+    norms = torch.norm(item_embeddings, dim=1).detach().cpu().numpy()
+    return get_gini_index(norms)
+
 def get_ild(all_top_k_items, item_embeddings):
     if not all_top_k_items:
         return 0.0
@@ -87,23 +132,18 @@ def get_ild(all_top_k_items, item_embeddings):
                                          rec_item_embeds_norm.transpose(0, 1))
 
         n = cosine_sim_matrix.size(0)
-        if n < 2:
-            continue
-
+        # (n < 2 check redundant but safe)
+        
         # 대각선(자기 자신)은 0으로
         cosine_sim_matrix.fill_diagonal_(0.0)
 
-        # 상삼각(or 하삼각)만 사용해서 중복 제거
-        triu_indices = torch.triu_indices(n, n, offset=1)
-        pair_sims = cosine_sim_matrix[triu_indices[0], triu_indices[1]]
-
-        num_pairs = pair_sims.numel()
-        if num_pairs == 0:
-            continue
-
-        # diversity = 1 - cos_sim
-        diversity_vals = 1.0 - pair_sims
-        all_ild_scores.append(diversity_vals.mean().item())
+        # 상삼각(or 하삼각)만 사용해서 중복 제거 (쌍의 개수: n*(n-1)/2)
+        # ILD definition considers average over n*(n-1) pairs (excluding diagonal)
+        
+        diversity_vals = 1.0 - cosine_sim_matrix
+        # Sum of off-diagonal elements / (n * (n-1))
+        ild_score = diversity_vals.sum() / (n * (n - 1))
+        all_ild_scores.append(ild_score.item())
 
     return float(np.mean(all_ild_scores)) if all_ild_scores else 0.0
 
@@ -142,6 +182,9 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
 
 
             _, top_indices = torch.topk(all_item_scores, k=max(top_k_list), dim=1)
+            
+            # Explicitly free memory
+            del all_item_scores
             
             for i in range(len(user_batch)):
                 pred_list = top_indices[i].cpu().numpy().tolist()
@@ -224,7 +267,7 @@ def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
     
     model.eval()
     
-    if method == 'full':
+    if method == 'full' or method == 'full_subset':
         core_metrics, all_top_k_items = _evaluate_full(model, test_loader, top_k_list, metrics_list, device, data_loader.user_history)
     elif method == 'uni99':
         core_metrics, all_top_k_items = _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device)
@@ -236,35 +279,58 @@ def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
 
     final_results = core_metrics
     
-    if not any(m in metrics_list for m in ['Coverage', 'GiniIndex', 'LongTailCoverage', 'Entropy', 'ILD']):
+    if not any(m in metrics_list for m in ['Coverage', 'GiniIndex', 'LongTailCoverage', 'Entropy', 'ILD', 'GiniIndex_emb', 'Novelty']):
         return final_results
 
     item_embeddings_for_ild = None
-    if 'ILD' in metrics_list:
+    if any(m in metrics_list for m in ['ILD', 'GiniIndex_emb']):
         with torch.no_grad():
             if hasattr(model, 'get_embeddings'):
                 _, item_embeddings_for_ild = model.get_embeddings()
             elif hasattr(model, 'item_embedding') and hasattr(model.item_embedding, 'weight'):
                 item_embeddings_for_ild = model.item_embedding.weight
 
-    # [수정] GiniIndex는 K값과 무관하게 전체 추천 목록에 대해 한 번만 계산
+    # [Global Metrics] GiniIndex, GiniIndex_emb
+    # 전체 Top-K(최대 K) 기준 글로벌 지표도 남겨둠
     if 'GiniIndex' in metrics_list:
         flat_recommended_items_overall = [item for sublist in all_top_k_items for item in sublist]
-        final_results['GiniIndex'] = get_gini_index_from_recs(flat_recommended_items_overall)
+        final_results['GiniIndex'] = get_gini_index_from_recs(flat_recommended_items_overall, data_loader.n_items)
+        
+    if 'GiniIndex_emb' in metrics_list and item_embeddings_for_ild is not None:
+        # 전체 아이템 임베딩의 Gini Index (Static) - "모델 자체의 표현력 불균형"
+        final_results['GiniIndex_emb'] = get_gini_index_emb(item_embeddings_for_ild)
 
     for k in top_k_list:
         all_top_k_items_at_k = [user_recs[:k] for user_recs in all_top_k_items]
+        flat_recommended_items_at_k = [item for sublist in all_top_k_items_at_k if sublist for item in sublist]
         
         if 'ILD' in metrics_list and item_embeddings_for_ild is not None:
             final_results[f'ILD@{k}'] = get_ild(all_top_k_items_at_k, item_embeddings_for_ild)
         
-        # [BUG FIX] Coverage, Entropy 등은 K값에 따라 계산되어야 함
-        flat_recommended_items_at_k = [item for sublist in all_top_k_items_at_k if sublist for item in sublist]
         if 'Coverage' in metrics_list:
             final_results[f'Coverage@{k}'] = get_coverage(flat_recommended_items_at_k, data_loader.n_items)
+            
         if 'LongTailCoverage' in metrics_list:
             long_tail_percent = eval_config.get('long_tail_percent', 0.2)
             final_results[f'LongTailCoverage@{k}'] = get_long_tail_coverage(flat_recommended_items_at_k, data_loader.item_popularity, long_tail_percent)
+            
         if 'Entropy' in metrics_list:
             final_results[f'Entropy@{k}'] = get_entropy_from_recs(flat_recommended_items_at_k)
+            
+        if 'Novelty' in metrics_list:
+             final_results[f'Novelty@{k}'] = get_novelty(flat_recommended_items_at_k, data_loader.item_popularity, data_loader.n_users)
+             
+        if 'GiniIndex' in metrics_list:
+             final_results[f'GiniIndex@{k}'] = get_gini_index_from_recs(flat_recommended_items_at_k, data_loader.n_items)
+
+        if 'GiniIndex_emb' in metrics_list and item_embeddings_for_ild is not None:
+             # 추천된 아이템들의 임베딩 Norm Gini Index
+             # 텐서 인덱싱을 위해 리스트를 텐서로 변환
+             if flat_recommended_items_at_k:
+                 flat_indices = torch.tensor(flat_recommended_items_at_k, device=item_embeddings_for_ild.device)
+                 recs_embeddings = item_embeddings_for_ild[flat_indices]
+                 final_results[f'GiniIndex_emb@{k}'] = get_gini_index_emb(recs_embeddings)
+             else:
+                 final_results[f'GiniIndex_emb@{k}'] = 0.0
+
     return final_results

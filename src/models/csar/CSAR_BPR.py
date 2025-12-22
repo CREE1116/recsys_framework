@@ -19,14 +19,14 @@ class CSAR_BPR(BaseModel):
         self.lamda = self.config['model']['orth_loss_weight']
         self.scale = self.config['model'].get('scale', True)
         self.Dummy = self.config['model'].get('dummy', False)
-        self.soft_relu = self.config['model'].get('soft_relu', False)
         self.dynamic_bpr = self.config['model'].get('dynamic_bpr', False)
+        self.emb_dropout = self.config['model'].get('emb_dropout', 0.0)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
         
         # CoSupportAttentionLayer 사용
-        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy, soft_relu=self.soft_relu)
+        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale)
 
         self._init_weights()
         self.loss_fn = BPRLoss() if not self.dynamic_bpr else DynamicMarginBPRLoss()
@@ -40,6 +40,10 @@ class CSAR_BPR(BaseModel):
         # 사용자 임베딩과 아이템 임베딩 가져오기
         user_embs = self.user_embedding(users)
         all_item_embs = self.item_embedding.weight
+        
+        # Embedding Dropout (Training only)
+        if self.training and self.emb_dropout > 0:
+            user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
 
         # co-support attention layer를 통해 관심사 가중치 계산
         user_interests = self.attention_layer(user_embs)
@@ -53,6 +57,11 @@ class CSAR_BPR(BaseModel):
         # 사용자-아이템 쌍 점수 계산 (포인트와이즈용)
         user_embs = self.user_embedding(user_ids)
         item_embs = self.item_embedding(item_ids)
+        
+        # Embedding Dropout (Training only)
+        if self.training and self.emb_dropout > 0:
+            user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
+            item_embs = F.dropout(item_embs, p=self.emb_dropout, training=True)
 
         # co-support attention layer를 통해 관심사 가중치 계산
         user_interests = self.attention_layer(user_embs)
@@ -64,11 +73,15 @@ class CSAR_BPR(BaseModel):
     def _get_user_interests(self, user_ids):
         """ 사용자의 K-dim 관심사 벡터를 계산합니다. """
         user_embs = self.user_embedding(user_ids)
+        if self.training and self.emb_dropout > 0:
+            user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
         return self.attention_layer(user_embs)
 
     def _get_item_interests(self, item_ids):
         """ 특정 아이템들의 K-dim 관심사 벡터를 계산합니다. """
         item_embs = self.item_embedding(item_ids)
+        if self.training and self.emb_dropout > 0:
+            item_embs = F.dropout(item_embs, p=self.emb_dropout, training=True)
         return self.attention_layer(item_embs)
 
     def _get_all_item_interests(self):
@@ -92,6 +105,7 @@ class CSAR_BPR(BaseModel):
         pos_scores = (user_interests * pos_item_interests).sum(dim=-1) # [B]
         neg_scores = (user_interests * neg_item_interests).sum(dim=-1) # [B]
         
+        # BPR 손실
         # BPR 손실
         loss = self.loss_fn(pos_scores, neg_scores)
 

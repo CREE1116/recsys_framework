@@ -16,14 +16,15 @@ class CSAR(BaseModel):
         self.lamda = self.config['model']['orth_loss_weight']
         self.scale = self.config['model'].get('scale', True)
         self.Dummy = self.config['model'].get('dummy', False)
-        self.soft_relu = self.config['model'].get('soft_relu', False)
+        self.zscore = self.config['model'].get('zscore', False)
+        self.emb_dropout = self.config['model'].get('emb_dropout', 0.0)
         # Standard Deviation Scaling Factor (Beta) for Power-Scaled Norm
         self.std_power = self.config['model'].get('std_power', 0.2)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
         
-        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale, Dummy=self.Dummy, soft_relu=self.soft_relu)
+        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale)
 
         self._init_weights()
 
@@ -34,6 +35,10 @@ class CSAR(BaseModel):
     def forward(self, users):
         user_embs = self.user_embedding(users)
         all_item_embs = self.item_embedding.weight
+        
+        # Embedding Dropout (Training only)
+        if self.training and self.emb_dropout > 0:
+            user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
 
         user_interests = self.attention_layer(user_embs)
         item_interests = self.attention_layer(all_item_embs)
@@ -44,6 +49,11 @@ class CSAR(BaseModel):
     def predict_for_pairs(self, user_ids, item_ids):
         user_embs = self.user_embedding(user_ids)
         item_embs = self.item_embedding(item_ids)
+        
+        # Embedding Dropout (Training only)
+        if self.training and self.emb_dropout > 0:
+            user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
+            item_embs = F.dropout(item_embs, p=self.emb_dropout, training=True)
 
         user_interests = self.attention_layer(user_embs)
         item_interests = self.attention_layer(item_embs)
@@ -65,7 +75,10 @@ class CSAR(BaseModel):
         # # preds.std() ** beta reduces the aggressive scaling of high-variance dense data
         # std_scaling = preds.std().pow(self.std_power) + 1e-9
         # preds = (preds - preds.mean()) / std_scaling
-        
+        if self.zscore:
+            mean = preds.mean()
+            std = preds.std()
+            preds = (preds - mean) / (std + 1e-9)
         # Global Softmax Cross Entropy
         loss = F.cross_entropy(preds, items) 
 
