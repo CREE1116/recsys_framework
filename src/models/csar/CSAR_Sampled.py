@@ -21,8 +21,6 @@ class CSAR_Sampled(BaseModel):
         self.init_method = self.config['model'].get('init_method', 'xavier')
         # self.Dummy removed
         self.normalize = self.config['model'].get('normalize', False)
-        # self.emb_dropout removed
-        self.score_reg_weight = self.config['model'].get('score_reg_weight', 0.0)
         
         self.num_negatives = self.config['train'].get('num_negatives', 1)
         self.is_explicit = self.num_negatives > 0
@@ -135,17 +133,11 @@ class CSAR_Sampled(BaseModel):
         loss = self.loss_fn(scores, is_explicit=self.is_explicit)
 
         # Orthogonal Loss
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
+        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2")
         
-        # Score (Activation) Regularization
-        # 관심사 강도(Intensity) 자체가 너무 커지지 않도록 제어 (Exploding 방지)
-        reg_loss_user = (user_intensities ** 2).mean()
-        reg_loss_item = (pos_item_intensities ** 2).mean()
-        score_reg_loss = reg_loss_user + reg_loss_item
-
         params_to_log = {'scale': self.attention_layer.scale.item()}
 
-        return (loss, self.lamda * orth_loss, self.score_reg_weight * score_reg_loss), params_to_log
+        return (loss, self.lamda * orth_loss), params_to_log
 
     def __str__(self):
         return f"CSAR_Sampled(num_interests={self.num_interests}, embedding_dim={self.embedding_dim})"

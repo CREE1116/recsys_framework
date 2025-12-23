@@ -37,10 +37,9 @@ class CSAR_DualView(BaseModel):
         
         # Sampled Softmax Loss
         temperature = config['model'].get('temperature', 0.1)
-        use_zscore = config['model'].get('use_zscore', False)
         from src.loss import NormalizedSampledSoftmaxLoss
         self.loss_fn = NormalizedSampledSoftmaxLoss(
-            self.data_loader.n_items, temperature=temperature, use_zscore=use_zscore
+            self.data_loader.n_items, temperature=temperature
         )
 
     def _init_weights(self):
@@ -176,7 +175,7 @@ class CSAR_DualView(BaseModel):
         
         # === Loss ===
         main_loss = self.loss_fn(scores, is_explicit=True)
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
+        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2")
         
         params_to_log = {
             'pos_scale': self.attention_layer.pos_scale.item(),

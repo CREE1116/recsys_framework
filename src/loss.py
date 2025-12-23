@@ -196,20 +196,18 @@ class NormalizedSampledSoftmaxLoss(nn.Module):
 class NDCGWeightedListwiseBPR(nn.Module):
     """
     Listwise BPR with NDCG-style position weighting
-    (Optimized version)
+    (Explicit Negative Sampling only)
     """
-    def __init__(self, k=10, use_zscore=False, is_explicit=False):
+    def __init__(self, k=10, use_zscore=False):
         super().__init__()
         self.k = k
         self.use_zscore = use_zscore
-        self.is_explicit = is_explicit
     
     def forward(self, scores):
         """
         Args:
-            scores (Tensor): [Batch, Batch] - 점수 행렬 (User x Item)
+            scores (Tensor): [Batch, 1 + NumNeg] - Column 0 is Positive, Columns 1..N are Negatives
         """
-        # 0. Score matrix (Taken as input)
         # Apply Z-score Normalization if requested
         if self.use_zscore:
             mean = scores.mean()
@@ -219,89 +217,38 @@ class NDCGWeightedListwiseBPR(nn.Module):
         B = scores.size(0)
         device = scores.device
         
-        if self.is_explicit:
-            # Case 1: Explicit Negative Sampling input [B, 1 + NumNeg]
-            # Column 0 is Positive. Columns 1..N are Negatives.
-            pos_scores = scores[:, 0].unsqueeze(1) # [B, 1]
-            neg_scores = scores[:, 1:]             # [B, N]
-            
-            # Pairwise differences
-            diff = pos_scores - neg_scores         # [B, N]
-            
-            # Ranking: Sort all scores (Pos + Negs) row-wise
-            # We want to know the rank of items.
-            # But wait, weights depend on rank.
-            # Ranks are calculated over (1 + N) items.
-            sorted_indices = scores.argsort(dim=1, descending=True)
-            ranks = torch.empty_like(scores)
-            ranks.scatter_(
-                dim=1,
-                index=sorted_indices,
-                src=torch.arange(scores.size(1), device=device, dtype=scores.dtype).view(1, -1).expand(B, -1)
-            )
-            
-            # We only care about weights for the Negatives (Columns 1..N)
-            neg_ranks = ranks[:, 1:] # [B, N]
-            
-            # NDCG Weights for Negatives
-            # Note: The weight depends on WHERE the negative is ranked.
-            # If Rank is 0 (it beat the positive), weight is high.
-            ndcg_weights = 1.0 / torch.log2(neg_ranks + 2.0)
-            
-            # Top-K Masking (on Negatives)
-            # If negative rank is >= K, mask it out.
-            topk_mask = neg_ranks < self.k
-            
-            # Final Mask
-            final_mask = topk_mask.float()
-            
-            # Loss
-            # bpr_term = -log(sigmoid(pos - neg))
-            bpr_term = -torch.log(torch.sigmoid(diff).clamp(min=1e-8))
-            weighted_loss = bpr_term * ndcg_weights * final_mask
-            
-            return weighted_loss.sum() / final_mask.sum().clamp(min=1.0)
-
-        else:
-            # Case 2: Implicit / In-Batch (Square Matrix [B, B])
-            # Diagonal is Positive.
-            labels = torch.arange(B, device=device)
-            pos_scores = scores[labels, labels].unsqueeze(1)  # [B, 1]
-            
-            # Pairwise differences
-            diff = pos_scores - scores  # [B, B]
-            
-            # 4. Efficient ranking computation
-            # Method 1: Direct argsort (current)
-            sorted_indices = scores.argsort(dim=1, descending=True)
-            ranks = torch.empty_like(scores)
-            ranks.scatter_(
-                dim=1,
-                index=sorted_indices,
-                src=torch.arange(B, device=device, dtype=scores.dtype).view(1, -1).expand(B, -1)
-            )
-            
-            # 5. NDCG discount weights
-            ndcg_weights = 1.0 / torch.log2(ranks + 2.0)  # [B, B]
-            
-            # 6. Masking
-            # Self-pairs 제외
-            self_mask = ~torch.eye(B, device=device, dtype=torch.bool)
-            
-            # Top-K만
-            topk_mask = ranks < self.k
-            
-            # Optional: Violation만 (negative > positive)
-            # User Feedback: "Remove only_violation entirely, allow learning from all Top-K items"
-            # This enforces a margin even for easy negatives.
-            final_mask = (self_mask & topk_mask).float()
-            
-            # 7. Weighted BPR Loss
-            bpr_term = -torch.log(torch.sigmoid(diff).clamp(min=1e-8))
-            weighted_loss = bpr_term * ndcg_weights * final_mask
-            
-            # 8. Normalization
-            return weighted_loss.sum() / final_mask.sum().clamp(min=1.0)
+        # Explicit Negative Sampling: [B, 1 + NumNeg]
+        # Column 0 is Positive. Columns 1..N are Negatives.
+        pos_scores = scores[:, 0].unsqueeze(1) # [B, 1]
+        neg_scores = scores[:, 1:]             # [B, N]
+        
+        # Pairwise differences
+        diff = pos_scores - neg_scores         # [B, N]
+        
+        # Ranking: Sort all scores (Pos + Negs) row-wise
+        sorted_indices = scores.argsort(dim=1, descending=True)
+        ranks = torch.empty_like(scores)
+        ranks.scatter_(
+            dim=1,
+            index=sorted_indices,
+            src=torch.arange(scores.size(1), device=device, dtype=scores.dtype).view(1, -1).expand(B, -1)
+        )
+        
+        # We only care about weights for the Negatives (Columns 1..N)
+        neg_ranks = ranks[:, 1:] # [B, N]
+        
+        # NDCG Weights for Negatives
+        ndcg_weights = 1.0 / torch.log2(neg_ranks + 2.0)
+        
+        # Top-K Masking
+        topk_mask = neg_ranks < self.k
+        final_mask = topk_mask.float()
+        
+        # Weighted BPR Loss
+        bpr_term = -torch.log(torch.sigmoid(diff).clamp(min=1e-8))
+        weighted_loss = bpr_term * ndcg_weights * final_mask
+        
+        return weighted_loss.sum() / final_mask.sum().clamp(min=1.0)
 
 class TopK_NDCG_BPR(nn.Module):
     def __init__(self, k=20, only_violation=False):

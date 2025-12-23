@@ -31,10 +31,17 @@ class softplusMF(BaseModel):
         nn.init.normal_(self.item_embedding.weight, std=0.01)
 
     def predict_for_pairs(self, users, items):
-        user_embeds = F.softplus(self.user_embedding(users))
-        item_embeds = F.softplus(self.item_embedding(items))
+        user_embeds = F.softplus(self.user_embedding(users))  # [B, D]
+        item_embeds = F.softplus(self.item_embedding(items))  # [B, D] or [B, N, D]
         
-        output = torch.sum(user_embeds * item_embeds, dim=-1)
+        if item_embeds.dim() == 2:
+            # 일반적인 경우: [B, D] * [B, D] -> [B]
+            output = torch.sum(user_embeds * item_embeds, dim=-1)
+        elif item_embeds.dim() == 3:
+            # neg_items가 [B, N]인 경우: [B, D], [B, N, D] -> [B, N]
+            output = torch.einsum('bd,bnd->bn', user_embeds, item_embeds)
+        else:
+            raise ValueError(f"Unexpected item_embeds shape: {item_embeds.shape}")
         return output
 
     def calc_loss(self, batch_data):

@@ -20,7 +20,7 @@ class CSAR_R_Listwise(CSAR_Listwise):
         # NDCGWeightedListwiseBPR Loss
         self.num_negatives = self.config['train'].get('num_negatives', 1)
         self.is_explicit = self.num_negatives > 0
-        self.loss_fn = NDCGWeightedListwiseBPR(k=self.topk, use_zscore=self.zscore, is_explicit=self.is_explicit)
+        self.loss_fn = NDCGWeightedListwiseBPR(k=self.topk, use_zscore=self.zscore)
 
     def forward(self, users):
         user_embs = self.user_embedding(users)

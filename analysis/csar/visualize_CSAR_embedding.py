@@ -537,7 +537,7 @@ def calculate_key_item_similarity(keys, items, output_dir, top_k=50):
 
 if __name__ == '__main__':
     # 실험 경로 설정
-    target_dir = '/Users/leejongmin/code/recsys_framework/trained_model/ml-1m/csar-hard'
+    target_dir = '/Users/leejongmin/code/recsys_framework/trained_model/ml-100k/csar-sampled__orth_loss_weight=0.1_num_interests=96'
     
     # [USER REQUEST] Single Config Variable for Perplexity
     TARGET_PERPLEXITY = 5

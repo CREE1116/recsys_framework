@@ -110,7 +110,7 @@ class CSAR_BPR(BaseModel):
         loss = self.loss_fn(pos_scores, neg_scores)
 
         # attention_layer에서 직교 손실 계산
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
+        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2")
         params_to_log = {'scale': self.attention_layer.scale.item()}
 
         return (loss, self.lamda * orth_loss), params_to_log

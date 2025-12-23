@@ -5,9 +5,9 @@ model:
   k: 50 # 사용할 최근접 이웃의 수
   
 train:
-  batch_size: 512
+  batch_size: 256
 evaluation:
-  validation_method: "full_subset" # 검증 시 평가 방법
+  validation_method: "sampled" # 검증 시 평가 방법
   final_method: "full" # 최종 평가 시 평가 방법
   metrics: [
       "NDCG",

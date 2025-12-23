@@ -14,7 +14,7 @@ class LightGCN_Listwise(LightGCN):
         # Explicit Listwise Loss
         from src.loss import NDCGWeightedListwiseBPR
         self.is_explicit = self.num_negatives > 0
-        self.loss_fn = NDCGWeightedListwiseBPR(k=self.topk, use_zscore=self.zscore, is_explicit=self.is_explicit)
+        self.loss_fn = NDCGWeightedListwiseBPR(k=self.topk, use_zscore=self.zscore)
 
     def calc_loss(self, batch_data):
         user_embeds, item_embeds = self.get_embeddings()

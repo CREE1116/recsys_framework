@@ -8,16 +8,16 @@ model:
   tau: 0.1 # Gumbel-Softmax temperature
 
 train:
-  batch_size: 512
+  batch_size: 256
   epochs: 500
   lr: 0.001
   loss_type: "pointwise" # VAE implies listwise/rejection sampling, but handled internally
   optimizer: "adam"
   l2_regularization: 0.0
-  early_stop_patience: 20
+  early_stop_patience: 40
 
 evaluation:
-  validation_method: "full_subset" # 검증 시 평가 방법
+  validation_method: "sampled" # 검증 시 평가 방법
   final_method: "full" # 최종 평가 시 평가 방법
   metrics: [
       "NDCG",

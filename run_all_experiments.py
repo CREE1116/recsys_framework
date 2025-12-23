@@ -121,7 +121,7 @@ if __name__ == '__main__':
         #  'configs/model/general/item_knn.yaml',
 
         # # --- [1] General Models (일반) ---
-        # 'configs/model/general/mf.yaml',
+        'configs/model/general/mf.yaml',
         # 'configs/model/general/lightgcn.yaml',
         # 'configs/model/general/neumf.yaml',
         # 'configs/model/general/acf_nll.yaml', 
@@ -135,21 +135,21 @@ if __name__ == '__main__':
         # 'configs/model/csar/csar.yaml',
         # 'configs/model/csar/csar_r.yaml',
         # 'configs/model/csar/csar_dualview.yaml',
-        'configs/model/csar/csar_hard.yaml',
+        # 'configs/model/csar/csar_hard.yaml',
         'configs/model/csar/csar_sampled.yaml',
         # 'configs/model/csar/csar_r_sampled.yaml',
-        # 'configs/model/csar/csar_listwise.yaml',
+        'configs/model/csar/csar_listwise.yaml',
         # 'configs/model/csar/csar_r_listwise.yaml',
-        # 'configs/model/csar/csar_bpr.yaml',
+        'configs/model/csar/csar_bpr.yaml',
         # 'configs/model/csar/csar_r_bpr.yaml',
         # 'configs/model/csar/softplusmf.yaml',
-        # 'configs/model/general/protomf_sampled.yaml',
-        # 'configs/model/general/protomf.yaml',        # Prototype-based Explainability
-        # 'configs/model/general/lightgcn_sampled.yaml',
+        'configs/model/general/protomf_sampled.yaml',
+        'configs/model/general/protomf.yaml',        # Prototype-based Explainability
+        
 
-        # "configs/model/general/mf_listwise.yaml",
-        # "configs/model/general/lightgcn_listwise.yaml",
-        # "configs/model/general/lightgcn_sampled.yaml",
+        "configs/model/general/mf_listwise.yaml",
+        "configs/model/general/lightgcn_listwise.yaml",
+        "configs/model/general/lightgcn_sampled.yaml",
 
         # --- [2] Diversity Models (다양성) ---
         # 'configs/model/general/dice.yaml',           # Robustness/Diversity (Bias reduction)

@@ -34,7 +34,7 @@ class CSAR_Listwise(BaseModel):
         
         # NDCGWeightedListwiseBPR Loss (Explicit 모드 고정 - 데이터로더에서 네거티브 샘플링)
         from src.loss import NDCGWeightedListwiseBPR
-        self.loss_fn = NDCGWeightedListwiseBPR(k=self.topk, use_zscore=self.zscore, is_explicit=True)
+        self.loss_fn = NDCGWeightedListwiseBPR(k=self.topk, use_zscore=self.zscore)
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)
@@ -117,7 +117,7 @@ class CSAR_Listwise(BaseModel):
         loss = self.loss_fn(scores)
 
         # Orthogonal Loss
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
+        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2")
 
         params_to_log = {
             'scale': self.attention_layer.scale.item() if hasattr(self.attention_layer.scale, 'item') else 0.0

@@ -19,7 +19,7 @@ class MF_Listwise(BaseModel):
         # Explicit Listwise Loss
         from src.loss import NDCGWeightedListwiseBPR
         self.is_explicit = self.num_negatives > 0
-        self.loss_fn = NDCGWeightedListwiseBPR(k=self.topk, use_zscore=self.zscore, is_explicit=self.is_explicit)
+        self.loss_fn = NDCGWeightedListwiseBPR(k=self.topk, use_zscore=self.zscore)
 
     def _init_weights(self):
         nn.init.normal_(self.user_embedding.weight, std=0.01)

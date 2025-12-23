@@ -26,8 +26,7 @@ class NormalizedMF(BaseModel):
         
         self.loss_fn = NormalizedSampledSoftmaxLoss(
             self.data_loader.n_items, 
-            temperature=self.temperature, 
-            use_zscore=self.use_zscore
+            temperature=self.temperature
         )
         
         self._init_weights()

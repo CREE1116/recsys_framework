@@ -82,7 +82,7 @@ class CSAR(BaseModel):
         # Global Softmax Cross Entropy
         loss = F.cross_entropy(preds, items) 
 
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l1")
+        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2")
 
         params_to_log = {'scale': self.attention_layer.scale.item()}
 

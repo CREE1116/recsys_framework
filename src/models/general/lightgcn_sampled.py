@@ -36,8 +36,7 @@ class LightGCN_Sampled(BaseModel):
         # Sampled Softmax Loss
         self.loss_fn = NormalizedSampledSoftmaxLoss(
             self.num_items, 
-            temperature=self.temperature, 
-            use_zscore=self.use_zscore
+            temperature=self.temperature
         )
         
         self._init_weights()

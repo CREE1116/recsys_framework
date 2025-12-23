@@ -12,7 +12,7 @@ model:
   use_zscore: False
 
 train:
-  batch_size: 512
+  batch_size: 256
   epochs: 500
   learning_rate: 0.001
   weight_decay: 0.0001
@@ -21,11 +21,11 @@ train:
   num_negatives: 60 # Sampled Softmax용 네거티브 수
   negative_sampling_strategy: ["uniform"]
   negative_sampling_alpha: 0.75
-  early_stop_patience: 30
+  early_stop_patience: 40
 
 evaluation:
-  batch_size: 512
-  validation_method: "full_subset"
+  batch_size: 256
+  validation_method: "sampled"
   final_method: "full"
   metrics:
     [

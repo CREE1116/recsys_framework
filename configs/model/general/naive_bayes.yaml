@@ -3,7 +3,7 @@ model:
   smoothing: 1.0
 
 evaluation:
-  validation_method: "full_subset" # 검증 시 평가 방법
+  validation_method: "sampled" # 검증 시 평가 방법
   final_method: "full" # 최종 평가 시 평가 방법
   metrics: [
       "NDCG",

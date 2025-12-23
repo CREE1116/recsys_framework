@@ -1,26 +1,26 @@
 model:
   name: "csar"
   embedding_dim: 64
-  orth_loss_weight: [0.5, 1.0]
-  num_interests: [96]
+  orth_loss_weight: [0.1, 0.5, 1.0]
+  num_interests: [64, 96]
   scale: True
   zscore: False
-  emb_dropout: [0.0, 0.1]
+  emb_dropout: 0.0
 
 # 학습 설정
 train:
   epochs: 500
-  batch_size: 512
+  batch_size: 256
   lr: 0.001
   l2_regularization: 0.0001
   optimizer: "adamw"
   loss_type: "pointwise" # 'pairwise', 'pointwise'
   num_negatives: 1 # For pairwise losses
-  early_stop_patience: 30
+  early_stop_patience: 40
 
 # 평가 설정
 evaluation:
-  validation_method: "full_subset" # 검증 시 평가 방법
+  validation_method: "sampled" # 검증 시 평가 방법
   final_method: "full" # 최종 평가 시 평가 방법
   metrics: [
       "NDCG",

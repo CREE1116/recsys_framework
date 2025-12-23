@@ -7,8 +7,9 @@ model:
   entropy_weight: 0.1
   balance_weight: 0.1
 
-  num_interests: 96 # Matched to ProtoMF Prototypes
+  num_interests: [64, 96]
   scale: True
+  emb_dropout: 0.0
   temperature: 1.0
   normalize: False
   score_reg_weight: 0.0001
@@ -17,7 +18,7 @@ model:
 # 학습 설정
 train:
   epochs: 500
-  batch_size: 512
+  batch_size: 256
   lr: 0.001
   l2_regularization: 0.0
   optimizer: "adamw"
@@ -25,12 +26,12 @@ train:
   num_negatives: 60 # For pairwise losses
   negative_sampling_strategy: ["uniform"] # 'uniform' or 'popularity'
   negative_sampling_alpha: 0.75
-  early_stop_patience: 50
+  early_stop_patience: 40
 
 # 평가 설정
 evaluation:
-  batch_size: 512
-  validation_method: "full_subset" # 검증 시 평가 방법
+  batch_size: 256
+  validation_method: "sampled" # 검증 시 평가 방법
   final_method: "full" # 최종 평가 시 평가 방법
   metrics: [
       "NDCG",

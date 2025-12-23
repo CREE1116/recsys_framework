@@ -8,7 +8,7 @@ model:
   mode: "UI"
 
 train:
-  batch_size: 512
+  batch_size: 256
   epochs: 500
   learning_rate: 0.001
   weight_decay: 0.0001
@@ -17,11 +17,11 @@ train:
   num_negatives: 1
   negative_sampling_strategy: ["uniform"]
   negative_sampling_alpha: 0.75
-  early_stop_patience: 30
+  early_stop_patience: 40
 
 evaluation:
-  batch_size: 512
-  validation_method: "full_subset" # 검증 시 평가 방법
+  batch_size: 256
+  validation_method: "sampled" # 검증 시 평가 방법
   final_method: "full" # 최종 평가 시 평가 방법
   metrics: [
       "NDCG",

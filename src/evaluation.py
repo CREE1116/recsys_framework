@@ -267,7 +267,7 @@ def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
     
     model.eval()
     
-    if method == 'full' or method == 'full_subset':
+    if method == 'full' or method == 'full_subset' or method == 'sampled':
         core_metrics, all_top_k_items = _evaluate_full(model, test_loader, top_k_list, metrics_list, device, data_loader.user_history)
     elif method == 'uni99':
         core_metrics, all_top_k_items = _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device)
