@@ -16,6 +16,9 @@ class ProtoMF(BaseModel):
         self.num_prototypes = int(self.config['model']['num_prototypes'])
         self.mode = self.config['model'].get('mode', 'UI')  # 'U', 'I', or 'UI'
         
+        self.n_users = self.data_loader.n_users
+        self.n_items = self.data_loader.n_items
+        
         # Inclusion Regularization weights (원본 구현)
         self.sim_proto_weight = float(self.config['model'].get('sim_proto_weight', 1.0))
         self.sim_batch_weight = float(self.config['model'].get('sim_batch_weight', 1.0))

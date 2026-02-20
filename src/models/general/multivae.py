@@ -100,8 +100,8 @@ class MultiVAE(BaseModel):
     def _get_user_history_matrix(self, users):
         batch_size = users.size(0)
         x = torch.zeros(batch_size, self.n_items, device=users.device)
-        for i, u_id in enumerate(users_list):
-            # Ensure u_id is a native python int for dictionary lookup
+        users_np = users.cpu().numpy()
+        for i, u_id in enumerate(users_np):
             uid_key = int(u_id)
             hist_items = list(self.data_loader.train_user_history.get(uid_key, []))
             x[i, hist_items] = 1.0

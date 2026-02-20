@@ -1,27 +1,23 @@
 import torch
 import torch.nn as nn
 from ..base_model import BaseModel
-from src.loss import BPRLoss, MSELoss, InfoNCELoss
+from src.loss import BPRLoss, MSELoss, SampledSoftmaxLoss
 
 class MF(BaseModel):
     """
-    Matrix Factorization 모델 (Pairwise BPR/InfoNCE Loss 전용)
+    Matrix Factorization 모델 (Pairwise BPR)
     """
     def __init__(self, config, data_loader):
         super(MF, self).__init__(config, data_loader)
 
         self.embedding_dim = config['model']['embedding_dim']
-        self.num_negatives = config['train'].get('num_negatives', 1)
         
-        self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
-        self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
+        self.n_users = self.data_loader.n_users
+        self.n_items = self.data_loader.n_items
 
-        if self.num_negatives == 1:
-            self.loss_fn = BPRLoss()
-            self.loss_name = 'bpr_loss'
-        else:
-            self.loss_fn = InfoNCELoss(config)
-            self.loss_name = 'infonce_loss'
+        self.user_embedding = nn.Embedding(self.n_users, self.embedding_dim)
+        self.item_embedding = nn.Embedding(self.n_items, self.embedding_dim)
+        self.loss_fn = BPRLoss()
 
         self._init_weights()
 
@@ -33,15 +29,7 @@ class MF(BaseModel):
         user_embeds = self.user_embedding(users)  # [B, D]
         item_embeds = self.item_embedding(items)  # [B, D] or [B, N, D]
         
-        if item_embeds.dim() == 2:
-            # 일반적인 경우: [B, D] * [B, D] -> [B]
-            output = torch.sum(user_embeds * item_embeds, dim=-1)
-        elif item_embeds.dim() == 3:
-            # neg_items가 [B, N]인 경우: [B, D], [B, N, D] -> [B, N]
-            output = torch.einsum('bd,bnd->bn', user_embeds, item_embeds)
-        else:
-            raise ValueError(f"Unexpected item_embeds shape: {item_embeds.shape}")
-        return output
+        return torch.sum(user_embeds * item_embeds, dim=-1)
 
     def calc_loss(self, batch_data):
         users = batch_data['user_id']
@@ -50,10 +38,8 @@ class MF(BaseModel):
 
         pos_scores = self.predict_for_pairs(users, pos_items)
         neg_scores = self.predict_for_pairs(users, neg_items)
-        
-        # neg_scores is [B, N] (where N=1 for BPR, or N>1 for InfoNCE)
+    
         loss = self.loss_fn(pos_scores, neg_scores)
-       
         
         return (loss,), None
 

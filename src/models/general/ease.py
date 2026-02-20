@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-import torch
-import torch.nn as nn
 import numpy as np
 import scipy.sparse as sp
 from ..base_model import BaseModel
@@ -52,10 +50,10 @@ class EASE(BaseModel):
         # Using numpy/scipy for inversion might be more stable or torch.inverse on CPU/GPU
         P = np.linalg.inv(G)
         
-        # 4. Compute B (Weight Matrix)
-        # B_ij = - P_ij / P_jj if i != j, else 0
-        B = P / (-np.diag(P))
-        B[diag_indices] = 0
+        # 4. Compute B (Weight Matrix): B_ij = -P_ij / P_jj (i != j), B_ii = 0
+        diag = np.diag(P)
+        B = -P / diag[None, :]  # 열(column) 기준으로 나눔
+        np.fill_diagonal(B, 0)
         
         # 5. Store as Tensor
         self.weight_matrix.copy_(torch.from_numpy(B).float())
@@ -92,7 +90,7 @@ class EASE(BaseModel):
 
     def calc_loss(self, batch_data):
         # EASE optimizes a closed-form solution, no gradient descent training.
-        return torch.tensor(0.0, device=self.device, requires_grad=True), {}
+        return (torch.tensor(0.0, device=self.device),), None
 
     def predict_for_pairs(self, user_ids, item_ids):
         # Not typically efficient for EASE, but implemented for compatibility
@@ -101,7 +99,10 @@ class EASE(BaseModel):
         batch_indices = torch.arange(len(user_ids), device=user_ids.device)
         return scores[batch_indices, item_ids]
 
+    def get_embeddings(self):
+        """EASE는 임베딩 기반이 아니므로 None 반환"""
+        return None, None
+
     def get_final_item_embeddings(self):
         # EASE doesn't have "embeddings", it has Item-Item weights.
-        # We can return the weight matrix itself effectively acting as embeddings context
         return self.weight_matrix

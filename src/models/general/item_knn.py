@@ -42,53 +42,114 @@ class ItemKNN(BaseModel):
         print(f"Calculating item-item similarity matrix using {self.similarity_metric}...")
         if self.similarity_metric == 'jaccard':
             # Manual Jaccard Calculation using Sparse Matrix Multiplication
-            # Much faster than sklearn pairwise_distances for sparse data
+            X = self.user_item_matrix.T  # (Items x Users)
+            X.data = np.ones_like(X.data)  # Ensure binary
             
-            # 1. Ensure binary matrix (Items x Users)
-            # self.user_item_matrix is (Users x Items). We need (Items x Users) for item-item similarity.
-            # actually similarity between columns of user_item_matrix.
-            # Let X = user_item_matrix (Users x Items).
-            # We want similarity between items i and j. Be careful with orientation.
-            # sklearn cosine_similarity(X.T) computes sim between rows of X.T (which are items).
-            
-            X = self.user_item_matrix.T # (Items x Users)
-            X.data = np.ones_like(X.data) # Ensure binary
-            
-            # 2. Intersection: X @ X.T -> (Items x Items) element (i, j) is number of users who interacted with both i and j.
             print("Calculating intersection (X @ X.T)...")
             intersection = X @ X.T 
 
-            # 3. Union: |A| + |B| - Intersection
-            # |A| is number of users for item A (row sum of X)
-            item_counts = np.array(X.sum(axis=1)).flatten() # (n_items,)
-            
-            # We need matrix where M[i, j] = count[i] + count[j]
-            # Use broadcasting: (N, 1) + (1, N) -> (N, N)
+            item_counts = np.array(X.sum(axis=1)).flatten()
             print("Calculating union...")
             count_matrix = item_counts[:, None] + item_counts[None, :]
-            
-            # interaction is sparse, count_matrix is dense.
-            # But we only need values where union > 0.
-            # However, Jaccard is dense if we want full matrix.
-            # But usually we only care about non-zero intersections for KNN?
-            # Actually weak generalization: 0 intersection -> 0 similarity.
-            # So we can just operate on sparse structure of intersection?
-            # BUT intersection is likely denser than X.
-            # 3000 items -> 9M entries. Dense is fine (72MB).
             
             intersection_dense = intersection.toarray()
             union_dense = count_matrix - intersection_dense
             
-            # Avoid division by zero
             valid_mask = union_dense > 0
             self.item_similarity_matrix = np.zeros_like(intersection_dense, dtype=np.float32)
             self.item_similarity_matrix[valid_mask] = intersection_dense[valid_mask] / union_dense[valid_mask]
             
-            
         elif self.similarity_metric == 'cosine':
-            self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T, dense_output=False)
+            try:
+                # Try sparse output if possible (requires scikit-learn >= 0.24 approx?)
+                # dense_output=False is not always supported by cosine_similarity in older versions?
+                # It's better to check matrix size.
+                if self.n_items > 10000:
+                    print(f"[ItemKNN] Warning: n_items={self.n_items} is large. Cosine similarity might OOM.")
+                
+                self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T, dense_output=False)
+            except TypeError:
+                # Fallback if dense_output param not supported
+                self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T)
+            except (MemoryError, RuntimeError) as e:
+                print(f"[ItemKNN] OOM during cosine_similarity: {e}")
+                raise e
         else:
             raise ValueError(f"Unsupported similarity metric: {self.similarity_metric}")
+            
+        # --- Top-K Pruning ---
+        print(f"Pruning similarity matrix to top {self.k} neighbors per item...")
+        
+        # Convert to CSR if not already (sklean cosine_similarity might return dense or csr)
+        if not sp.issparse(self.item_similarity_matrix):
+            self.item_similarity_matrix = sp.csr_matrix(self.item_similarity_matrix)
+            
+        # Row-wise top-k selection
+        n_items = self.item_similarity_matrix.shape[0]
+        
+        # Efficient row-wise top-k for CSR matrix
+        # We can iterate or use specialized methods. For 40k items, iteration is okay-ish (seconds).
+        # Better: use LIL for modifying or rebuild CSR data.
+        
+        # Strategy: Iterate rows, find k-th largest, mask lower.
+        # But doing this in pure python loop for 38k rows is slow.
+        # Alternative: Use numpy on indptr/indices/data directly?
+        
+        # Let's use a robust approach:
+        rows = []
+        cols = []
+        data = []
+        
+        # To avoid slow python loops, we can try to do it in batches or parallel, 
+        # but simple loop might be acceptable if N is not huge (38k is borderline).
+        # Let's try a vectorized approach if possible? 
+        # No, irregular number of non-zeros per row.
+        
+        # Let's stick to a clean loop with optimizations (e.g. numpy sorting per row)
+        # Using LIL might be faster for specific access but CSR + slicing is standard.
+        
+        # Wait, sklearn has no direct 'kneighbors_graph' for precomputed similarity?
+        # Actually, let's just loop. 38,000 items is fine for a linear scan of rows.
+        
+        new_data = []
+        new_indices = []
+        new_indptr = [0]
+        
+        for i in tqdm(range(n_items), desc="Pruning KNN"):
+            row_start = self.item_similarity_matrix.indptr[i]
+            row_end = self.item_similarity_matrix.indptr[i+1]
+            
+            row_data = self.item_similarity_matrix.data[row_start:row_end]
+            row_indices = self.item_similarity_matrix.indices[row_start:row_end]
+            
+            if len(row_data) <= self.k:
+                # Keep all
+                new_data.extend(row_data)
+                new_indices.extend(row_indices)
+                new_indptr.append(new_indptr[-1] + len(row_data))
+            else:
+                # Find top-k
+                # argsort is ascending, so we take last k
+                # but we want largest values.
+                # argpartition is faster O(n) vs O(n log n)
+                
+                # Careful: zero values in sparse matrix? Usually not stored.
+                # We want top-k absolute values? Similarity is usually positive.
+                
+                idx = np.argpartition(row_data, -self.k)[-self.k:]
+                
+                # Filter
+                top_data = row_data[idx]
+                top_indices = row_indices[idx]
+                
+                new_data.extend(top_data)
+                new_indices.extend(top_indices)
+                new_indptr.append(new_indptr[-1] + self.k)
+                
+        self.item_similarity_matrix = sp.csr_matrix(
+            (new_data, new_indices, new_indptr),
+            shape=self.item_similarity_matrix.shape
+        )
             
         print("ItemKNN model fitted successfully.")
 

@@ -1,0 +1,26 @@
+
+% Pareto Efficiency Index Table
+\begin{table}[htbp]
+\centering
+\caption{Pareto Efficiency Index (PEI) for Various Models}
+\label{tab:pei_analysis}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{NDCG@20} & \textbf{LongTailCoverage@20} & \textbf{Expected NDCG} & \textbf{PEI} \\
+\midrule
+infinity_ae__BEST_infinity_ae_InfinityAE_Lambda_Search & 0.0540 & 0.0000 & nan & \textbf{inf} \\
+slim__BEST_slim_SLIM_ElasticNet_Search & 0.0631 & 0.1243 & 0.0193 & \textbf{3.27} \\
+light_lira__BEST_light_lira_LightLiRA_Lambda_K_Search & 0.0684 & 0.0279 & 0.0210 & \textbf{3.26} \\
+lira__BEST_lira_LiRA_Lambda_Search & 0.0683 & 0.0284 & 0.0210 & \textbf{3.26} \\
+ease__BEST_ease_EASE_Lambda_Search & 0.0678 & 0.0113 & 0.0213 & \textbf{3.19} \\
+svd_ae__BEST_svd_ae_SVDAE_Params_Search & 0.0679 & 0.0104 & 0.0213 & \textbf{3.18} \\
+rlae__BEST_rlae_RLAE_Params_Search & 0.0679 & 0.0099 & 0.0214 & \textbf{3.18} \\
+sansa__BEST_sansa_SANSA_Lambda_Search & 0.0679 & 0.0095 & 0.0214 & \textbf{3.17} \\
+ials__BEST_ials_iALS_Lambda_Search & 0.0664 & 0.0036 & 0.0218 & \textbf{3.04} \\
+pure-svd__BEST_pure_svd_PureSVD_Rank_Search & 0.0639 & 0.0023 & 0.0221 & \textbf{2.89} \\
+
+\bottomrule
+\end{tabular}
+\vspace{5pt}
+\footnotesize{Note: PEI $>$ 1.0 indicates performance above the linear trade-off baseline.}
+\end{table}

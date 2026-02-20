@@ -1,0 +1,8 @@
+dataset_name: "steam"
+data_path: "data/steam/ratings.dat"
+separator: "::"
+columns: ["user_id", "item_id", "rating", "timestamp"]
+min_user_interactions: 10
+min_item_interactions: 10
+split_method: "temporal_ratio" # Leave-One-Out
+data_cache_path: "./data_cache/"

@@ -94,21 +94,16 @@ class NeuMF(BaseModel):
         # GMF 경로
         user_embed_gmf = self.user_embedding_gmf(users)
         item_embed_gmf = self.item_embedding_gmf(items)
-
-        # Handle multiple negatives: if items has extra dim (Batch, K, Emb) vs User (Batch, Emb)
-        if item_embed_gmf.ndim == user_embed_gmf.ndim + 1:
-            user_embed_gmf = user_embed_gmf.unsqueeze(1) # (B, 1, D)
-        
-        gmf_output = user_embed_gmf * item_embed_gmf # Broadcasting (B, 1, D) * (B, K, D) -> (B, K, D)
+        gmf_output = user_embed_gmf * item_embed_gmf # Broadcasting: [B, 1, D] * [B, N, D] -> [B, N, D]
 
         # MLP 경로
         user_embed_mlp = self.user_embedding_mlp(users)
         item_embed_mlp = self.item_embedding_mlp(items)
         
-        if item_embed_mlp.ndim == user_embed_mlp.ndim + 1:
-            user_embed_mlp = user_embed_mlp.unsqueeze(1) # (B, 1, D)
-            # For concatenation, we must explicitly expand to match item dimension
-            user_embed_mlp = user_embed_mlp.expand(-1, item_embed_mlp.size(1), -1) # (B, K, D)
+        # Broadcasting concatenation
+        # If user_embed_mlp is [B, 1, D] and item is [B, N, D], expand user to [B, N, D]
+        if user_embed_mlp.size(1) == 1 and item_embed_mlp.size(1) > 1:
+            user_embed_mlp = user_embed_mlp.expand(-1, item_embed_mlp.size(1), -1)
 
         mlp_input = torch.cat((user_embed_mlp, item_embed_mlp), dim=-1)
         mlp_output = self.mlp_layers_module(mlp_input)
@@ -138,16 +133,13 @@ class NeuMF(BaseModel):
         return item_embeds.detach()
 
     def calc_loss(self, batch_data):
-        users = batch_data['user_id'].squeeze(-1)
-        pos_items = batch_data['pos_item_id'].squeeze(-1)
-        neg_items = batch_data['neg_item_id'].squeeze(-1)
+        users = batch_data['user_id']
+        pos_items = batch_data['pos_item_id']
+        neg_items = batch_data['neg_item_id']
 
         pos_scores = self.predict_for_pairs(users, pos_items)
         neg_scores = self.predict_for_pairs(users, neg_items)
         
-        if neg_scores.ndim > 1 and pos_scores.ndim == 1:
-             pos_scores = pos_scores.unsqueeze(1)
-
         loss = self.loss_fn(pos_scores, neg_scores)
         return (loss,), None
 

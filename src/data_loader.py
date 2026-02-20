@@ -10,10 +10,12 @@ from tqdm import tqdm
 
 class RecSysDataset(Dataset):
     """학습을 위한 PyTorch Dataset."""
-    def __init__(self, df, n_items, user_history, loss_type, num_negatives, sampling_weights=None):
+    def __init__(self, df, n_items, user_history, loss_type, num_negatives, sampling_weights=None, train_user_history=None):
         self.df = df
         self.n_items = n_items
         self.user_history = user_history
+        # [RecBole 표준] 학습 시에는 train_user_history만 사용 (데이터 누수 방지)
+        self.train_user_history = train_user_history if train_user_history is not None else user_history
         self.loss_type = loss_type
         self.num_negatives = num_negatives
         self.sampling_weights = sampling_weights
@@ -39,10 +41,10 @@ class RecSysDataset(Dataset):
 
     def collate_fn(self, batch):
         if self.loss_type == 'pointwise':
-            # No Negative Sampling - Just return batch as is
+            # Negative Sampling 없음 - 그대로 반환
             return torch.utils.data.default_collate(batch)
         
-        # Pairwise: Perform Negative Sampling and Rename item_id -> pos_item_id
+        # Pairwise: Negative Sampling 수행 후 item_id -> pos_item_id로 변경
         users = [item['user_id'] for item in batch]
         pos_items = [item['item_id'] for item in batch]
         
@@ -50,32 +52,51 @@ class RecSysDataset(Dataset):
         users_tensor = torch.tensor(users, dtype=torch.long)
         pos_items_tensor = torch.tensor(pos_items, dtype=torch.long)
         
-        neg_items_list = []
+        # [최적화] 벡터화된 Negative Sampling
+        # 각 유저별로 필요한 수의 3배를 한번에 생성하여 효율 향상
+        oversample_factor = 3
+        total_candidates = batch_size * self.num_negatives * oversample_factor
         
-        # [RecBole 표준] 각 (u, pos) 쌍에 대해 개별적으로 negative sampling
-        # 배치가 candidates pool을 공유하지 않음
+        if self.sampling_weights is not None:
+            # Popularity 기반 샘플링
+            candidates = torch.multinomial(
+                self.sampling_weights, 
+                total_candidates, 
+                replacement=True
+            )
+        else:
+            # Uniform 샘플링
+            candidates = torch.randint(0, self.n_items, (total_candidates,))
+        
+        candidates = candidates.view(batch_size, self.num_negatives * oversample_factor)
+        
+        # 각 유저별로 seen 아이템 필터링
+        # [RecBole 표준] 학습 시에는 train_user_history만 사용 (데이터 누수 방지)
+        neg_items_list = []
         for i in range(batch_size):
             u = users[i]
-            user_seen = self.user_history[u]
-            u_negs = []
+            user_seen = self.train_user_history.get(u, set())
+            user_candidates = candidates[i].tolist()
             
-            while len(u_negs) < self.num_negatives:
-                # 각 샘플에 대해 독립적으로 random sampling
+            # seen 아이템 필터링
+            valid_negs = [c for c in user_candidates if c not in user_seen]
+            
+            # 충분하지 않으면 추가 샘플링 (드문 경우)
+            while len(valid_negs) < self.num_negatives:
                 if self.sampling_weights is not None:
                     c = torch.multinomial(self.sampling_weights, 1, replacement=True).item()
                 else:
                     c = torch.randint(0, self.n_items, (1,)).item()
-                
                 if c not in user_seen:
-                    u_negs.append(c)
+                    valid_negs.append(c)
             
-            neg_items_list.extend(u_negs)
-            
+            neg_items_list.append(valid_negs[:self.num_negatives])
+        
         neg_items_tensor = torch.tensor(neg_items_list, dtype=torch.long)
         
-        # Reshape: Always (batch_size, num_negatives) to maintain consistent 2D shape,
-        # even if num_negatives=1 or batch_size=1.
-        neg_items_tensor = neg_items_tensor.view(batch_size, self.num_negatives)
+        # [Fix] Broadcasting 버그 방지: user_id와 pos_item_id도 2D [B, 1]로 변환
+        users_tensor = users_tensor.unsqueeze(1)
+        pos_items_tensor = pos_items_tensor.unsqueeze(1)
         
         return {
             'user_id': users_tensor,
@@ -114,6 +135,7 @@ class DataLoader:
         self.data_path = config['data_path']
         self.separator = config['separator']
         self.columns = config['columns']
+        self.has_header = config.get('has_header', False)  # 헤더 유무
         
         self.rating_threshold = config.get('rating_threshold')
         self.min_user_interactions = config['min_user_interactions']
@@ -140,6 +162,7 @@ class DataLoader:
             self._process_data()
             self._save_to_cache()
             self.test_uni99_negatives = None
+            self.valid_uni99_negatives = None
 
         self.sampling_weights = None
         if self.neg_sampling_strategy == 'popularity':
@@ -152,18 +175,25 @@ class DataLoader:
             self.sampling_weights = torch.pow(counts, self.neg_sampling_alpha)
             self.sampling_weights /= self.sampling_weights.sum()
             
+        if not hasattr(self, 'train_user_history'):
+             print("Generating train_user_history from train_df...")
+             self.train_user_history = self.train_df.groupby('user_id')['item_id'].apply(set).to_dict()
+
+        if not hasattr(self, 'eval_user_history'):
+             print("Generating eval_user_history (train+valid) for test evaluation...")
+             eval_df = pd.concat([self.train_df, self.valid_df], ignore_index=True)
+             self.eval_user_history = eval_df.groupby('user_id')['item_id'].apply(set).to_dict()
+
         # 검증 방식이 uni99인 경우 네거티브 샘플링 수행
         if self.config['evaluation'].get('validation_method') == 'uni99' or self.config['evaluation'].get('final_method') == 'uni99':
-            if hasattr(self, 'test_uni99_negatives') and self.test_uni99_negatives is not None:
-                print("Loaded pre-sampled test negatives from cache.")
+            # 둘 다 있어야 함을 확인
+            if hasattr(self, 'test_uni99_negatives') and self.test_uni99_negatives is not None and \
+               hasattr(self, 'valid_uni99_negatives') and self.valid_uni99_negatives is not None:
+                print("Loaded pre-sampled uni99 negatives (valid & test) from cache.")
             else:
                 self._pre_sample_test_negatives()
                 self._save_to_cache()
 
-        if not hasattr(self, 'train_user_history'):
-             print("Generating train_user_history from train_df...")
-             self.train_user_history = self.train_df.groupby('user_id')['item_id'].apply(set).to_dict()
-        
         print("Data loading and preprocessing complete.")
         print(f"Number of users: {self.n_users}, items: {self.n_items}")
         print(f"Train: {len(self.train_df)}, Valid: {len(self.valid_df)}, Test: {len(self.test_df)}")
@@ -180,9 +210,32 @@ class DataLoader:
 
         self.df = self._filter_interactions(self.df)
         self._remap_ids()
-        self.train_df, self.valid_df, self.test_df = self._split_leave_one_out(self.df)
+        
+        # 분할 방식 선택
+        split_method = self.config.get('split_method', 'loo')
+        if split_method == 'loo':
+            self.train_df, self.valid_df, self.test_df = self._split_leave_one_out(self.df)
+        elif split_method == 'temporal_ratio':
+            train_ratio = self.config.get('train_ratio', 0.8)
+            valid_ratio = self.config.get('valid_ratio', 0.1)
+            self.train_df, self.valid_df, self.test_df = self._split_temporal_ratio(
+                self.df, train_ratio=train_ratio, valid_ratio=valid_ratio
+            )
+        elif split_method == 'random':
+            train_ratio = self.config.get('train_ratio', 0.8)
+            valid_ratio = self.config.get('valid_ratio', 0.1)
+            self.train_df, self.valid_df, self.test_df = self._split_random(
+                self.df, train_ratio=train_ratio, valid_ratio=valid_ratio
+            )
+        else:
+            raise ValueError(f"Unknown split_method: {split_method}. Use 'loo', 'temporal_ratio', or 'random'.")
+        
         self.user_history = self.df.groupby('user_id')['item_id'].apply(set).to_dict()
         self.train_user_history = self.train_df.groupby('user_id')['item_id'].apply(set).to_dict()
+        
+        # [RecBole Alignment] eval_user_history for test masking (train + valid)
+        eval_df = pd.concat([self.train_df, self.valid_df], ignore_index=True)
+        self.eval_user_history = eval_df.groupby('user_id')['item_id'].apply(set).to_dict()
 
     def _save_to_cache(self):
         data_to_cache = {
@@ -196,10 +249,13 @@ class DataLoader:
             'test_df': self.test_df,
             'user_history': self.user_history, 
             'train_user_history': self.train_user_history,
+            'eval_user_history': self.eval_user_history,
             'item_popularity': self.item_popularity,
         }
         if hasattr(self, 'test_uni99_negatives') and self.test_uni99_negatives is not None:
             data_to_cache['test_uni99_negatives'] = self.test_uni99_negatives
+        if hasattr(self, 'valid_uni99_negatives') and self.valid_uni99_negatives is not None:
+            data_to_cache['valid_uni99_negatives'] = self.valid_uni99_negatives
             
         with open(self.cache_file, 'wb') as f:
             pickle.dump(data_to_cache, f)
@@ -212,7 +268,13 @@ class DataLoader:
 
     def _load_data(self):
         # engine='python'을 사용하여 다양한 구분자 지원 강화
-        return pd.read_csv(self.data_path, sep=self.separator, header=None, names=self.columns, engine='python')
+        if self.has_header:
+            # 헤더가 있는 경우: 첫 줄을 헤더로 인식하고 columns로 이름 변경
+            df = pd.read_csv(self.data_path, sep=self.separator, header=0, engine='python')
+            df.columns = self.columns[:len(df.columns)]  # config columns로 이름 변경
+            return df
+        else:
+            return pd.read_csv(self.data_path, sep=self.separator, header=None, names=self.columns, engine='python')
 
     def _filter_interactions(self, df):
         # 최소 상호작용 수를 만족할 때까지 반복 필터링 (k-core filtering)
@@ -229,8 +291,12 @@ class DataLoader:
 
     def _remap_ids(self):
         # User/Item ID를 0부터 시작하는 연속된 정수로 매핑
-        self.user_map = {old_id: new_id for new_id, old_id in enumerate(self.df['user_id'].unique())}
-        self.item_map = {old_id: new_id for new_id, old_id in enumerate(self.df['item_id'].unique())}
+        # [BUG FIX] sorted() 필수 - unique()는 비결정적 순서를 반환하므로 정렬하여 일관성 보장
+        unique_users = sorted(self.df['user_id'].unique())
+        unique_items = sorted(self.df['item_id'].unique())
+        
+        self.user_map = {old_id: new_id for new_id, old_id in enumerate(unique_users)}
+        self.item_map = {old_id: new_id for new_id, old_id in enumerate(unique_items)}
         
         self.df['user_id'] = self.df['user_id'].map(self.user_map)
         self.df['item_id'] = self.df['item_id'].map(self.item_map)
@@ -247,15 +313,22 @@ class DataLoader:
         - Valid: 유저별 끝에서 2번째 상호작용
         - Train: 나머지
         """
-        # Timestamp 기준 정렬 (동일 timestamp 처리를 위해 item_id를 tie-breaker로 사용)
-        df_sorted = df.sort_values(by=['user_id', 'timestamp', 'item_id'])
+        # Timestamp 컬럼 확인 (없으면 인덱스 기반으로 정렬)
+        if 'timestamp' in df.columns:
+            df_sorted = df.sort_values(by=['user_id', 'timestamp', 'item_id'])
+        else:
+            # timestamp 없으면 현재 순서 유지 (random split과 유사)
+            df_sorted = df.sort_values(by=['user_id', 'item_id'])
         
         # Test: 마지막 아이템
         test_df = df_sorted.groupby('user_id').tail(1)
         
+        # user_id + item_id 만으로 merge (rating 컬럼 의존성 제거)
+        merge_keys = ['user_id', 'item_id']
+        
         # Valid: 끝에서 2번째 아이템 (Test 제외 후 마지막)
         remaining_after_test = df_sorted.merge(
-            test_df, on=['user_id', 'item_id', 'rating', 'timestamp'], 
+            test_df[merge_keys], on=merge_keys, 
             how='left', indicator=True
         )
         remaining_after_test = remaining_after_test[remaining_after_test['_merge'] == 'left_only'].drop(columns=['_merge'])
@@ -264,40 +337,145 @@ class DataLoader:
         # Train: Test, Valid 모두 제외
         eval_df = pd.concat([test_df, valid_df], ignore_index=True)
         train_df = df.merge(
-            eval_df, on=['user_id', 'item_id', 'rating', 'timestamp'], 
+            eval_df[merge_keys], on=merge_keys, 
             how='left', indicator=True
         )
         train_df = train_df[train_df['_merge'] == 'left_only'].drop(columns=['_merge'])
         
         return train_df, valid_df, test_df
 
+    def _split_temporal_ratio(self, df, train_ratio=0.8, valid_ratio=0.1):
+        """
+        User-level Temporal Ratio Split (유저별 시간순 비율 분할)
+        - 유저별로 시간순 정렬 후 비율에 따라 분할
+        - Train: 앞에서 train_ratio% (과거)
+        - Valid: 다음 valid_ratio%
+        - Test: 나머지 (1 - train_ratio - valid_ratio)% (미래)
+        
+        Note: 학술 연구 표준 방식 (RecBole, LightGCN 등)
+        
+        Args:
+            df: 전체 데이터프레임
+            train_ratio: 학습 데이터 비율 (default: 0.8)
+            valid_ratio: 검증 데이터 비율 (default: 0.1)
+        """
+        # Timestamp 기준 정렬
+        df_sorted = df.sort_values(by=['user_id', 'timestamp', 'item_id'])
+        
+        train_list = []
+        valid_list = []
+        test_list = []
+        
+        # 유저별로 분할
+        for user_id, group in df_sorted.groupby('user_id'):
+            n = len(group)
+            
+            # 최소 3개 상호작용 필요 (train, valid, test 각 1개)
+            if n < 3:
+                train_list.append(group)
+                continue
+            
+            train_end = max(1, int(n * train_ratio))
+            valid_end = max(train_end + 1, int(n * (train_ratio + valid_ratio)))
+            
+            # 최소 1개씩 보장
+            if valid_end >= n:
+                valid_end = n - 1
+            if train_end >= valid_end:
+                train_end = valid_end - 1
+            
+            train_list.append(group.iloc[:train_end])
+            valid_list.append(group.iloc[train_end:valid_end])
+            test_list.append(group.iloc[valid_end:])
+        
+        train_df = pd.concat(train_list, ignore_index=True) if train_list else pd.DataFrame()
+        valid_df = pd.concat(valid_list, ignore_index=True) if valid_list else pd.DataFrame()
+        test_df = pd.concat(test_list, ignore_index=True) if test_list else pd.DataFrame()
+        
+        return train_df, valid_df, test_df
+
+    def _split_random(self, df, train_ratio=0.8, valid_ratio=0.1):
+        """
+        Random Ratio Split (랜덤 비율 분할) - timestamp 없는 데이터셋용
+        - 유저별로 상호작용을 셔플 후 비율에 따라 분할
+        - Train: 앞에서 train_ratio%
+        - Valid: 다음 valid_ratio%
+        - Test: 나머지 (1 - train_ratio - valid_ratio)%
+        
+        Args:
+            df: 전체 데이터프레임
+            train_ratio: 학습 데이터 비율 (default: 0.8)
+            valid_ratio: 검증 데이터 비율 (default: 0.1)
+        """
+        train_list = []
+        valid_list = []
+        test_list = []
+        
+        # 유저별로 분할
+        for user_id, group in df.groupby('user_id'):
+            # 랜덤 셔플
+            group = group.sample(frac=1, random_state=42).reset_index(drop=True)
+            n = len(group)
+            
+            # 최소 3개 상호작용 필요 (train, valid, test 각 1개)
+            if n < 3:
+                # 상호작용이 부족하면 전부 train으로
+                train_list.append(group)
+                continue
+            
+            train_end = max(1, int(n * train_ratio))
+            valid_end = max(train_end + 1, int(n * (train_ratio + valid_ratio)))
+            
+            # 최소 1개씩 보장
+            if valid_end >= n:
+                valid_end = n - 1
+            if train_end >= valid_end:
+                train_end = valid_end - 1
+            
+            train_list.append(group.iloc[:train_end])
+            valid_list.append(group.iloc[train_end:valid_end])
+            test_list.append(group.iloc[valid_end:])
+        
+        train_df = pd.concat(train_list, ignore_index=True) if train_list else pd.DataFrame()
+        valid_df = pd.concat(valid_list, ignore_index=True) if valid_list else pd.DataFrame()
+        test_df = pd.concat(test_list, ignore_index=True) if test_list else pd.DataFrame()
+        
+        return train_df, valid_df, test_df
+
     def _pre_sample_test_negatives(self):
         print("Pre-sampling negative items for uni99 evaluation...")
+        
+        # Test Negatives
         self.test_uni99_negatives = {}
         test_user_item_pairs = self.test_df[['user_id', 'item_id']].to_dict('records')
-
-        for row in tqdm(test_user_item_pairs, desc="Sampling uni99 negatives"):
+        for row in tqdm(test_user_item_pairs, desc="Sampling test uni99 negatives"):
             user_id, pos_item_id = row['user_id'], row['item_id']
-
-            # [BUG FIX] set()을 사용하여 user_history의 복사본을 생성합니다.
-            # 원본 self.user_history를 직접 수정하면 다른 에폭이나 로직에 영향을 줍니다.
-            seen_items = set(self.user_history.get(user_id, set()))
+            seen_items = set(self.eval_user_history.get(user_id, set())) # Test evaluation uses eval_user_history (train+valid)
             seen_items.add(pos_item_id)
-
+            
             negative_items = []
-            num_candidates = 200 # 충돌을 고려하여 넉넉하게 샘플링
-
             while len(negative_items) < 99:
-                candidates = np.random.randint(0, self.n_items, size=num_candidates)
-                # [BUG FIX] 복사된 seen_items와 비교
+                candidates = np.random.randint(0, self.n_items, size=200)
                 valid_negatives = list(set(candidates) - seen_items)
-                
                 negative_items.extend(valid_negatives)
-                
-                # 중복 방지를 위해 이번 루프에서 찾은 네거티브도 seen에 추가
                 seen_items.update(valid_negatives)
-
             self.test_uni99_negatives[user_id] = negative_items[:99]
+
+        # Validation Negatives
+        self.valid_uni99_negatives = {}
+        valid_user_item_pairs = self.valid_df[['user_id', 'item_id']].to_dict('records')
+        for row in tqdm(valid_user_item_pairs, desc="Sampling valid uni99 negatives"):
+            user_id, pos_item_id = row['user_id'], row['item_id']
+            seen_items = set(self.train_user_history.get(user_id, set())) # Valid evaluation uses train_user_history
+            seen_items.add(pos_item_id)
+            
+            negative_items = []
+            while len(negative_items) < 99:
+                candidates = np.random.randint(0, self.n_items, size=200)
+                valid_negatives = list(set(candidates) - seen_items)
+                negative_items.extend(valid_negatives)
+                seen_items.update(valid_negatives)
+            self.valid_uni99_negatives[user_id] = negative_items[:99]
 
         print("Pre-sampling complete.")
 
@@ -347,7 +525,8 @@ class DataLoader:
         # 학습 시점에는 test 데이터를 모르는 것으로 가정
         train_dataset = RecSysDataset(
             self.train_df, self.n_items, self.train_user_history,
-            self.loss_type, self.num_negatives, self.sampling_weights
+            self.loss_type, self.num_negatives, self.sampling_weights,
+            train_user_history=self.train_user_history
         )
         use_pin_memory = self.config.get('device', 'cpu') != 'cpu'
         
@@ -478,13 +657,35 @@ class DataLoader:
         elif method == 'sampled':
             ratio = self.config['evaluation'].get('validation_sample_ratio', 0.2)
             return self.get_sampled_valid_loader(batch_size, ratio=ratio)
+        elif method == 'uni99':
+            return self.get_uni99_valid_loader(batch_size)
         else:
-            raise ValueError(f"Unsupported validation method: {method}. Use 'full' or 'sampled'.")
+            raise ValueError(f"Unsupported validation method: {method}. Use 'full', 'sampled', or 'uni99'.")
+
+    def get_uni99_valid_loader(self, batch_size):
+        """uni99 방식의 검증 로더"""
+        dataset = Uni99RecSysDataset(self.valid_df, self.valid_uni99_negatives)
+        return PyTorchDataLoader(
+            dataset, batch_size=batch_size, shuffle=False,
+            num_workers=self.config.get('num_workers', 4),
+            persistent_workers=self.config.get('num_workers', 4) > 0
+        )
+
+    def get_uni99_test_loader(self, batch_size):
+        """uni99 방식의 테스트 로더"""
+        dataset = Uni99RecSysDataset(self.test_df, self.test_uni99_negatives)
+        return PyTorchDataLoader(
+            dataset, batch_size=batch_size, shuffle=False,
+            num_workers=self.config.get('num_workers', 4),
+            persistent_workers=self.config.get('num_workers', 4) > 0
+        )
 
     def get_final_loader(self, batch_size):
         """config 설정에 맞는 최종 평가용 로더 반환 (test_df 사용)"""
         method = self.config['evaluation'].get('final_method', 'full')
         if method == 'full':
             return self.get_full_test_loader(batch_size)
+        elif method == 'uni99':
+            return self.get_uni99_test_loader(batch_size)
         else:
-            raise ValueError(f"Unsupported final method: {method}. Use 'full' for final evaluation.")
+            raise ValueError(f"Unsupported final method: {method}. Use 'full' or 'uni99'.")

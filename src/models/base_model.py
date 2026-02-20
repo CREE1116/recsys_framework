@@ -29,6 +29,32 @@ class BaseModel(nn.Module, ABC):
         else:
             self.device = torch.device(device_str)
 
+        # [Strict Split] 임베딩 전용 L2 규제 (embedding_l2 키워드만 사용)
+        train_config = self.config.get('train', {})
+        self.l2_reg_weight = float(train_config.get('embedding_l2', 0.0))
+        
+        # 만약 리스트라면 첫 번째 값 사용
+        if isinstance(self.l2_reg_weight, list):
+            self.l2_reg_weight = self.l2_reg_weight[0]
+        self.l2_reg_weight = float(self.l2_reg_weight)
+
+    def get_l2_reg_loss(self, *tensors):
+        """
+        주어진 텐서들에 대해 배치 단위 L2 규제 손실을 계산합니다.
+        ||x||^2_2 / (2 * batch_size)
+        """
+        if self.l2_reg_weight <= 0:
+            return torch.tensor(0.0, device=self.device)
+        
+        l2_loss = 0
+        for tensor in tensors:
+            if tensor is not None:
+                l2_loss += torch.sum(tensor ** 2)
+        
+        # 첫 번째 텐서의 size(0)을 배치 사이즈로 사용
+        batch_size = tensors[0].size(0) if len(tensors) > 0 else 1
+        return self.l2_reg_weight * l2_loss / (2 * batch_size)
+
 
     @abstractmethod
     def calc_loss(self, batch_data):

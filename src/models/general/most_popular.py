@@ -10,6 +10,9 @@ class MostPopular(BaseModel):
     def __init__(self, config, data_loader):
         super(MostPopular, self).__init__(config, data_loader)
         
+        self.n_users = self.data_loader.n_users
+        self.n_items = self.data_loader.n_items
+        
         # main.py에서 fit()을 명시적으로 호출하므로, __init__에서는 데이터 로드만 준비
         self.popularity_scores = None
         

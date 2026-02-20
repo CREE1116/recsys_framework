@@ -1,0 +1,11 @@
+Model,Run,NDCG,LongTailCoverage,Rec_Entropy,Entropy_Ratio,Entropy_Gap,Theoretical_Note
+svd_ae,svd_ae__BEST_svd_ae_SVDAE_Params_Search,0.09639978067722996,0.2016260162601626,8.142046777487831,1.1773239398546536,1.7461459779103121,Higher entropy → Larger distance from biased data → Accuracy cost
+ials,ials__BEST_ials_iALS_Lambda_Search,0.09175148870745159,0.12032520325203253,7.937198864905721,1.1477033348516221,1.5412980653282018,Higher entropy → Larger distance from biased data → Accuracy cost
+sansa,sansa__BEST_sansa_SANSA_Lambda_Search,0.09609451982596162,0.16910569105691056,8.146968854983268,1.1780356625734691,1.7510680554057485,Higher entropy → Larger distance from biased data → Accuracy cost
+slim,slim__BEST_slim_SLIM_ElasticNet_Search,0.09177631860135338,0.03902439024390244,7.463964716044305,1.0792746082872202,1.0680639164667856,Higher entropy → Larger distance from biased data → Accuracy cost
+rlae,rlae__BEST_rlae_RLAE_Params_Search,0.09382527096698151,0.1024390243902439,7.878666440946641,1.1392396615434213,1.482765641369122,Higher entropy → Larger distance from biased data → Accuracy cost
+light_lira,light_lira__BEST_light_lira_LightLiRA_Lambda_K_Search,0.09421149378283887,0.2894308943089431,8.253126339627741,1.1933858259270202,1.857225540050222,Higher entropy → Larger distance from biased data → Accuracy cost
+pure-svd,pure-svd__BEST_pure_svd_PureSVD_Rank_Search,0.08658492016813597,0.024390243902439025,7.592739232218871,1.0978951498879765,1.1968384326413517,Higher entropy → Larger distance from biased data → Accuracy cost
+ease,ease__BEST_ease_EASE_Lambda_Search,0.09177524937783,0.02113821138211382,7.242611879570722,1.047267423772433,0.8467110799932032,Higher entropy → Larger distance from biased data → Accuracy cost
+infinity_ae,infinity_ae__BEST_infinity_ae_InfinityAE_Lambda_Search,0.0650932419299151,0.0,5.356602872985441,0.7745542332300118,-1.039297926592078,Higher entropy → Larger distance from biased data → Accuracy cost
+lira,lira__BEST_lira_LiRA_Lambda_Search,0.09489447957163998,0.25203252032520324,8.125994002110575,1.1750027401281908,1.7300932025330562,Higher entropy → Larger distance from biased data → Accuracy cost

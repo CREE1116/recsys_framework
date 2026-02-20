@@ -45,12 +45,24 @@ class PureSVD(BaseModel):
             dtype=float
         )
         
+        # Check rank limits
+        # svds requires k < min(A.shape) strictly.
+        min_dim = min(user_item_matrix.shape)
+        if self.embedding_dim >= min_dim:
+            print(f"[PureSVD] Warning: embedding_dim={self.embedding_dim} >= min_dim={min_dim}. Capping to {min_dim - 1}.")
+            self.embedding_dim = min_dim - 1
+            
         print(f"Performing SVD (scipy.sparse.linalg.svds) with k={self.embedding_dim}...")
+
         # svds returns: u, s, vt
         # u: (n_users, k)
         # s: (k,)
         # vt: (k, n_items)
-        u, s, vt = svds(user_item_matrix, k=self.embedding_dim)
+        try:
+             u, s, vt = svds(user_item_matrix, k=self.embedding_dim)
+        except Exception as e:
+             print(f"[PureSVD] SVD failed: {e}")
+             raise e
         
         # Sort singular values in descending order (svds returns ascending usually)
         # But for reconstruction, order doesn't matter as long as indices match.

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from src.loss import orthogonal_loss,BPRLoss, DynamicMarginBPRLoss # 이 임포트는 더 이상 필요 없지만, 혹시 다른 곳에서 사용될까봐 유지
+from src.loss import BPRLoss, DynamicMarginBPRLoss
 
 from ..base_model import BaseModel
 
@@ -19,17 +19,22 @@ class CSAR_BPR(BaseModel):
         self.lamda = self.config['model']['orth_loss_weight']
         self.scale = self.config['model'].get('scale', True)
         self.Dummy = self.config['model'].get('dummy', False)
-        self.dynamic_bpr = self.config['model'].get('dynamic_bpr', False)
+        self.init_method = self.config['model'].get('init_method', 'xavier')
         self.emb_dropout = self.config['model'].get('emb_dropout', 0.0)
+        self.orth_loss_type = self.config['model'].get('orth_loss_type', 'l1')  # L1이 더 균등한 페널티
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
         
         # CoSupportAttentionLayer 사용
-        self.attention_layer = CoSupportAttentionLayer(self.num_interests, self.embedding_dim, scale=self.scale)
+        self.attention_layer = CoSupportAttentionLayer(
+            self.num_interests, self.embedding_dim, 
+            scale=self.scale,
+            init_method=self.init_method
+        )
 
         self._init_weights()
-        self.loss_fn = BPRLoss() if not self.dynamic_bpr else DynamicMarginBPRLoss()
+        self.loss_fn = BPRLoss()
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)
@@ -54,20 +59,43 @@ class CSAR_BPR(BaseModel):
         return scores
 
     def predict_for_pairs(self, user_ids, item_ids):
-        # 사용자-아이템 쌍 점수 계산 (포인트와이즈용)
-        user_embs = self.user_embedding(user_ids)
-        item_embs = self.item_embedding(item_ids)
+        """
+        사용자-아이템 쌍 점수 계산
+        user_ids: [B] 또는 [B, 1]
+        item_ids: [B], [B, 1], 또는 [B, N] (다중 negative)
+        """
+        user_embs = self.user_embedding(user_ids)  # [B, D] 또는 [B, 1, D]
+        item_embs = self.item_embedding(item_ids)  # [B, D], [B, 1, D], 또는 [B, N, D]
         
         # Embedding Dropout (Training only)
         if self.training and self.emb_dropout > 0:
             user_embs = F.dropout(user_embs, p=self.emb_dropout, training=True)
             item_embs = F.dropout(item_embs, p=self.emb_dropout, training=True)
 
-        # co-support attention layer를 통해 관심사 가중치 계산
-        user_interests = self.attention_layer(user_embs)
-        item_interests = self.attention_layer(item_embs)
-
-        scores = (user_interests * item_interests).sum(dim=-1)
+        # 차원 처리: [B, 1, D] → [B, D]
+        if user_embs.dim() == 3 and user_embs.shape[1] == 1:
+            user_embs = user_embs.squeeze(1)
+        
+        # item_embs 차원 확인
+        original_shape = item_embs.shape
+        if item_embs.dim() == 3:
+            # [B, N, D] → flatten → attention → reshape
+            B, N, D = item_embs.shape
+            item_embs_flat = item_embs.view(B * N, D)
+            item_interests = self.attention_layer(item_embs_flat)  # [B*N, K]
+            item_interests = item_interests.view(B, N, -1)  # [B, N, K]
+            
+            user_interests = self.attention_layer(user_embs)  # [B, K]
+            # Broadcasting: [B, 1, K] * [B, N, K] → [B, N, K]
+            scores = (user_interests.unsqueeze(1) * item_interests).sum(dim=-1)  # [B, N]
+        else:
+            # [B, D] 또는 squeeze된 경우
+            if item_embs.dim() == 3 and item_embs.shape[1] == 1:
+                item_embs = item_embs.squeeze(1)
+            user_interests = self.attention_layer(user_embs)
+            item_interests = self.attention_layer(item_embs)
+            scores = (user_interests * item_interests).sum(dim=-1)  # [B]
+        
         return scores
 
     def _get_user_interests(self, user_ids):
@@ -90,27 +118,18 @@ class CSAR_BPR(BaseModel):
         return self.attention_layer(all_item_embs)
 
     def calc_loss(self, batch_data):
-        # [수정] DataLoader가 [B, 1] 형태로 반환하므로 차원 축소
-        users = batch_data['user_id'].squeeze(-1)
-        pos_items = batch_data['pos_item_id'].squeeze(-1)
-        neg_items = batch_data['neg_item_id'].squeeze(-1) # [수정] 차원 축소
+        users = batch_data['user_id']          # [B, 1]
+        pos_items = batch_data['pos_item_id']  # [B, 1]
+        neg_items = batch_data['neg_item_id']  # [B, N]
 
-        # --- 1. BPR Loss 계산 ---
-        # 헬퍼 메서드를 사용해 각 관심사 벡터를 *한 번만* 계산
-        user_interests = self._get_user_interests(users)         # [B, K]
-        pos_item_interests = self._get_item_interests(pos_items) # [B, K]
-        neg_item_interests = self._get_item_interests(neg_items) # [B, K]
-
-        # Pairwise 점수 계산 (predict_for_pairs와 동일한 로직)
-        pos_scores = (user_interests * pos_item_interests).sum(dim=-1) # [B]
-        neg_scores = (user_interests * neg_item_interests).sum(dim=-1) # [B]
+        pos_scores = self.predict_for_pairs(users, pos_items)  # [B]
+        neg_scores = self.predict_for_pairs(users, neg_items)  # [B, N]
         
-        # BPR 손실
-        # BPR 손실
+        # BPR Loss: 각 negative와 비교 후 평균
         loss = self.loss_fn(pos_scores, neg_scores)
 
-        # attention_layer에서 직교 손실 계산
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2")
+        # Orthogonal Loss
+        orth_loss = self.attention_layer.get_orth_loss(loss_type=self.orth_loss_type)
         params_to_log = {'scale': self.attention_layer.scale.item()}
 
         return (loss, self.lamda * orth_loss), params_to_log

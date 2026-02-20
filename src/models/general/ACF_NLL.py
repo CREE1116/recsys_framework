@@ -86,6 +86,9 @@ class ACF_BPR(BaseModel):
         self.lambda_exc = float(self.config['model'].get('lambda_exclusiveness', 0.01))
         self.lambda_inc = float(self.config['model'].get('lambda_inclusiveness', 0.01))
         
+        self.n_users = self.data_loader.n_users
+        self.n_items = self.data_loader.n_items
+        
         # 원본 임베딩 (raw embeddings)
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
@@ -143,9 +146,9 @@ class ACF_BPR(BaseModel):
         """
         ACF 손실 계산: BPR + Exclusiveness + Inclusiveness
         """
-        users = batch_data['user_id'].squeeze(-1)
-        pos_items = batch_data['pos_item_id'].squeeze(-1)
-        neg_items = batch_data['neg_item_id'].squeeze(-1)
+        users = batch_data['user_id']
+        pos_items = batch_data['pos_item_id']
+        neg_items = batch_data['neg_item_id']
         
         # --- 원본 임베딩 ---
         user_embs_raw = self.user_embedding(users)
@@ -195,6 +198,9 @@ class ACF_NLL(BaseModel):
         self.num_anchors = int(self.config['model']['num_anchors'])
         self.lambda_exc = float(self.config['model'].get('lambda_exclusiveness', 0.01))
         self.lambda_inc = float(self.config['model'].get('lambda_inclusiveness', 0.01))
+        
+        self.n_users = self.data_loader.n_users
+        self.n_items = self.data_loader.n_items
         
         # 원본 임베딩
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)

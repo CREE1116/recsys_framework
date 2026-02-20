@@ -8,14 +8,76 @@ import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
 
 
-def get_hit_rate(pred_list, target_item):
-    return 1 if target_item in pred_list else 0
+def get_hit_rate(pred_list, ground_truth):
+    """
+    Hit Rate (HR): 최소 하나라도 맞췄으면 1, 아니면 0.
+    """
+    intersection = set(pred_list).intersection(set(ground_truth))
+    return 1 if len(intersection) > 0 else 0
 
-def get_ndcg(pred_list, target_item):
-    if target_item in pred_list:
-        rank = pred_list.index(target_item)
-        return np.log(2) / np.log(rank + 2)
-    return 0
+def get_recall(pred_list, ground_truth):
+    """
+    Recall: (맞춘 개수 / 전체 정답 개수)
+    """
+    if len(ground_truth) == 0:
+        return 0.0
+    intersection = set(pred_list).intersection(set(ground_truth))
+    return len(intersection) / len(ground_truth)
+
+def get_precision(pred_list, ground_truth):
+    """
+    Precision: (맞춘 개수 / K)
+    """
+    if len(pred_list) == 0:
+        return 0.0
+    intersection = set(pred_list).intersection(set(ground_truth))
+    return len(intersection) / len(pred_list)
+
+def get_ndcg(pred_list, ground_truth):
+    """
+    NDCG for Multi-item setting.
+    DCG = sum(1 / log2(rank + 2)) for each hit.
+    IDCG = sum(1 / log2(i + 2)) for i in range(min(len(GT), K)).
+    """
+    if not ground_truth:
+        return 0.0
+    
+    # Calculate DCG
+    dcg = 0.0
+    for i, item in enumerate(pred_list):
+        if item in ground_truth:
+            dcg += 1.0 / np.log2(i + 2)
+            
+    # Calculate IDCG
+    idcg = 0.0
+    n_relevant = min(len(ground_truth), len(pred_list))
+    for i in range(n_relevant):
+        idcg += 1.0 / np.log2(i + 2)
+        
+    return dcg / idcg if idcg > 0 else 0.0
+
+def get_pop_ratio(target_item, item_popularity, mean_pop):
+    """
+    PopRatio: 맞춘 아이템의 정규화 인기도.
+    
+    수식: pop / mean_pop
+    
+    해석:
+    - = 1: 평균 인기도 수준 (편향 없음)
+    - > 1: 인기 아이템 위주 (인기 편향)
+    - < 1: 롱테일 위주 (인기 편향 없음)
+    
+    Args:
+        target_item: 정답 아이템 ID
+        item_popularity: dict 또는 pd.Series {item_id: interaction_count}
+        mean_pop: 전체 아이템의 평균 인기도
+    
+    Returns:
+        float: 정규화된 인기도 (평균=1 기준)
+    """
+    target_pop = item_popularity.get(target_item, 1)
+    norm_pop = (target_pop / mean_pop) if mean_pop > 0 else 1.0
+    return norm_pop
 
 def get_coverage(all_recommended_items, n_items):
     """추천된 아이템의 고유 개수를 전체 아이템 수로 나눈 값."""
@@ -56,35 +118,90 @@ def get_novelty(recommended_items, item_popularity, num_users=None):
     """
     Novelty (Self-Information): -log2(P(i))
     P(i) = (train_count(i) + 1) / (total_interactions + N) (Smoothing 적용)
+    
+    Optimized: Uses numpy vectorization.
     """
     if not recommended_items:
         return 0.0
         
-    # item_popularity: pd.Series or dict of train counts
-    # recommended_items: list of strict item IDs
+    recommended_items = np.array(recommended_items)
     
-    epsilon = 1e-10
-    total_interactions = item_popularity.sum() if num_users is None else num_users # 근사치
-    
-    novelty_scores = []
-    for item in recommended_items:
-        count = item_popularity.get(item, 0)
-        p_i = (count + 1) / (total_interactions + len(item_popularity))
-        novelty_scores.append(-math.log2(p_i + epsilon))
-        
-    return np.mean(novelty_scores) if novelty_scores else 0.0
+    # item_popularity가 pd.Series면 numpy array로 변환 (인덱싱을 위해)
+    if hasattr(item_popularity, 'values'):
+        # 가정: item_id가 0부터 N-1까지 매핑되어 있다고 가정 (RecBole/Framework 표준)
+        # 만약 Sparse하다면 get 메서드처럼 동작해야 하지만, 
+        # 대부분의 경우 item_id는 continuous index임.
+        # 안전장치: max(recommended_items)가 len(item_popularity)보다 작아야 함
+        pop_values = item_popularity.values
+    elif isinstance(item_popularity, dict):
+        # Dict인 경우 max item id만큼의 배열 생성
+        max_item_id = max(recommended_items.max(), max(item_popularity.keys()))
+        pop_values = np.zeros(max_item_id + 1)
+        for k, v in item_popularity.items():
+            pop_values[k] = v
+    else:
+        pop_values = np.array(item_popularity)
 
-def get_long_tail_coverage(all_recommended_items, item_popularity, long_tail_percent=0.2):
+    total_interactions = pop_values.sum() if num_users is None else num_users
+    n_items = len(pop_values)
+    
+    # Batch lookup
+    counts = pop_values[recommended_items]
+    p_i = (counts + 1) / (total_interactions + n_items)
+    
+    # -log2(p_i)
+    novelty_scores = -np.log2(p_i + 1e-10)
+    
+    return np.mean(novelty_scores)
+
+def get_long_tail_item_set(item_popularity, head_volume_percent=0.8):
+    """
+    롱테일 아이템 집합 반환 (Interaction Volume 기준).
+    전체 인터랙션의 상위 head_volume_percent(default: 0.8)를 차지하는 인기 아이템을 Head로 정의하고,
+    나머지를 Tail로 정의함.
+    
+    Args:
+        item_popularity: pd.Series {item_id: interaction_count}
+        head_volume_percent: Head가 차지하는 인터랙션 비율 (default: 0.8)
+    
+    Returns:
+        set: 롱테일 아이템 ID 집합
+    """
+    # 인기도 내림차순 정렬
+    sorted_popularity = item_popularity.sort_values(ascending=False)
+    
+    # 누적합 계산
+    cumsum = sorted_popularity.cumsum()
+    total_interactions = sorted_popularity.sum()
+    
+    cutoff_val = total_interactions * head_volume_percent
+    # cumsum이 cutoff_val보다 커지는 첫 번째 위치 찾기
+    head_indices = np.searchsorted(cumsum.values, cutoff_val, side='right')
+    
+    # head_indices 개수만큼이 Head
+    tail_item_ids = set(sorted_popularity.index[head_indices:].tolist())
+    
+    return tail_item_ids
+
+def get_long_tail_coverage(all_recommended_items, item_popularity, head_volume_percent=0.8, precomputed_tail_set=None):
     if not all_recommended_items:
         return 0.0
 
-    sorted_popularity = item_popularity.sort_values(ascending=True)
-    num_long_tail_items = int(len(sorted_popularity) * long_tail_percent)
-    long_tail_item_ids = set(sorted_popularity.index[:num_long_tail_items].tolist())
-
-    recommended_long_tail_items = [item for item in all_recommended_items if item in long_tail_item_ids]
+    if precomputed_tail_set is not None:
+        long_tail_item_ids = precomputed_tail_set
+    else:
+        # 일관성을 위해 get_long_tail_item_set 함수 사용
+        long_tail_item_ids = get_long_tail_item_set(item_popularity, head_volume_percent)
     
-    return len(set(recommended_long_tail_items)) / len(set(all_recommended_items)) if len(set(all_recommended_items)) > 0 else 0.0
+    if len(long_tail_item_ids) == 0:
+        return 0.0
+    
+    # Set operation is faster
+    recs_set = set(all_recommended_items)
+    intersection = recs_set.intersection(long_tail_item_ids)
+    
+    # Coverage = (추천된 롱테일 아이템 수) / (전체 롱테일 아이템 수)
+    return len(intersection) / len(long_tail_item_ids)
 
 def get_entropy_from_recs(recommended_items):
     if not recommended_items:
@@ -102,12 +219,17 @@ def get_entropy_from_recs(recommended_items):
     entropy = -np.sum(probabilities * np.log2(probabilities))
     return entropy
 
-def get_gini_index_emb(item_embeddings):
+def get_gini_index_emb(item_embeddings=None, norms=None):
     """
     아이템 임베딩 Norm의 Gini Index.
     임베딩 공간 상에서 아이템들이 얼마나 고르게 분포(Magnitude 기준)되어 있는지 측정.
     일부 아이템(Popular)의 Norm만 비대해지는 현상을 감지할 수 있음.
+    
+    norms가 직접 제공되면 임베딩 계산을 생략함 (메모리 최적화).
     """
+    if norms is not None:
+        return get_gini_index(norms)
+        
     if item_embeddings is None:
         return 0.0
     
@@ -148,57 +270,137 @@ def get_ild(all_top_k_items, item_embeddings):
     return float(np.mean(all_ild_scores)) if all_ild_scores else 0.0
 
 
-def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_history):
+def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_history, item_popularity=None, long_tail_percent=0.8):
+    """
+    Refactored _evaluate_full for multi-item evaluation (Thesis-ready).
+    1. Collects all data first to avoid dual iterator problem.
+    2. Groups interactions by user for correct user-wise metrics.
+    3. Implements Item-wise classification for Head/Tail metrics.
+    """
+    # 1. Collect all test pairs first (Safety Fix)
+    all_test_pairs = []
+    print("[Evaluation] Collecting all test pairs...")
+    for user_batch, target_item_batch in test_loader:
+        u_batch = user_batch.numpy()
+        i_batch = target_item_batch.numpy()
+        for u, it in zip(u_batch, i_batch):
+            all_test_pairs.append((int(u), int(it)))
+
+    # 2. Aggregate ground truth items by user
+    user_test_ground_truth = {}
+    for u_id, i_id in all_test_pairs:
+        if u_id not in user_test_ground_truth:
+            user_test_ground_truth[u_id] = []
+        user_test_ground_truth[u_id].append(i_id)
+            
+    unique_test_users = sorted(list(user_test_ground_truth.keys()))
+    
+    # Metrics results storage
     results = {f'{metric}@{k}': [] for k in top_k_list for metric in metrics_list}
     all_top_k_items = [] 
+    
+    pop_ratio_raw = {k: [] for k in top_k_list}
+    mean_pop = None
+    if 'PopRatio' in metrics_list and item_popularity is not None:
+        all_pops = [item_popularity.get(i, 1) for i in range(len(item_popularity))]
+        mean_pop = np.mean(all_pops)
+    
+    tail_item_set = None
+    need_tail_metrics = any(m in metrics_list for m in ['LongTailHitRate', 'LongTailNDCG', 'HeadHitRate', 'HeadNDCG'])
+    if need_tail_metrics and item_popularity is not None:
+        tail_item_set = get_long_tail_item_set(item_popularity, head_volume_percent=long_tail_percent)
 
-    # top_k_list가 비어있으면 평가할 필요 없음
     if not top_k_list:
         return {}, []
 
+    # 3. Iterate by Batch of Unique Users
+    batch_size = test_loader.batch_size
+    mask_after_topk = getattr(model, 'mask_after_topk', False)
+    k_target_max = max(top_k_list)
+    k_fetch = k_target_max + 500 if mask_after_topk else k_target_max
+    k_fetch = min(k_fetch, model.n_items)
+
     with torch.no_grad():
-        for user_batch, target_item_batch in tqdm(test_loader, desc="Evaluating (full, batched)"):
-            user_batch = user_batch.to(device)
-            all_item_scores = model.forward(user_batch)
-
-            # 한 번만 CPU로 내리고 재사용
-            user_batch_cpu = user_batch.cpu().numpy()
-
-            for i, user_id in enumerate(user_batch_cpu):
-                items = user_history.get(user_id)
-                if items is None:
-                    continue
-
-                target_item_id = target_item_batch[i].item()
-
-                # target을 빼고 마스크할 아이템만 만들기
-                if target_item_id in items:
-                    to_mask = [it for it in items if it != target_item_id]
-                else:
-                    to_mask = list(items)
-
-                if to_mask:
-                    all_item_scores[i, to_mask] = -torch.inf
-
-
-            _, top_indices = torch.topk(all_item_scores, k=max(top_k_list), dim=1)
+        for i in tqdm(range(0, len(unique_test_users), batch_size), desc="Evaluating (user-wise)"):
+            user_batch_ids = unique_test_users[i:i+batch_size]
+            user_tensor = torch.LongTensor(user_batch_ids).to(device)
             
-            # Explicitly free memory
+            all_item_scores = model.forward(user_tensor) # [B, N_ITEMS]
+            
+            # [Standard Masking]
+            if not mask_after_topk:
+                for idx, u_id in enumerate(user_batch_ids):
+                    items_seen = user_history.get(u_id, set())
+                    target_items = user_test_ground_truth[u_id]
+                    # Mask everything seen EXCEPT the target items (standard protocol)
+                    to_exclude = [it for it in items_seen if it not in target_items]
+                    if to_exclude:
+                        all_item_scores[idx, to_exclude] = -1e9
+
+            _, top_indices = torch.topk(all_item_scores, k=k_fetch, dim=1)
             del all_item_scores
             
-            for i in range(len(user_batch)):
-                pred_list = top_indices[i].cpu().numpy().tolist()
-                target_item = target_item_batch[i].item()
+            top_indices_cpu = top_indices.cpu().numpy()
+            
+            for idx, u_id in enumerate(user_batch_ids):
+                pred_list = top_indices_cpu[idx].tolist()
+                ground_truth = user_test_ground_truth[u_id]
+                
+                if mask_after_topk:
+                    items_seen = user_history.get(u_id, set())
+                    to_exclude = {it for it in items_seen if it not in ground_truth}
+                    pred_list = [it for it in pred_list if it not in to_exclude][:k_target_max]
+                else:
+                    pred_list = pred_list[:k_target_max]
+                
                 all_top_k_items.append(pred_list)
-
+                
+                # Metric calculation per user
                 for k in top_k_list:
                     pred_list_k = pred_list[:k]
+                    
                     if 'HitRate' in metrics_list:
-                        results[f'HitRate@{k}'].append(get_hit_rate(pred_list_k, target_item))
+                        results[f'HitRate@{k}'].append(get_hit_rate(pred_list_k, ground_truth))
+                    if 'Recall' in metrics_list:
+                        results[f'Recall@{k}'].append(get_recall(pred_list_k, ground_truth))
+                    if 'Precision' in metrics_list:
+                        results[f'Precision@{k}'].append(get_precision(pred_list_k, ground_truth))
                     if 'NDCG' in metrics_list:
-                        results[f'NDCG@{k}'].append(get_ndcg(pred_list_k, target_item))
+                        results[f'NDCG@{k}'].append(get_ndcg(pred_list_k, ground_truth))
+                    
+                    # 4. Item-wise Refinement for LongTail/Head (Thesis Style)
+                    if need_tail_metrics and tail_item_set is not None:
+                        # Tail Items Metrics
+                        tail_gt = [it for it in ground_truth if it in tail_item_set]
+                        if tail_gt:
+                            if 'LongTailHitRate' in metrics_list:
+                                results[f'LongTailHitRate@{k}'].append(get_hit_rate(pred_list_k, tail_gt))
+                            if 'LongTailNDCG' in metrics_list:
+                                results[f'LongTailNDCG@{k}'].append(get_ndcg(pred_list_k, tail_gt))
+                        
+                        # Head Items Metrics
+                        head_gt = [it for it in ground_truth if it not in tail_item_set]
+                        if head_gt:
+                            if 'HeadHitRate' in metrics_list:
+                                results[f'HeadHitRate@{k}'].append(get_hit_rate(pred_list_k, head_gt))
+                            if 'HeadNDCG' in metrics_list:
+                                results[f'HeadNDCG@{k}'].append(get_ndcg(pred_list_k, head_gt))
+                    
+                    # PopRatio
+                    if 'PopRatio' in metrics_list and mean_pop is not None:
+                        hits = [it for it in pred_list_k if it in ground_truth]
+                        if hits:
+                            pops = [get_pop_ratio(it, item_popularity, mean_pop) for it in hits]
+                            pop_ratio_raw[k].append(np.mean(pops))
 
-    return {key: np.mean(value) if value else 0.0 for key, value in results.items()}, all_top_k_items
+    # Calculate final averages (using nanmean to ignore None/empty entries)
+    final_results = {key: np.nanmean(value) if value else 0.0 for key, value in results.items()}
+    
+    if 'PopRatio' in metrics_list:
+        for k in top_k_list:
+            final_results[f'PopRatio@{k}'] = np.mean(pop_ratio_raw[k]) if pop_ratio_raw[k] else 0.0
+    
+    return final_results, all_top_k_items
 
 def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
     results = {f'{metric}@{k}': [] for k in top_k_list for metric in metrics_list}
@@ -238,8 +440,11 @@ def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
             else:
                 _, top_indices_100 = torch.topk(scores_by_user, k=100, dim=1)
                 
-                pred_lists_100 = torch.gather(item_ids, 1, top_indices_100.cpu()).numpy().tolist()
-                target_items = item_ids[:, 0].cpu().numpy().tolist()
+                # [BUG FIX] MPS Device compatibility: move to cpu before gather or ensure correct allocation
+                item_ids_cpu = item_ids.cpu()
+                top_indices_100_cpu = top_indices_100.cpu()
+                pred_lists_100 = torch.gather(item_ids_cpu, 1, top_indices_100_cpu).numpy().tolist()
+                target_items = item_ids_cpu[:, 0].numpy().tolist()
 
                 all_top_k_items.extend([p[:max(top_k_list)] for p in pred_lists_100])
 
@@ -256,7 +461,7 @@ def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
     return {key: np.mean(value) if value else 0.0 for key, value in results.items()}, all_top_k_items
 
 
-def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
+def evaluate_metrics(model, data_loader, eval_config, device, test_loader, is_final=False):
     """
     [BUG FIX] The `config` parameter is now treated as the evaluation config directly.
     Defaults for `metrics` and `top_k` are now empty lists to enforce strict YAML configuration.
@@ -268,7 +473,14 @@ def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
     model.eval()
     
     if method == 'full' or method == 'full_subset' or method == 'sampled':
-        core_metrics, all_top_k_items = _evaluate_full(model, test_loader, top_k_list, metrics_list, device, data_loader.user_history)
+        # [RecBole Alignment] Validation 시에는 train 마스킹, Test 시에는 train+valid 마스킹
+        history_to_use = data_loader.eval_user_history if is_final else data_loader.train_user_history
+        # PopRatio, LongTail 지표 계산을 위해 item_popularity 전달
+        need_pop = any(m in metrics_list for m in ['PopRatio', 'LongTailHitRate', 'LongTailNDCG', 'HeadHitRate', 'HeadNDCG', 'Recall'])
+        item_pop = data_loader.item_popularity if need_pop else None
+        
+        lt_percent = eval_config.get('long_tail_percent', 0.8)
+        core_metrics, all_top_k_items = _evaluate_full(model, test_loader, top_k_list, metrics_list, device, history_to_use, item_pop, lt_percent)
     elif method == 'uni99':
         core_metrics, all_top_k_items = _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device)
     else:
@@ -283,12 +495,17 @@ def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
         return final_results
 
     item_embeddings_for_ild = None
+    all_item_norms = None
     if any(m in metrics_list for m in ['ILD', 'GiniIndex_emb']):
         with torch.no_grad():
             if hasattr(model, 'get_embeddings'):
                 _, item_embeddings_for_ild = model.get_embeddings()
             elif hasattr(model, 'item_embedding') and hasattr(model.item_embedding, 'weight'):
                 item_embeddings_for_ild = model.item_embedding.weight
+        
+        # [메모리 최적화] GiniIndex_emb@k 계산을 위해 미리 Norm을 뽑아둠
+        if 'GiniIndex_emb' in metrics_list and item_embeddings_for_ild is not None:
+            all_item_norms = torch.norm(item_embeddings_for_ild, dim=1).detach()
 
     # [Global Metrics] GiniIndex, GiniIndex_emb
     # 전체 Top-K(최대 K) 기준 글로벌 지표도 남겨둠
@@ -296,9 +513,9 @@ def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
         flat_recommended_items_overall = [item for sublist in all_top_k_items for item in sublist]
         final_results['GiniIndex'] = get_gini_index_from_recs(flat_recommended_items_overall, data_loader.n_items)
         
-    if 'GiniIndex_emb' in metrics_list and item_embeddings_for_ild is not None:
+    if 'GiniIndex_emb' in metrics_list and all_item_norms is not None:
         # 전체 아이템 임베딩의 Gini Index (Static) - "모델 자체의 표현력 불균형"
-        final_results['GiniIndex_emb'] = get_gini_index_emb(item_embeddings_for_ild)
+        final_results['GiniIndex_emb'] = get_gini_index_emb(norms=all_item_norms.cpu().numpy())
 
     for k in top_k_list:
         all_top_k_items_at_k = [user_recs[:k] for user_recs in all_top_k_items]
@@ -311,25 +528,28 @@ def evaluate_metrics(model, data_loader, eval_config, device, test_loader):
             final_results[f'Coverage@{k}'] = get_coverage(flat_recommended_items_at_k, data_loader.n_items)
             
         if 'LongTailCoverage' in metrics_list:
-            long_tail_percent = eval_config.get('long_tail_percent', 0.2)
-            final_results[f'LongTailCoverage@{k}'] = get_long_tail_coverage(flat_recommended_items_at_k, data_loader.item_popularity, long_tail_percent)
+            long_tail_percent = eval_config.get('long_tail_percent', 0.8)
+            # Pre-compute if not already done in _evaluate_full (but _evaluate_full does not return it)
+            # Efficiently compute once here
+            tail_set = get_long_tail_item_set(data_loader.item_popularity, head_volume_percent=long_tail_percent)
+            final_results[f'LongTailCoverage@{k}'] = get_long_tail_coverage(flat_recommended_items_at_k, data_loader.item_popularity, long_tail_percent, precomputed_tail_set=tail_set)
             
         if 'Entropy' in metrics_list:
             final_results[f'Entropy@{k}'] = get_entropy_from_recs(flat_recommended_items_at_k)
             
         if 'Novelty' in metrics_list:
-             final_results[f'Novelty@{k}'] = get_novelty(flat_recommended_items_at_k, data_loader.item_popularity, data_loader.n_users)
+             final_results[f'Novelty@{k}'] = get_novelty(flat_recommended_items_at_k, data_loader.item_popularity)
              
         if 'GiniIndex' in metrics_list:
              final_results[f'GiniIndex@{k}'] = get_gini_index_from_recs(flat_recommended_items_at_k, data_loader.n_items)
 
-        if 'GiniIndex_emb' in metrics_list and item_embeddings_for_ild is not None:
+        if 'GiniIndex_emb' in metrics_list and all_item_norms is not None:
              # 추천된 아이템들의 임베딩 Norm Gini Index
-             # 텐서 인덱싱을 위해 리스트를 텐서로 변환
+             # [메모리 최적화] 전체 임베딩을 인덱싱하지 않고 미리 계산된 Norm만 인덱싱함
              if flat_recommended_items_at_k:
-                 flat_indices = torch.tensor(flat_recommended_items_at_k, device=item_embeddings_for_ild.device)
-                 recs_embeddings = item_embeddings_for_ild[flat_indices]
-                 final_results[f'GiniIndex_emb@{k}'] = get_gini_index_emb(recs_embeddings)
+                 flat_indices = torch.tensor(flat_recommended_items_at_k, device=all_item_norms.device)
+                 recs_norms = all_item_norms[flat_indices].cpu().numpy()
+                 final_results[f'GiniIndex_emb@{k}'] = get_gini_index_emb(norms=recs_norms)
              else:
                  final_results[f'GiniIndex_emb@{k}'] = 0.0
 

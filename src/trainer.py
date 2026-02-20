@@ -8,7 +8,7 @@ import collections
 import json
 import time
 import copy
-
+import torch.nn as nn
 from .evaluation import evaluate_metrics  # 함수 임포트
 from .utils import plot_results
 
@@ -81,6 +81,47 @@ class Trainer:
             self.validation_loader = self.data_loader.get_validation_loader(self.config['train']['batch_size'] * 2)
             print("Data loaders initialized.")
 
+            # [추가] 자동 L2 규제를 위한 임베딩 모듈 캐싱
+            self.embedding_modules = self._cache_embedding_modules()
+
+    def _cache_embedding_modules(self):
+        """모델 내의 nn.Embedding 모듈을 찾아 관련 키워드와 함께 저장합니다."""
+        cached = []
+        for name, module in self.model.named_modules():
+            if isinstance(module, nn.Embedding):
+                # 'user_id'나 'item_id' 배치를 보고 적절히 L2를 걸기 위해 타입 분류
+                if 'user' in name.lower():
+                    cached.append((module, 'user'))
+                elif 'item' in name.lower():
+                    cached.append((module, 'item'))
+        return cached
+
+    def _calculate_automatic_l2(self, batch_data):
+        """배치 데이터에 사용된 인덱스에 대해 L2 loss를 계산합니다."""
+        if self.model.l2_reg_weight <= 0:
+            return None
+        
+        l2_loss = 0
+        # 배치 사이즈 추정 (딕셔너리의 첫 번째 값의 행 크기)
+        batch_size = next(iter(batch_data.values())).size(0)
+        
+        for module, m_type in self.embedding_modules:
+            if m_type == 'user' and 'user_id' in batch_data:
+                indices = batch_data['user_id']
+                # [B, 1] or [B] -> [B, D]
+                embs = module(indices)
+                l2_loss += torch.sum(embs ** 2)
+            elif m_type == 'item':
+                if 'pos_item_id' in batch_data:
+                    embs = module(batch_data['pos_item_id'])
+                    l2_loss += torch.sum(embs ** 2)
+                if 'neg_item_id' in batch_data:
+                    embs = module(batch_data['neg_item_id'])
+                    l2_loss += torch.sum(embs ** 2)
+        
+        # BaseModel.get_l2_reg_loss와 동일한 스케일링 유지
+        return self.model.l2_reg_weight * l2_loss / (2 * batch_size)
+
     def _get_optimizer(self, optimizer_name):
         # 이 메소드는 self.config['train']이 존재할 때만 호출됨
         lr = self.config['train'].get('lr', self.config['train'].get('learning_rate'))
@@ -88,14 +129,32 @@ class Trainer:
              raise ValueError("Learning rate not found in config. Please specify 'lr' or 'learning_rate'.")
         lr = float(lr)
 
-        weight_decay = self.config['train'].get('l2_regularization', self.config['train'].get('weight_decay', 0.0))
-        weight_decay = float(weight_decay)
+        # [Strict Split] MLP/Linear 전용 Weight Decay (weight_decay 키워드만 사용)
+        weight_decay = float(self.config['train'].get('weight_decay', 0.0))
+
+        # [수정] nn.Embedding 파라미터는 배치 단위 L2 규제를 위해 weight_decay에서 제외
+        # 이름에 'embedding'이 들어가는 모든 파라미터를 규제 대상에서 제외
+        no_decay_params = []
+        decay_params = []
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if 'embedding' in name.lower():
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+
+        param_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': no_decay_params, 'weight_decay': 0.0}
+        ]
+
         if optimizer_name.lower() == 'adam':
-            return optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            return optim.Adam(param_groups, lr=lr)
         elif optimizer_name.lower() == 'sgd':
-            return optim.SGD(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            return optim.SGD(param_groups, lr=lr)
         elif optimizer_name.lower() == 'adamw':
-            return optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            return optim.AdamW(param_groups, lr=lr)
         else:
             raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
@@ -139,9 +198,20 @@ class Trainer:
                 self.optimizer.zero_grad()
                 losses_tuple, params_to_log = self.model.calc_loss(batch_data)
 
+                # [추가] 배치 단위 자동 L2 규제 적용
+                reg_loss = self._calculate_automatic_l2(batch_data)
+                if reg_loss is not None and isinstance(reg_loss, torch.Tensor):
+                    losses_tuple = (*losses_tuple, reg_loss)
+                    if params_to_log is None: params_to_log = {}
+                    params_to_log['auto_l2_loss'] = reg_loss.item()
+
                 total_loss_for_backward = sum(losses_tuple)
                 total_loss_for_backward.backward()
                 self.optimizer.step()
+
+                # [추가] 모델별 학습 스텝 후처리 (예: EMA 업데이트)
+                if hasattr(self.model, 'on_step_end'):
+                    self.model.on_step_end()
 
                 epoch_losses['total_loss'] += total_loss_for_backward.item()
                 for i, l in enumerate(losses_tuple):
@@ -213,17 +283,18 @@ class Trainer:
 
         # 평가에 사용할 설정 결정
         if is_final_evaluation:
-            # 최종 평가 시에는 YAML에 정의된 evaluation 블록을 그대로 사용
-            config_for_eval = eval_config
+            # 최종 평가 시에는 YAML에 정의된 evaluation 블록을 기반으로 method 명시
+            config_for_eval = eval_config.copy()
+            config_for_eval['method'] = eval_config.get('final_method', 'full')
         else: # Validation during training
             # 학습 중 검증 시에는 main_metric만 계산
             config_for_eval = {
-                'method': eval_config.get('validation_method', 'uni99'),
+                'method': eval_config.get('validation_method', 'full'),
                 'metrics': [eval_config.get('main_metric', 'NDCG')],
                 'top_k': [eval_config.get('main_metric_k', 10)]
             }
 
-        current_metrics = evaluate_metrics(self.model, self.data_loader, config_for_eval, self.device, test_loader=loader)
+        current_metrics = evaluate_metrics(self.model, self.data_loader, config_for_eval, self.device, test_loader=loader, is_final=is_final_evaluation)
         
         if is_final_evaluation:
             print(f"Final Evaluation: {current_metrics}")

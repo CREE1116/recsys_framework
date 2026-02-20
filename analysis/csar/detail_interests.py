@@ -323,7 +323,25 @@ def run_full_analysis(exp_config):
     
     # 분석 루프
     with torch.no_grad():
-        attention_output = model.attention_layer(model.item_embedding.weight)
+        # CSAR_Prop 지원: attention_layer 없이 직접 interest_keys 사용
+        if hasattr(model, 'attention_layer'):
+            attention_output = model.attention_layer(model.item_embedding.weight)
+        elif hasattr(model, 'interest_keys'):
+            # CSAR_Prop: 직접 멤버십 계산
+            item_embs = model.item_embedding.weight
+            if hasattr(model, 'ln_i'):
+                item_embs = model.ln_i(item_embs)
+            
+            keys_norm = torch.nn.functional.normalize(model.interest_keys, p=2, dim=1)
+            scale = model.sharp_scale.item() if hasattr(model, 'sharp_scale') else 1.0
+            
+            attention_output = torch.nn.functional.softplus(
+                torch.matmul(item_embs, keys_norm.t()) * scale
+            )
+            attention_output = torch.nn.functional.normalize(attention_output, p=2, dim=1)
+        else:
+            print("[Error] Model has no attention_layer or interest_keys!")
+            return
         
         # [DualView Check]
         if isinstance(attention_output, tuple):
@@ -336,12 +354,13 @@ def run_full_analysis(exp_config):
         else:
             # Single View
             item_interests_tuple = (attention_output,)
-            # Keys: model.attention_layer.interest_keys usually, but handle Dummy/Tensor cases generic
-            # Check if interest_keys exists (Standard CSAR)
-            if hasattr(model.attention_layer, 'interest_keys'):
+            
+            # CSAR_Prop 지원: interest_keys 직접 사용
+            if hasattr(model, 'interest_keys'):
+                keys_tuple = (model.interest_keys,)
+            elif hasattr(model, 'attention_layer') and hasattr(model.attention_layer, 'interest_keys'):
                 keys_tuple = (model.attention_layer.interest_keys,)
             else:
-                # Fallback if no interest_keys param found (unlikely for standard)
                 keys_tuple = (None,)
             view_names = ["Interest"]
 
@@ -355,7 +374,8 @@ def run_full_analysis(exp_config):
         keys_norm = None
         if curr_keys is not None:
             # Handle if keys is parameter/tensor and handle Dummy (extra key)
-            if hasattr(model.attention_layer, 'Dummy') and model.attention_layer.Dummy and i==0: # Only for single view Dummy usually
+            # CSAR_Prop은 attention_layer가 없으므로 체크 필요
+            if hasattr(model, 'attention_layer') and hasattr(model.attention_layer, 'Dummy') and model.attention_layer.Dummy and i==0:
                  curr_keys_real = curr_keys[:-1] 
             else:
                  curr_keys_real = curr_keys
@@ -434,7 +454,7 @@ if __name__ == '__main__':
             print(f"[Error] Path not found: {args.exp_dir}")
     else:
         # Default behavior (Hardcoded list - optional, kept for backward compat)
-        EXPERIMENTS = [{'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/ml-1m/csar-hard'}]
+        EXPERIMENTS = [{'run_folder_path': '/Users/leejongmin/code/recsys_framework/trained_model/ml-1m/csar-rec2__num_interests=64'}]
         for exp in EXPERIMENTS:
             if os.path.exists(exp['run_folder_path']): run_full_analysis(exp)
             else: print(f"[Error] Path not found: {exp['run_folder_path']}")

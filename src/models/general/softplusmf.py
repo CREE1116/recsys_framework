@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ..base_model import BaseModel
-from src.loss import BPRLoss, MSELoss, InfoNCELoss
+from src.loss import BPRLoss, MSELoss, SampledSoftmaxLoss
 
 class softplusMF(BaseModel):
     """
@@ -14,6 +14,9 @@ class softplusMF(BaseModel):
         self.embedding_dim = config['model']['embedding_dim']
         self.num_negatives = config['train'].get('num_negatives', 1)
         
+        self.n_users = self.data_loader.n_users
+        self.n_items = self.data_loader.n_items
+        
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
 
@@ -21,18 +24,22 @@ class softplusMF(BaseModel):
             self.loss_fn = BPRLoss()
             self.loss_name = 'bpr_loss'
         else:
-            self.loss_fn = InfoNCELoss(config)
+            self.loss_fn = SampledSoftmaxLoss(config)
             self.loss_name = 'infonce_loss'
 
         self._init_weights()
+        self.scale = nn.Parameter(torch.tensor(1.0))
 
     def _init_weights(self):
         nn.init.normal_(self.user_embedding.weight, std=0.01)
         nn.init.normal_(self.item_embedding.weight, std=0.01)
 
     def predict_for_pairs(self, users, items):
-        user_embeds = F.softplus(self.user_embedding(users))  # [B, D]
-        item_embeds = F.softplus(self.item_embedding(items))  # [B, D] or [B, N, D]
+        user_embeds = F.softplus(self.user_embedding(users)*self.scale)
+        if user_embeds.dim() == 3:
+            user_embeds = user_embeds.squeeze(1) # [B, D]
+            
+        item_embeds = F.softplus(self.item_embedding(items)*self.scale)  # [B, D] or [B, N, D]
         
         if item_embeds.dim() == 2:
             # 일반적인 경우: [B, D] * [B, D] -> [B]
@@ -56,11 +63,11 @@ class softplusMF(BaseModel):
         loss = self.loss_fn(pos_scores, neg_scores)
        
         
-        return (loss,), None
+        return (loss,), {"scale":self.scale.item()}
 
     def forward(self, users):
-        user_embeds = F.softplus(self.user_embedding(users))
-        item_embeds = F.softplus(self.item_embedding.weight)
+        user_embeds = F.softplus(self.user_embedding(users)*self.scale)
+        item_embeds = F.softplus(self.item_embedding.weight*self.scale)
         scores = torch.matmul(user_embeds, item_embeds.transpose(0, 1))
         return scores
 

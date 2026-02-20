@@ -13,8 +13,8 @@ class LightGCN(BaseModel):
         self.embedding_dim = self.config['model']['embedding_dim']
         self.n_layers = self.config['model']['n_layers']
 
-        self.num_users = self.data_loader.n_users
-        self.num_items = self.data_loader.n_items
+        self.n_users = self.data_loader.n_users
+        self.n_items = self.data_loader.n_items
         
         # 희소/밀집 행렬을 모델의 device로 이동
         self.adj_matrix = self.data_loader.get_interaction_graph().to(self.device)
@@ -58,7 +58,13 @@ class LightGCN(BaseModel):
             D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.
             
             # Broadcasting: (N, 1) * (N, N) * (1, N)
-            norm_adj = A * D_inv_sqrt.unsqueeze(1) * D_inv_sqrt.unsqueeze(0)
+            try:
+                norm_adj = A * D_inv_sqrt.unsqueeze(1) * D_inv_sqrt.unsqueeze(0)
+            except (RuntimeError, MemoryError) as e:
+                print(f"[LightGCN] Error in dense graph normalization (OOM?): {e}")
+                # Fallback to sparse if dense fails?
+                # For now just raise to be caught by global handler
+                raise e
             
         return norm_adj
 
@@ -85,13 +91,17 @@ class LightGCN(BaseModel):
         # [수정] 희소/밀집 행렬에 따라 다른 곱셈 연산 사용
         for _ in range(self.n_layers):
             if self.norm_adj_matrix.is_sparse:
-                all_embeddings = torch.sparse.mm(self.norm_adj_matrix, all_embeddings)
+                try:
+                    all_embeddings = torch.sparse.mm(self.norm_adj_matrix, all_embeddings)
+                except (RuntimeError, NotImplementedError):
+                    # Fallback for MPS which might not support sparse mm
+                    all_embeddings = torch.sparse.mm(self.norm_adj_matrix.cpu(), all_embeddings.cpu()).to(self.device)
             else:
                 all_embeddings = torch.matmul(self.norm_adj_matrix, all_embeddings)
             embeddings_list.append(all_embeddings)
         
         final_embeddings = torch.mean(torch.stack(embeddings_list, dim=0), dim=0)
-        final_user_emb, final_item_emb = torch.split(final_embeddings, [self.num_users, self.num_items])
+        final_user_emb, final_item_emb = torch.split(final_embeddings, [self.n_users, self.n_items])
 
         if not self.training:
             self._final_user_emb = final_user_emb
@@ -108,23 +118,12 @@ class LightGCN(BaseModel):
         return item_embeddings.detach()
 
     def calc_loss(self, batch_data):
-        user_embeds, item_embeds = self.get_embeddings()
-
-        users = batch_data['user_id'].squeeze()
-        pos_items = batch_data['pos_item_id'].squeeze()
+        users = batch_data['user_id']
+        pos_items = batch_data['pos_item_id']
         neg_items = batch_data['neg_item_id']
 
-        user_vec = user_embeds[users]
-        pos_vec = item_embeds[pos_items]
-        neg_vec = item_embeds[neg_items]
-
-        if neg_vec.dim() == 2:
-            neg_vec = neg_vec.unsqueeze(1)
-            
-        pos_scores = torch.sum(user_vec * pos_vec, dim=1)
-        neg_scores = torch.einsum('bd,bnd->bn', user_vec, neg_vec)
-
-        pos_scores = pos_scores.unsqueeze(1)
+        pos_scores = self.predict_for_pairs(users, pos_items)
+        neg_scores = self.predict_for_pairs(users, neg_items)
 
         loss = self.loss_fn(pos_scores, neg_scores)
 
@@ -139,17 +138,10 @@ class LightGCN(BaseModel):
     def predict_for_pairs(self, users, items):
         user_embeds, item_embeds = self.get_embeddings()
         
-        user_vec = user_embeds[users]
-        item_vec = item_embeds[items]
+        user_vec = user_embeds[users] # [B, 1, D] or [B, D]
+        item_vec = item_embeds[items] # [B, 1, D] or [B, N, D]
 
-        if item_vec.dim() == 2:
-            scores = torch.sum(user_vec * item_vec, dim=1)
-        elif item_vec.dim() == 3:
-            scores = torch.einsum('bd,bnd->bn', user_vec, item_vec)
-        else:
-            raise ValueError(f"Invalid item tensor shape: {item_vec.shape}")
-            
-        return scores
+        return (user_vec * item_vec).sum(dim=-1)
 
     def __str__(self):
         return f"LightGCN(embedding_dim={self.embedding_dim}, n_layers={self.n_layers})"

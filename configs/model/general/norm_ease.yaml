@@ -1,0 +1,29 @@
+model:
+  name: norm_ease
+  reg_lambda: 140.60892575240848
+  normalize: true
+
+evaluation:
+  batch_size: 2048
+  final_method: "full"
+  main_metric: "NDCG"
+  main_metric_k: 10
+  metrics:
+    [
+      "NDCG",
+      "PopRatio",
+      "HitRate",
+      "Coverage",
+      "GiniIndex",
+      "LongTailCoverage",
+      "LongTailHitRate",
+      "LongTailNDCG",
+      "HeadHitRate",
+      "HeadNDCG",
+      "Entropy",
+      "ILD",
+      "GiniIndex_emb",
+      "Novelty",
+    ]
+  top_k: [5, 10, 20, 50]
+  validation_method: "sampled"

@@ -8,10 +8,12 @@ model:
   mode: "UI"
 
 train:
-  batch_size: 256
+  embedding_l2: 0.0001
+  weight_decay: 0.0
+  batch_size:  1024
   epochs: 500
   learning_rate: 0.001
-  weight_decay: 0.0001
+  weight_decay: 0.0
   optimizer: "adam"
   loss_type: pairwise
   num_negatives: 1
@@ -20,15 +22,20 @@ train:
   early_stop_patience: 40
 
 evaluation:
-  batch_size: 256
+  batch_size:   2048
   validation_method: "sampled" # 검증 시 평가 방법
   final_method: "full" # 최종 평가 시 평가 방법
   metrics: [
       "NDCG",
+      "PopRatio",
       "HitRate",
       "Coverage",
       "GiniIndex",
       "LongTailCoverage",
+      "LongTailHitRate",
+      "LongTailNDCG",
+      "HeadHitRate",
+      "HeadNDCG",
       "Entropy",
       "ILD",
       "GiniIndex_emb",
@@ -37,7 +44,7 @@ evaluation:
   top_k: [5, 10, 20, 50] # 평가할 K 값 리스트
   main_metric: "NDCG" # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭
   main_metric_k: 10 # 얼리 스톱핑 및 베스트 모델 저장 기준 메트릭의 K 값
-  long_tail_percent: 0.2 # 롱테일 아이템 정의를 위한 비율 (인기도 하위 N%)
+  long_tail_percent: 0.8 # 롱테일 아이템 정의를 위한 비율 (인기도 하위 N%)
 
 # 실행 환경 설정
 device: "auto"

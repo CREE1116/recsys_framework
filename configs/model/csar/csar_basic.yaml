@@ -1,0 +1,53 @@
+# CSAR Basic: 순수한 CSAR 베이스라인
+# use_cosine=true: 코사인 유사도 멤버십 ([-1,1], ProtoMF 스타일)
+# use_cosine=false: softplus 멤버십 ([0,∞), 기존 CSAR 스타일)
+
+model:
+  name: csar_basic
+  embedding_dim: 64
+  num_interests: [32, 48, 64, 80, 96]
+  normalize_gram: true
+  use_ridge_g: [true, false]
+  reg_lambda: 1.0 # Ridge mode G regularization
+  ema_momentum: 0.1 # Momentum for G matrix EMA update (new_G = (1-m)*old_G + m*new_G)
+
+train:
+  embedding_l2: 0.0001
+  weight_decay: 0.0
+  epochs: 500
+  batch_size: 1024
+  lr: 0.001
+  optimizer: "adam"
+  loss_type: "pairwise"
+  num_negatives: 1
+  negative_sampling_strategy: "uniform"
+  negative_sampling_alpha: 0.75
+  early_stop_patience: 40
+
+evaluation:
+  batch_size: 2048
+  validation_method: "sampled"
+  final_method: "full"
+  metrics:
+    [
+      "NDCG",
+      "PopRatio",
+      "HitRate",
+      "Coverage",
+      "GiniIndex",
+      "LongTailCoverage",
+      "LongTailHitRate",
+      "LongTailNDCG",
+      "HeadHitRate",
+      "HeadNDCG",
+      "Entropy",
+      "ILD",
+      "GiniIndex_emb",
+      "Novelty",
+    ]
+  top_k: [5, 10, 20, 50]
+  main_metric: "NDCG"
+  main_metric_k: 10
+  long_tail_percent: 0.8
+
+device: "auto"

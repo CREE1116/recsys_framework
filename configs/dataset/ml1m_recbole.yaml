@@ -1,0 +1,22 @@
+# RecBole 전용 데이터셋 설정
+dataset_name: "ml-1m-recbole"
+data_path: "/Users/leejongmin/code/recsys_framework/data/ml1m/ml-1m.inter"
+separator: "\t" # RecBole .inter는 탭 구분자
+columns: ["user_id", "item_id", "rating", "timestamp"]
+skiprows: 1 # 첫 줄 헤더 스킵
+
+# 데이터 전처리 및 분할 설정 (RecBole과 동일하게 threshold 없이)
+# rating_threshold: 4
+min_user_interactions: 5
+min_item_interactions: 5
+split_method: "temporal_ratio"
+
+# 실행 환경 설정
+device: "auto"
+
+evaluation:
+  batch_size: 2048
+  validation_method: "uni99" # 유니폼하게 샘플링된 99개와 비교
+  final_method: "uni99"
+  metrics: ["NDCG", "HitRate"]
+  top_k: [10, 50]

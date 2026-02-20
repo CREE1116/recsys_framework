@@ -201,8 +201,8 @@ def plot_joint_space(user_embs, item_embs, keys, output_path, title, perplexity=
     
     plt.figure(figsize=(12, 12))
     
-    # Plot Users (Background, Gray)
-    plt.scatter(u_tsne[:, 0], u_tsne[:, 1], c='lightgray', s=10, alpha=0.3, label='Users', rasterized=True)
+    # Plot Users (Background, Light Green for visibility)
+    plt.scatter(u_tsne[:, 0], u_tsne[:, 1], c='lightgreen', s=10, alpha=0.4, label='Users', rasterized=True)
     
     # Plot Items (Blue)
     plt.scatter(i_tsne[:, 0], i_tsne[:, 1], c='dodgerblue', s=15, alpha=0.6, label='Items', linewidth=0)
@@ -537,10 +537,10 @@ def calculate_key_item_similarity(keys, items, output_dir, top_k=50):
 
 if __name__ == '__main__':
     # 실험 경로 설정
-    target_dir = '/Users/leejongmin/code/recsys_framework/trained_model/ml-100k/csar-sampled__orth_loss_weight=0.1_num_interests=96'
+    target_dir = '/Users/leejongmin/code/recsys_framework/trained_model/ml-1m/csar-sampled__orth_loss_weight=0.001_num_interests=128_weight_decay=0.0'
     
     # [USER REQUEST] Single Config Variable for Perplexity
-    TARGET_PERPLEXITY = 5
+    TARGET_PERPLEXITY = 10
     
     if os.path.isdir(target_dir):
         visualize_embeddings_advanced(target_dir, perplexity=TARGET_PERPLEXITY)

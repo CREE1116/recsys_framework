@@ -1,0 +1,20 @@
+datasets:
+  - "configs/dataset/ml100k.yaml"
+  - "configs/dataset/ml1m.yaml"
+  - "configs/dataset/lastfm_2k.yaml"
+
+searches:
+  - name: "AdaptiveLIRA_Lambda_Alpha1_Search"
+    method: "bayesian"
+    model_config: "configs/model/csar/ada_lira.yaml"
+    params:
+      - name: "model.reg_lambda"
+        type: "float"
+        range: "1.0 100000"
+        log: true
+      - name: "model.alpha"
+        type: "categorical"
+        range: [1.0]
+    n_trials: 60
+    patience: 25
+    metric: "NDCG@10"

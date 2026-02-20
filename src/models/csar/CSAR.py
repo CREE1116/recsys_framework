@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from src.loss import orthogonal_loss 
 
 from ..base_model import BaseModel
 from .csar_layers import CoSupportAttentionLayer
@@ -18,6 +17,7 @@ class CSAR(BaseModel):
         self.Dummy = self.config['model'].get('dummy', False)
         self.zscore = self.config['model'].get('zscore', False)
         self.emb_dropout = self.config['model'].get('emb_dropout', 0.0)
+        self.orth_loss_type = self.config['model'].get('orth_loss_type', 'l1')
         # Standard Deviation Scaling Factor (Beta) for Power-Scaled Norm
         self.std_power = self.config['model'].get('std_power', 0.2)
 
@@ -82,7 +82,7 @@ class CSAR(BaseModel):
         # Global Softmax Cross Entropy
         loss = F.cross_entropy(preds, items) 
 
-        orth_loss = self.attention_layer.get_orth_loss(loss_type="l2")
+        orth_loss = self.attention_layer.get_orth_loss(loss_type=self.orth_loss_type)
 
         params_to_log = {'scale': self.attention_layer.scale.item()}
 

@@ -1,0 +1,11 @@
+{
+    "dataset_name": "ml-1m",
+    "gini_index": 0.6622468359402204,
+    "head_ratio_20": 0.6919039096341073,
+    "sparsity": 0.9695392243950944,
+    "num_users": 6034,
+    "num_items": 3125,
+    "num_interactions": 574376,
+    "avg_popularity": 183.80032,
+    "max_popularity": 2853
+}

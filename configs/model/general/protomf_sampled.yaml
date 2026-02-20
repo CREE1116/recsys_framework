@@ -12,10 +12,12 @@ model:
   use_zscore: False
 
 train:
-  batch_size: 256
+  embedding_l2: 0.0001
+  weight_decay: 0.0
+  batch_size:  1024
   epochs: 500
   learning_rate: 0.001
-  weight_decay: 0.0001
+  weight_decay: 0.0
   optimizer: "adam"
   loss_type: pairwise
   num_negatives: 60 # Sampled Softmax용 네거티브 수
@@ -24,16 +26,21 @@ train:
   early_stop_patience: 40
 
 evaluation:
-  batch_size: 256
+  batch_size:   2048
   validation_method: "sampled"
   final_method: "full"
   metrics:
     [
       "NDCG",
+      "PopRatio",
       "HitRate",
       "Coverage",
       "GiniIndex",
       "LongTailCoverage",
+      "LongTailHitRate",
+      "LongTailNDCG",
+      "HeadHitRate",
+      "HeadNDCG",
       "Entropy",
       "ILD",
       "GiniIndex_emb",
@@ -42,6 +49,6 @@ evaluation:
   top_k: [5, 10, 20, 50]
   main_metric: "NDCG"
   main_metric_k: 10
-  long_tail_percent: 0.2
+  long_tail_percent: 0.8
 
 device: "auto"

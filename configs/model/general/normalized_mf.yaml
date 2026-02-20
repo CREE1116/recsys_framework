@@ -6,11 +6,12 @@ model:
 
 # 학습 설정
 train:
+  embedding_l2: 0.0001
+  weight_decay: 0.0
   epochs: 500
-  batch_size: 256
+  batch_size:  1024
   lr: 0.001
-  l2_regularization: 0.0001
-  optimizer: "adamw"
+  optimizer: "adam"
   loss_type: "pairwise" # 'pairwise', 'pointwise'
   num_negatives: 60 # For pairwise losses
   negative_sampling_strategy: "uniform" # 'uniform' or 'popularity'
@@ -19,16 +20,21 @@ train:
 
 # 평가 설정
 evaluation:
-  batch_size: 256 # MF allows large eval batch
+  batch_size:   2048 # MF allows large eval batch
   validation_method: "sampled"
   final_method: "full"
   metrics:
     [
       "NDCG",
+      "PopRatio",
       "HitRate",
       "Coverage",
       "GiniIndex",
       "LongTailCoverage",
+      "LongTailHitRate",
+      "LongTailNDCG",
+      "HeadHitRate",
+      "HeadNDCG",
       "Entropy",
       "ILD",
       "GiniIndex_emb",
@@ -37,6 +43,6 @@ evaluation:
   top_k: [5, 10, 20, 50]
   main_metric: "NDCG"
   main_metric_k: 10
-  long_tail_percent: 0.2
+  long_tail_percent: 0.8
 
 device: "auto"

@@ -1,0 +1,14 @@
+{
+    "nmf_lira": {
+        "dataset": "ml1m",
+        "model": "nmf_lira",
+        "search_name": "NMFLIRA_Hyper_Search",
+        "best_metric": 0.06211204232967216,
+        "best_params": {
+            "model.num_interests": 124,
+            "model.reg_lambda": 1723.2107441722897
+        },
+        "best_dir": "trained_model/ml-1m/nmf_lira__num_interests=124_reg_lambda=1723.21",
+        "details_dir": "output/ml1m/NMFLIRA_Hyper_Search"
+    }
+}

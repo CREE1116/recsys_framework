@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ..base_model import BaseModel
-from src.loss import BPRLoss, MSELoss, InfoNCELoss
+from src.loss import BPRLoss, MSELoss, SampledSoftmaxLoss
 class MMR(BaseModel):
     """
     MMR: Maximal Marginal Relevance
