@@ -129,10 +129,8 @@ class iALS(BaseModel):
     # Training
     # --------------------------------------------------------
     def fit(self, data_loader):
-        print(f"\n[iALS] Fitting with d={self.embedding_dim}, "
-              f"lambda={self.reg_lambda}, alpha={self.alpha}, "
-              f"iter={self.max_iter}, batch_users={self.batch_users}")
-        print(f"[iALS] Device: {self.device}")
+        self._log(f"Fitting with d={self.embedding_dim}, lambda={self.reg_lambda}, alpha={self.alpha}, iter={self.max_iter}, batch_users={self.batch_users}")
+        self._log(f"Device: {self.device}")
 
         start_time = time.time()
 
@@ -193,7 +191,7 @@ class iALS(BaseModel):
 
 
         elapsed = time.time() - start_time
-        print(f"[iALS] Done. Total: {elapsed:.1f}s")
+        self._log(f"Done. Total: {elapsed:.1f}s")
         self.train_losses = {'total_loss': loss_history}
 
         try:
@@ -217,7 +215,7 @@ class iALS(BaseModel):
                     file_path=os.path.join(output_path, 'total_loss_plot.png')
                 )
         except Exception as e:
-            print(f"[iALS] Could not save loss plot: {e}")
+            self._log(f"Could not save loss plot: {e}")
 
     # --------------------------------------------------------
     # Inference

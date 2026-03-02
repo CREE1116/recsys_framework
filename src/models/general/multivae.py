@@ -78,12 +78,12 @@ class MultiVAE(BaseModel):
                         test_item = test_items_map[u_id]
                         if x[i, test_item] > 0:
                             leak_count += 1
-                            print(f"[CRITICAL WARNING] Data Leakage detected for user {u_id}: Test item {test_item} is in input!")
+                            self._log(f"[CRITICAL WARNING] Data Leakage detected for user {u_id}: Test item {test_item} is in input!")
                 
                 if leak_count > 0:
-                     print(f"[CRITICAL] Total leaked users in batch: {leak_count}")
+                     self._log(f"[CRITICAL] Total leaked users in batch: {leak_count}")
                 else:
-                     print("[INFO] No data leakage detected in MultiVAE input (checked first batch).")
+                     self._log("No data leakage detected in MultiVAE input (checked first batch).")
 
         mu_logvar = self.encoder(h)
         mu, logvar = torch.chunk(mu_logvar, 2, dim=1)

@@ -29,7 +29,7 @@ class ChebyshevLIRA(BaseModel):
         )
         self.lira_layer.to(self.device)
         
-        print(f"[ChebyshevLIRA] Initialized with λ={self.reg_lambda}, p={self.power}, threshold={self.threshold}, K={self.K}")
+        self._log(f"Initialized (λ={self.reg_lambda}, K={self.K}, p={self.power})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
@@ -64,7 +64,7 @@ class ChebyshevLIRA(BaseModel):
         return scores
 
     def fit(self, data_loader):
-        print(f"\n[ChebyshevLIRA] Training completed during initialization.")
+        self._log("Training completed during initialization.")
         print("="*60 + "\n")
 
     def predict_for_pairs(self, user_ids, item_ids):

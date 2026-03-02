@@ -40,7 +40,7 @@ class _LIRAGraphCache:
         key = cls._key(X_sparse)
         if key is not None:
             cls._cache[(mode, key)] = S_sp
-            print(f"[LIRACache] Cached {mode} graph operator! Memory saved for future trials.")
+            print(f"[LIRA] Cached {mode} graph operator! Memory saved for future trials.")
     
     @classmethod
     def clear(cls):
@@ -134,7 +134,7 @@ class LightLIRALayer(nn.Module):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if torch.backends.mps.is_available(): device = 'mps'
         
-        print(f"[LightLIRA] Building Raw Model (No Norm) with k={self.k}, λ={self.reg_lambda} ..")
+        print(f"[LIRA] Building Raw Model (No Norm) with k={self.k}, λ={self.reg_lambda} ..")
 
         # 1. Perform SVD on Raw X
         manager = SVDCacheManager(device=device)
@@ -147,7 +147,7 @@ class LightLIRALayer(nn.Module):
         s2 = self.singular_values.pow(2)
         self.filter_diag = s2 / (s2 + self.reg_lambda)
             
-        print("[LightLIRA] Finished building Raw LowRank.")
+        print("[LIRA] Finished building Raw LowRank.")
 
         
         # 2. Apply spectral filter
@@ -202,7 +202,7 @@ class SpectralTikhonovLIRALayer(nn.Module):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if torch.backends.mps.is_available(): device = 'mps'
         
-        print(f"[SpectralTikhonovLIRA] Building Spectral Model with {self.target_energy*100:.1f}% Energy SVD, α={self.alpha}, β={self.beta} ..")
+        print(f"[LIRA] Building Spectral Model with {self.target_energy*100:.1f}% Energy SVD, α={self.alpha}, β={self.beta} ..")
 
         # 1. Perform SVD on Raw X
         from src.utils.gpu_accel import SVDCacheManager
@@ -218,7 +218,7 @@ class SpectralTikhonovLIRALayer(nn.Module):
         s_pow = torch.pow(self.singular_values, 2.0 - self.beta)
         self.filter_diag = s_pow / (s_pow + self.alpha)
             
-        print("[SpectralTikhonovLIRA] Finished building Spectral Tikhonov Filter.")
+        print("[LIRA] Finished building Spectral Tikhonov Filter.")
 
     @torch.no_grad()
     def forward(self, X_batch, user_ids=None):

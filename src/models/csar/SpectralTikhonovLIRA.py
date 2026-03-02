@@ -32,7 +32,7 @@ class SpectralTikhonovLIRA(BaseModel):
         )
         self.lira_layer.to(self.device)
         
-        print(f"[SpectralTikhonovLIRA] Initialized with k={self.k}, α={self.alpha}, β={self.beta}, target_energy={self.target_energy}")
+        self._log(f"Initialized (k={self.k}, α={self.alpha}, β={self.beta})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
@@ -76,16 +76,17 @@ class SpectralTikhonovLIRA(BaseModel):
         return scores.gather(1, item_ids)
 
     def fit(self, data_loader):
-        print(f"\n[SpectralTikhonovLIRA] Training (k={self.k}, α={self.alpha}, β={self.beta})")
+        print(f"\n{'='*60}")
+        self._log(f"Training (k={self.k}, α={self.alpha}, β={self.beta})")
         print("="*60)
         
         # Always perform visualization (Lightweight vs Heavyweight controlled by visualize flag)
-        print(f"[SpectralTikhonovLIRA] Analyzing model (Visualize Heavyweight: {self.visualize})...")
+        self._log(f"Analyzing model (Visualize Heavyweight: {self.visualize})...")
         try:
             # Create analysis directory
             analysis_dir = os.path.join(self.output_path, 'analysis')
             os.makedirs(analysis_dir, exist_ok=True)
-            print(f"[SpectralTikhonovLIRA] Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
+            self._log(f"Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
             
             # Use 'visualize' config to control heavyweight heatmaps
             if hasattr(self.lira_layer, 'visualize_matrices'):
@@ -94,9 +95,9 @@ class SpectralTikhonovLIRA(BaseModel):
                     save_dir=analysis_dir,
                     lightweight=not self.visualize
                 )
-                print(f"[SpectralTikhonovLIRA] Analysis results saved to {analysis_dir}")
+                self._log(f"Analysis results saved to {analysis_dir}")
         except Exception as e:
-            print(f"[SpectralTikhonovLIRA] Visualization skipped: {e}")
+            self._log(f"Visualization skipped: {e}")
         print("="*60 + "\n")
 
     def get_embeddings(self):

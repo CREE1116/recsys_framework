@@ -31,7 +31,7 @@ class ASAP_LIRA(BaseModel):
         self.lira_layer.to(self.device)
         
         # Initialize
-        print(f"[ASAP-LIRA] Initialized with λ={self.reg_lambda}, eta={self.eta}, z={self.z}, Visualize={self.visualize}")
+        self._log(f"Initialized (λ={self.reg_lambda}, eta={self.eta}, z={self.z})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)

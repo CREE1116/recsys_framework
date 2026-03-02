@@ -22,12 +22,12 @@ class MF(BaseModel):
         self.loss_type = config.get('train', {}).get('loss_type', 'pairwise')
         self.w_mse = config.get('train', {}).get('w_mse', 10.0)
         
-        if self.loss_type == 'pointwise':
+        if self.loss_type == 'w_mse':
             self.loss_fn = nn.MSELoss(reduction='none') # weight 적용을 위해 none으로 설정
-            print(f"[MF] Using All-Item Weighted MSE (w_mse={self.w_mse})")
+            self._log(f"Using All-Item Weighted MSE (w_mse={self.w_mse})")
         else:
             self.loss_fn = BPRLoss()
-            print("[MF] Using pairwise BPRLoss")
+            self._log("Using pairwise BPRLoss")
 
         self._init_weights()
 

@@ -99,7 +99,7 @@ class CSAR_Minimal(BaseModel):
             try:
                 new_G = torch.linalg.solve(A, I)
             except RuntimeError as e:
-                print(f"[CSAR_Minimal] solve 실패 ({e}), pinv로 fallback")
+                self._log(f"solve 실패 ({e}), pinv로 fallback")
                 new_G = torch.linalg.pinv(A)
 
             # EMA 업데이트
@@ -144,7 +144,7 @@ class CSAR_Minimal(BaseModel):
                     "g_id_dist": id_dist / self.embedding_dim
                 }
             except Exception as e:
-                print(f"[CSAR_Minimal] Spectral analysis failed: {e}")
+                self._log(f"Spectral analysis failed: {e}")
                 self.last_g_stats = {}
     def get_propagation_matrix(self):
         """

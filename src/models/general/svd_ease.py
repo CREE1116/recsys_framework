@@ -22,7 +22,7 @@ class SVDEASE(EASE):
         # SVD Manager for caching results
         self.svd_manager = SVDCacheManager(device=self.device.type)
         
-        print(f"[SVD-EASE] Initialized with k={self.k}, λ={self.reg_lambda}")
+        self._log(f"Initialized (k={self.k}, λ={self.reg_lambda})")
 
     def fit(self, data_loader):
         self._log(f"Fitting (k={self.k}, λ={self.reg_lambda})...")

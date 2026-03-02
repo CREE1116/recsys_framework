@@ -41,10 +41,12 @@ class UltraGCN(BaseModel):
         self.ii_neighbor_mat = None # Item-Item Neighbor Matrix (Sparse)
         self.ii_constraint_k = config['model'].get('ii_neighbor_num', 10)
         
+        self._log(f"Initialized (w1={self.w1}, w2={self.w2}, w3={self.w3}, w4={self.w4})")
+
     def fit(self, data_loader):
         if self.ii_neighbor_mat is not None: return
         
-        print("[UltraGCN] Constructing Item-Item Similarity Graph for Constraint Loss...")
+        self._log("[UltraGCN] Constructing Item-Item Similarity Graph for Constraint Loss...")
         
         try:
             # 1. User-Item Graph
@@ -106,7 +108,7 @@ class UltraGCN(BaseModel):
                 # Simplified: Just sample uniformly from co-occurring items?
                 # No, UltraGCN needs specific neighbors.
                 
-                print("[UltraGCN] Large item set detected. Computing Top-K row by row...")
+                self._log("[UltraGCN] Large item set detected. Computing Top-K row by row...")
                 neighbors = np.zeros((self.n_items, self.ii_constraint_k), dtype=np.int64)
                 weights = np.zeros((self.n_items, self.ii_constraint_k), dtype=np.float32)
                 
@@ -138,10 +140,10 @@ class UltraGCN(BaseModel):
             row_sum = self.ii_weights.sum(dim=1, keepdim=True) + 1e-9
             self.ii_weights /= row_sum
             
-            print("[UltraGCN] Graph construction complete.")
+            self._log("[UltraGCN] Graph construction complete.")
             
         except Exception as e:
-            print(f"[UltraGCN] Error building graph: {e}. Disabling Item-Item Constraint.")
+            self._log(f"[UltraGCN] Error building graph: {e}. Disabling Item-Item Constraint.")
             self.ii_neighbors = None
 
     def forward(self, user_ids, item_ids=None):

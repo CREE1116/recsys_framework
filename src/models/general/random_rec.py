@@ -10,13 +10,13 @@ class RandomRec(BaseModel):
     def __init__(self, config, data_loader):
         super(RandomRec, self).__init__(config, data_loader)
         self.n_items = self.data_loader.n_items
-        print("RandomRec model initialized.")
+        self._log("RandomRec model initialized.")
 
     def fit(self, data_loader):
         """
         RandomRec 모델은 학습이 필요하지 않습니다.
         """
-        print("RandomRec model fitted successfully (no-op).")
+        self._log("RandomRec model fitted successfully (no-op).")
         return
 
     def forward(self, users):

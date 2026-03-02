@@ -43,7 +43,7 @@ class SANSA(BaseModel):
 
     def fit(self, data_loader):
         print(f"\n{'='*60}")
-        print(f"[SANSA] Fitting with lambda={self.reg_lambda}, density={self.density}...")
+        self._log(f"Fitting with lambda={self.reg_lambda}, density={self.density}...")
         print(f"{'='*60}")
         
         start_time = time.time()
@@ -62,13 +62,13 @@ class SANSA(BaseModel):
         self.train_matrix_csr = X_csr
         
         # 2. Compute Gram Matrix A = X^T X + lambda I
-        print("[SANSA] Computing Gram Matrix...")
+        self._log("Computing Gram Matrix...")
         G = (X_csr.T @ X_csr).toarray().astype(np.float32)
         diag_indices = np.arange(self.n_items)
         G[diag_indices, diag_indices] += self.reg_lambda
         
         # 3. Cholesky → L^-1 for sparsification
-        print("[SANSA] Cholesky Decomposition...")
+        self._log("Cholesky Decomposition...")
         from src.utils.gpu_accel import get_device
         device = get_device()
         
@@ -80,14 +80,14 @@ class SANSA(BaseModel):
             del G_t, G
             
             # Solve L @ L_inv = I on GPU
-            print("[SANSA] Inverting Cholesky Factor...")
+            self._log("Inverting Cholesky Factor...")
             I_t = torch.eye(self.n_items, device=device, dtype=torch.float32)
             L_inv_t = torch.linalg.solve_triangular(L_t, I_t, upper=False)
             del L_t, I_t
             L_inv_np = L_inv_t.cpu().numpy()
             del L_inv_t
         except (RuntimeError, NotImplementedError):
-            print("[SANSA] GPU failed, CPU fallback...")
+            self._log("GPU failed, CPU fallback...")
             from scipy.linalg import cho_factor, solve_triangular as sp_solve_tri
             cho, low = cho_factor(G)
             del G
@@ -111,7 +111,7 @@ class SANSA(BaseModel):
             # Construct row indices
             row_idx = np.arange(self.n_items)[:, None] * np.ones(self.target_k, dtype=int)
             K_sparse[row_idx, top_k_idx] = L_inv_np[row_idx, top_k_idx]
-            print(f"[SANSA] Sparsified K: top-{self.target_k} per row (vectorized)")
+            self._log(f"Sparsified K: top-{self.target_k} per row (vectorized)")
         else:
             # Global threshold
             threshold = np.percentile(np.abs(L_inv_np), 100 * (1 - self.density))
@@ -127,7 +127,7 @@ class SANSA(BaseModel):
         
         elapsed = time.time() - start_time
         print(f"\n{'='*60}")
-        print(f"[SANSA] Training complete!")
+        self._log("Training complete!")
         print(f"  - Time: {elapsed:.2f}s")
         print(f"  - K nnz: {K_coo.nnz:,} (Density: {K_coo.nnz / (self.n_items**2):.4f})")
         print(f"{'='*60}\n")

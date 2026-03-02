@@ -96,7 +96,7 @@ class SLIM(BaseModel):
         self.W = None
         self.train_matrix_csr = None
 
-        print(f"[SLIM] Initialized: alpha={self.alpha}, l1_ratio={self.l1_ratio}, "
+        self._log(f"Initialized: alpha={self.alpha}, l1_ratio={self.l1_ratio}, "
               f"positive={self.positive}, max_iter={self.max_iter}, n_jobs={self.n_jobs}")
 
     def _build_sparse_matrix(self, data_loader):
@@ -109,12 +109,12 @@ class SLIM(BaseModel):
             shape=(self.n_users, self.n_items),
             dtype=np.float32
         )
-        print(f"[SLIM] Interaction matrix: {X.shape}, nnz={X.nnz:,}")
+        self._log(f"Interaction matrix: {X.shape}, nnz={X.nnz:,}")
         return X
 
     def fit(self, data_loader):
         print(f"\n{'='*60}")
-        print(f"[SLIM] Starting standard ElasticNet solver (coordinate descent)...")
+        self._log("Starting standard ElasticNet solver (coordinate descent)...")
         print(f"{'='*60}")
         start_time = time.time()
 
@@ -122,7 +122,7 @@ class SLIM(BaseModel):
         X = self.train_matrix_csr
         M = self.n_items
 
-        print(f"[SLIM] Solving {M} columns in parallel (n_jobs={self.n_jobs})...")
+        self._log(f"Solving {M} columns in parallel (n_jobs={self.n_jobs})...")
         # CSC 포맷은 column zeroing에 효율적 — 캐시 확인 후 1회만 변환
         X_csc = _SLIMMatrixCache.get(X)
         if X_csc is None:
@@ -147,7 +147,7 @@ class SLIM(BaseModel):
         nnz = np.sum(W_out > 1e-8)
         sparsity = 1.0 - nnz / (M * M)
         print(f"\n{'='*60}")
-        print(f"[SLIM] Training complete!")
+        self._log("Training complete!")
         print(f"  - Time: {elapsed:.2f}s")
         print(f"  - W nnz: {nnz:,} / {M*M:,} (sparsity={sparsity:.4f})")
         print(f"{'='*60}\n")

@@ -114,7 +114,7 @@ class CSAR_Pure(BaseModel):
                 m = self.ema_momentum
                 self._cached_G = m * self._cached_G + (1 - m) * new_G
             
-        print(f"[CSAR_Pure] Target G updated (stability={self.g_stability.item():.4f}) at epoch {epoch}")
+        self._log(f"Target G updated (stability={self.g_stability.item():.4f}) at epoch {epoch}")
 
     def forward(self, users):
         user_emb = self.user_embedding(users)

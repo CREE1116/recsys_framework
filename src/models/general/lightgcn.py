@@ -67,8 +67,7 @@ class LightGCN(BaseModel):
             try:
                 norm_adj = A * D_inv_sqrt.unsqueeze(1) * D_inv_sqrt.unsqueeze(0)
             except (RuntimeError, MemoryError) as e:
-                print(f"[LightGCN] Error in dense graph normalization (OOM?): {e}")
-                # Fallback to sparse if dense fails?
+                self._log(f"Error in dense graph normalization (OOM?): {e}")
                 # For now just raise to be caught by global handler
                 raise e
             

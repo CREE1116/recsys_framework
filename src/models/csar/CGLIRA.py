@@ -24,7 +24,7 @@ class CGLIRA(BaseModel):
         )
         self.lira_layer.to(self.device)
         
-        print(f"[CGLIRA] Initialized with λ={self.reg_lambda}, max_iter={self.max_iter}, tol={self.tol}")
+        self._log(f"Fitting (max_iter={self.max_iter}, λ={self.reg_lambda})...")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)

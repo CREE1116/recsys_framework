@@ -12,7 +12,7 @@ class NCEASE(EASE):
     """
     def __init__(self, config, data_loader):
         super(NCEASE, self).__init__(config, data_loader)
-        print(f"[NC-EASE] Initialized with λ={self.reg_lambda}")
+        self._log(f"Initialized (λ={self.reg_lambda})")
 
     def fit(self, data_loader):
         self._log(f"Fitting (λ={self.reg_lambda})...")

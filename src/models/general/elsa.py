@@ -32,7 +32,7 @@ class ELSA(BaseModel):
         
         self.train_matrix_csr = None
         
-        print(f"[ELSA] Config: rank={self.rank}, λ={self.reg_lambda}, sparse_k={self.sparse_k}")
+        self._log(f"Config: rank={self.rank}, λ={self.reg_lambda}, sparse_k={self.sparse_k}")
 
     def _build_sparse_matrix(self, data_loader):
         """Build user-item interaction matrix"""
@@ -52,7 +52,7 @@ class ELSA(BaseModel):
         ELSA training: Closed-form + SVD decomposition
         """
         print(f"\n{'='*60}")
-        print(f"[ELSA] Starting training...")
+        self._log("Starting training...")
         print(f"{'='*60}")
         
         start_time = time.time()
@@ -61,7 +61,7 @@ class ELSA(BaseModel):
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
         X = self.train_matrix_csr
         
-        print(f"[ELSA] Matrix: {X.shape}, nnz={X.nnz:,}")
+        self._log(f"Matrix: {X.shape}, nnz={X.nnz:,}")
         
         # GPU-accelerated EASE solution
         from src.utils.gpu_accel import gpu_gram_solve
@@ -73,7 +73,7 @@ class ELSA(BaseModel):
         np.fill_diagonal(B_np, 0)
         
         # 3. Low-rank decomposition via SVD
-        print(f"[ELSA] Computing SVD (rank={self.rank})...")
+        self._log(f"Computing SVD (rank={self.rank})...")
         
         U, Σ, Vt = np.linalg.svd(B_np, full_matrices=False)
         
@@ -87,7 +87,7 @@ class ELSA(BaseModel):
         S = np.diag(np.sqrt(Σ_d)) @ Vt_d  # (d × M)
         
         # 4. Sparse residual
-        print(f"[ELSA] Computing sparse residual...")
+        self._log("Computing sparse residual...")
         
         B_lowrank = L @ S
         R = B_np - B_lowrank
@@ -119,7 +119,7 @@ class ELSA(BaseModel):
         recon_error = np.linalg.norm(B_np - B_approx) / np.linalg.norm(B_np)
         
         print(f"\n{'='*60}")
-        print(f"[ELSA] Training complete!")
+        self._log("Training complete!")
         print(f"  - Time: {elapsed:.2f}s")
         print(f"  - Low-rank: {L.shape}")
         print(f"  - Sparse nnz: {R_coo.nnz:,}")

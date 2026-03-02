@@ -30,7 +30,7 @@ class LightLIRA(BaseModel):
         
 
         
-        print(f"[LightLIRA] Initialized with k={self.k}, λ={self.reg_lambda}, Visualize={self.visualize}")
+        self._log(f"Initialized (k={self.k}, λ={self.reg_lambda})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
@@ -74,17 +74,18 @@ class LightLIRA(BaseModel):
         return scores.gather(1, item_ids)
 
     def fit(self, data_loader):
-        print(f"\n[LightLIRA] Training (k={self.k}, Lambda={self.reg_lambda})")
+        print(f"\n{'='*60}")
+        self._log(f"Training (k={self.k}, Lambda={self.reg_lambda})")
         print("="*60)
         
         # Always perform visualization (Lightweight vs Heavyweight controlled by visualize flag)
-        print(f"[LightLIRA] Analyzing model (Visualize Heavyweight: {self.visualize})...")
+        self._log("Precomputing Gram Matrix...")
         try:
             # Use SVDCacheManager to resolve analysis path
             from src.utils.gpu_accel import SVDCacheManager
             analysis_dir = SVDCacheManager.get_analysis_dir(self.config)
             os.makedirs(analysis_dir, exist_ok=True)
-            print(f"[LightLIRA] Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
+            self._log(f"Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
             
             # Use 'visualize' config to control heavyweight heatmaps
             self.lira_layer.visualize_matrices(
@@ -92,9 +93,9 @@ class LightLIRA(BaseModel):
                 save_dir=analysis_dir,
                 lightweight=not self.visualize
             )
-            print(f"[LightLIRA] Analysis results saved to {analysis_dir}")
+            self._log(f"Analysis results saved to {analysis_dir}")
         except Exception as e:
-            print(f"[LightLIRA] Visualization skipped: {e}")
+            self._log(f"Visualization skipped: {e}")
             import traceback
             traceback.print_exc()
         print("="*60 + "\n")

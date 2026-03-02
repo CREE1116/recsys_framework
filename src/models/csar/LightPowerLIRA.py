@@ -33,7 +33,7 @@ class LightPowerLIRA(BaseModel):
         self.lira_layer.to(self.device)
         
         # Initialize
-        print(f"[LightPowerLIRA] Initialized with k={self.k}, λ={self.reg_lambda}, power={self.power}, threshold={self.threshold}, Visualize={self.visualize}")
+        self._log(f"Initialized (k={self.k}, λ={self.reg_lambda}, p={self.power})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
@@ -52,7 +52,8 @@ class LightPowerLIRA(BaseModel):
         return self.train_matrix_csr
 
     def fit(self, data_loader):
-        print(f"\n[LightPowerLIRA] Training (k={self.k}, λ={self.reg_lambda}, Power={self.power}, Threshold={self.threshold})")
+        print(f"\n{'='*60}")
+        self._log(f"Training (k={self.k}, λ={self.reg_lambda}, Power={self.power}, Threshold={self.threshold})")
         print("="*60)
         
         if not hasattr(self.lira_layer, 'S_sparse') or self.lira_layer.S_sparse is None:
@@ -62,7 +63,7 @@ class LightPowerLIRA(BaseModel):
         analysis_dir = SVDCacheManager.get_analysis_dir(self.config)
         
         if self.visualize:
-            print(f"[LightPowerLIRA] Saving visualizations to {analysis_dir}...")
+            self._log(f"Saving visualizations to {analysis_dir}...")
             self.lira_layer.visualize_matrices(
                 X_sparse=self.train_matrix_csr, 
                 save_dir=analysis_dir

@@ -47,10 +47,10 @@ class SVD_AE(BaseModel):
         self.register_buffer('V_k', torch.empty(0))  # M x k
         self.register_buffer('P_k', torch.empty(0))  # k x M
 
-        print(f"[SVD-AE] Initialized with gamma={self.gamma} -> k={self.k}")
+        self._log(f"Initialized (gamma={self.gamma} -> k={self.k})")
 
     def fit(self, data_loader):
-        print(f"\n[SVD-AE] Fitting with k={self.k}...")
+        self._log(f"Fitting (k={self.k})...")
         start_time = time.time()
 
         # 1. Build Sparse Interaction Matrix R (X)
@@ -67,7 +67,7 @@ class SVD_AE(BaseModel):
         self.train_matrix_csr = R
 
         # 2. Compute Degree Matrices D_U^{-1/2} and D_I^{-1/2}
-        print("[SVD-AE] Computing Normalized Adjacency Matrix R_tilde...")
+        self._log("Computing Normalized Adjacency Matrix R_tilde...")
         d_U = np.array(R.sum(axis=1)).flatten()
         d_I = np.array(R.sum(axis=0)).flatten()
 
@@ -87,7 +87,7 @@ class SVD_AE(BaseModel):
         dataset_name = self.config.get('dataset_name', 'unknown_svdae')
         cache_key = f"{dataset_name}_svdae_g{self.gamma:.4f}"
 
-        print(f"[SVD-AE] Performing Truncated SVD via SVDCacheManager (k={self.k})...")
+        self._log(f"Performing Truncated SVD via SVDCacheManager (k={self.k})...")
         # SVDCacheManager.get_svd(matrix, k, dataset_name) returns (U, S, V, energy)
         # U: (n_users, k), S: (k,), V: (n_items, k)
         Q_k_t, Sigma_k_t, V_k_t, energy = self.svd_manager.get_svd(
@@ -102,7 +102,7 @@ class SVD_AE(BaseModel):
         del R_tilde, D_U_inv_sqrt, D_I_inv_sqrt
 
         # 4. Precompute P_k = Sigma_k^{-1} @ Q_k^T @ R  =>  (k x M)
-        print("[SVD-AE] Constructing decoupled inference matrix P_k...")
+        self._log("Constructing decoupled inference matrix P_k...")
 
         Q_k_np = Q_k.cpu().numpy()           # N x k
         # Q_k^T @ R  -> (k x N) @ (N x M) -> (k x M)
@@ -117,8 +117,7 @@ class SVD_AE(BaseModel):
         del Q_k_np, Q_k_proj_np, Q_k_proj, Sigma_k_inv
 
         elapsed = time.time() - start_time
-        print(f"[SVD-AE] Training complete. Time: {elapsed:.2f}s")
-        print(f"         Energy captured: {energy:.4f}")
+        self._log(f"SVD-AE fitted. Energy captured (σ² sum): {energy_sq:.4f}, Energy captured (σ sum): {energy_linear:.4f}")
         print(f"         V_k: {self.V_k.shape}, P_k: {self.P_k.shape}")
 
     def forward(self, user_ids, item_ids=None):

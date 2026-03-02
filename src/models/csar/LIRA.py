@@ -63,7 +63,7 @@ class LIRA(BaseModel):
         
         if self.visualize:
             # New Visualization
-            print(f"[LIRA] Saving visualizations to {analysis_dir}...")
+            self._log(f"[LIRA] Saving visualizations to {analysis_dir}...")
             self.lira_layer.visualize_matrices(
                 X_sparse=self.train_matrix_csr, 
                 save_dir=analysis_dir

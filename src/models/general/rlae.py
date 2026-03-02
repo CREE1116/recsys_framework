@@ -21,7 +21,7 @@ class RLAE(BaseModel):
         self.register_buffer('weight_matrix', torch.zeros(self.n_items, self.n_items))
         self.train_matrix_csr = None
         
-        print(f"[RLAE] Initialized: λ={self.reg_lambda}, b={self.b}")
+        self._log(f"Initialized: λ={self.reg_lambda}, b={self.b}")
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df
@@ -37,7 +37,7 @@ class RLAE(BaseModel):
 
     def fit(self, data_loader):
         print(f"\n{'='*60}")
-        print(f"[RLAE] Training with b={self.b}, λ={self.reg_lambda}")
+        self._log(f"Training with b={self.b}, λ={self.reg_lambda}")
         print(f"{'='*60}")
         
         import time
@@ -74,7 +74,7 @@ class RLAE(BaseModel):
         del B
         
         print(f"\n{'='*60}")
-        print(f"[RLAE] Training complete!")
+        self._log("Training complete!")
         print(f"  - Time: {elapsed:.2f}s")
         print(f"  - Active constraints: {n_active}/{self.n_items}")
         print(f"  - Diagonal: min={diag_vals.min():.4f}, max={diag_vals.max():.4f}, mean={diag_vals.mean():.4f}")

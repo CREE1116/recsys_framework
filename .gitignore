@@ -28,6 +28,3 @@ configs/dataset/
 # Logs & temp
 *.log
 /tmp/
-
-# Gemini
-.gemini/

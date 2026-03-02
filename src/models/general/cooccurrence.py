@@ -26,7 +26,7 @@ class CoOccurrence(BaseModel):
         self.train_matrix_csr = None
 
     def fit(self, data_loader):
-        print(f"Fitting CoOccurrence model (metric={self.metric})...")
+        self._log(f"Fitting CoOccurrence model (metric={self.metric})...")
         
         # 1. Construct Sparse Interaction Matrix X
         train_df = data_loader.train_df
@@ -77,7 +77,7 @@ class CoOccurrence(BaseModel):
         
         # 5. Store
         self.similarity_matrix.copy_(torch.from_numpy(S).float())
-        print("CoOccurrence model fitted.")
+        self._log("CoOccurrence model fitted.")
 
     def forward(self, user_ids, item_ids=None):
         if self.train_matrix_csr is None:

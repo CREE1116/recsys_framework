@@ -33,13 +33,13 @@ class NaiveBayes(BaseModel):
         # User history matrix (sparse)
         self.user_item_matrix = None
         
-        print(f"NaiveBayes model initialized with smoothing={self.smoothing}.")
+        self._log(f"NaiveBayes model initialized with smoothing={self.smoothing}.")
 
     def fit(self, data_loader):
         """
         Compute required probabilities from the training data.
         """
-        print("Building matrices for Naive Bayes...")
+        self._log("Building matrices for Naive Bayes...")
         
         # 1. Build User-Item Interaction Matrix
         rows = data_loader.train_df['user_id'].values
