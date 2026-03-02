@@ -162,6 +162,67 @@ if 'mps' in str(v.device).lower():
 
 ---
 
+## 8. GPU 가속 유틸리티 (`src/utils/gpu_accel.py`)
+
+MPS/CUDA 환경에서 **Closed-form 모델**(EASE, LIRA, PureSVD 등)의 행렬 연산을 가속하는 유틸리티 모듈입니다. HPO에서 동일 데이터셋에 대해 반복 실험할 때 **캐시를 통해 수십 배 속도 개선**을 달성합니다.
+
+### 8-1. `gpu_gram_solve(X_sparse, reg_lambda, rhs, device)`
+
+**(X^T X + λI)^-1 @ rhs** 를 계산합니다. EASE 등 Linear AE 모델의 핵심 연산.
+
+```python
+from src.utils.gpu_accel import gpu_gram_solve
+
+# EASE: P = (G + λI)^-1 G  where G = X^T X
+P = gpu_gram_solve(X_sparse, reg_lambda=500.0, rhs=None, device='auto')
+```
+
+**내부 전략** (M = 아이템 수):
+
+| 조건       | 방법                                                | 속도          |
+| :--------- | :-------------------------------------------------- | :------------ |
+| M ≤ 20,000 | **Eigendecomposition 캐시**: 첫 호출 ~60s, 이후 ~1s | HPO에 최적    |
+| M > 20,000 | **Cholesky per call**: ~77s/call                    | 대규모 데이터 |
+
+### 8-2. `SVDCacheManager`
+
+SVD 결과를 디스크에 캐싱하고, MPS에서는 Randomized SVD로 대체.
+
+```python
+from src.utils.gpu_accel import SVDCacheManager
+
+svd_mgr = SVDCacheManager(cache_dir='data_cache', device='auto')
+
+# k 직접 지정
+u, s, v, energy = svd_mgr.get_svd(X_sparse, k=256, dataset_name='ml-1m')
+
+# target_energy로 k 자동 결정 (예: 95% 에너지 보존)
+u, s, v, energy = svd_mgr.get_svd(X_sparse, target_energy=0.95)
+```
+
+**사용 모델**: PureSVD, GF-CF, SVD-EASE, SpectralTikhonovLIRA 등
+
+### 8-3. `_GramEigenCache` (HPO 가속)
+
+Gram 행렬의 고유값 분해를 **메모리에 캐싱**. 같은 데이터셋에서 `reg_lambda`만 바꿔가며 HPO할 때:
+
+- 첫 trial: 전체 Eigendecomposition (~60s)
+- 이후 trials: 캐시된 고유값으로 즉시 계산 (~1s)
+
+### 8-4. `_TruncatedSVDCache` (HPO 가속)
+
+Truncated SVD 결과를 캐싱. LIRA 계열 모델이 `reg_lambda` HPO 시 재사용.
+
+### 8-5. `gpu_cholesky_solve(G_np, rhs_np, device)`
+
+CPU Cholesky (scipy)를 사용한 대칭 양정치 시스템 풀이. 블록 단위 처리로 메모리 효율적.
+
+```
+Note: MPS는 torch.linalg.cholesky를 지원하지 않으므로 CPU scipy 사용.
+```
+
+---
+
 ## 요약: MPS 우회 패턴
 
 | 패턴                          | 적용 위치              | 방법                        |
