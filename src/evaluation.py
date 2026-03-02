@@ -438,11 +438,9 @@ def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
             else:
                 _, top_indices_100 = torch.topk(scores_by_user, k=100, dim=1)
                 
-                # [BUG FIX] MPS Device compatibility: move to cpu before gather or ensure correct allocation
-                item_ids_cpu = item_ids.cpu()
-                top_indices_100_cpu = top_indices_100.cpu()
-                pred_lists_100 = torch.gather(item_ids_cpu, 1, top_indices_100_cpu).numpy().tolist()
-                target_items = item_ids_cpu[:, 0].numpy().tolist()
+                # torch>=2.9: MPS gather 네이티브 지원
+                pred_lists_100 = torch.gather(item_ids, 1, top_indices_100).cpu().numpy().tolist()
+                target_items = item_ids[:, 0].cpu().numpy().tolist()
 
                 all_top_k_items.extend([p[:max(top_k_list)] for p in pred_lists_100])
 
