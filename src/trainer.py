@@ -87,9 +87,9 @@ class Trainer:
             self.validation_loader = self.data_loader.get_validation_loader(self.config['train']['batch_size'] * 2)
             print("Data loaders initialized.")
 
-            # [추가] AMP 가속 (cuda에서는 GradScaler 사용, mps는 아직 scaler 미지원이나 autocast만 지원)
+            # [추가] AMP 가속 (cuda/mps 모두 GradScaler + autocast 지원, torch>=2.9)
             self.use_amp = self.config['train'].get('use_amp', True) and self.device.type in ['cuda', 'mps']
-            self.scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' and self.use_amp else None
+            self.scaler = torch.amp.GradScaler(self.device.type) if self.use_amp else None
 
     def _get_optimizer(self, optimizer_name):
         # 이 메소드는 self.config['train']이 존재할 때만 호출됨
@@ -175,10 +175,8 @@ class Trainer:
 
                 self.optimizer.zero_grad()
                 
-                # AMP Autocast 적용
-                device_type = 'cuda' if self.device.type == 'cuda' else 'cpu' 
-                # mps일 경우에도 'cpu' autocast 혹은 별도 처리가 필요할 수 있으나, 최신 torch는 torch.amp.autocast 사용 권장
-                with torch.amp.autocast(device_type=device_type, enabled=self.use_amp):
+                # AMP Autocast 적용 (cuda/mps 네이티브, torch>=2.9)
+                with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
                     losses_tuple, params_to_log = self.model.calc_loss(batch_data)
                     total_loss_for_backward = sum(losses_tuple)
 

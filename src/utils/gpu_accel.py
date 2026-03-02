@@ -36,8 +36,8 @@ def get_device(preference='auto'):
 
 def gpu_cholesky_solve(G_np, rhs_np=None, device='auto'):
     """
-    Solve G @ X = rhs via Cholesky (CPU, Apple Accelerate BLAS).
-    Note: MPS doesn't support cholesky/lu_solve, so CPU-only.
+    Solve G @ X = rhs via Cholesky.
+    torch>=2.9: MPS/CUDA 네이티브 cholesky 지원. 실패 시 CPU scipy fallback.
     
     Args:
         G_np: (M, M) numpy array, symmetric positive definite (float32)
@@ -46,6 +46,27 @@ def gpu_cholesky_solve(G_np, rhs_np=None, device='auto'):
     Returns:
         X_np: (M, K) numpy array (float32)
     """
+    dev = get_device(device)
+    M = G_np.shape[0]
+    
+    # GPU/MPS 네이티브 경로 (torch>=2.9 MPS cholesky 지원)
+    if dev in ('mps', 'cuda') and M <= 20000:  # 대규모 행렬은 메모리 이슈로 CPU
+        try:
+            t0 = time.time()
+            G_t = torch.from_numpy(G_np).float().to(dev)
+            L = torch.linalg.cholesky(G_t)
+            if rhs_np is None:
+                I = torch.eye(M, device=dev, dtype=torch.float32)
+                X_t = torch.cholesky_solve(I, L)
+            else:
+                rhs_t = torch.from_numpy(rhs_np).float().to(dev)
+                X_t = torch.cholesky_solve(rhs_t, L)
+            result = X_t.cpu().numpy()
+            print(f"[gpu_accel] {dev.upper()} Cholesky Solve ({M}x{M}): {time.time()-t0:.2f}s")
+            return result
+        except Exception as e:
+            print(f"[gpu_accel] {dev.upper()} cholesky failed ({e}), CPU fallback...")
+    
     return _cpu_cholesky(G_np, rhs_np)
 
 

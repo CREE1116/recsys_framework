@@ -71,8 +71,9 @@ class Infinity_AE(BaseModel):
         
         try:
              Alpha = torch.linalg.solve(K_reg, K)
-        except (RuntimeError, NotImplementedError):
-             print("[Infinity-AE] MPS solve failed, fallback to CPU...")
+        except RuntimeError:
+             # 대규모 행렬에서 MPS 메모리 부족 시 CPU fallback
+             print("[Infinity-AE] GPU solve failed, fallback to CPU...")
              Alpha = torch.linalg.solve(K_reg.cpu(), K.cpu()).to(self.device)
         del K, K_reg  # 메모리 해제
         

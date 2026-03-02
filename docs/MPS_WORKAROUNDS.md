@@ -2,30 +2,25 @@
 
 이 문서는 프레임워크에서 Apple Silicon MPS 백엔드를 사용할 때 적용된 **우회 처리(workarounds)**를 정리합니다.
 
-> MPS는 PyTorch 2.x부터 지원되지만 CUDA 대비 일부 연산이 미구현되어 있어, CPU fallback이나 대체 알고리즘이 필요합니다.
+> **torch 2.9.1 기준**: cholesky, solve, GradScaler, autocast가 MPS 네이티브 지원됨.
+> QR 분해와 sparse.mm은 아직 미지원.
 
 ---
 
-## 1. AMP (Automatic Mixed Precision)
+## 1. AMP (Automatic Mixed Precision) — ✅ RESOLVED (torch>=2.9)
 
 **파일**: `src/trainer.py`
 
-| 항목                 | CUDA                    | MPS                                          |
-| :------------------- | :---------------------- | :------------------------------------------- |
-| `torch.amp.autocast` | ✅ `device_type='cuda'` | ⚠️ `device_type='cpu'` (MPS autocast 미완성) |
-| `GradScaler`         | ✅ 사용                 | ❌ 미지원 → `None`                           |
+| 항목                 | CUDA                    | MPS (torch>=2.9)       |
+| :------------------- | :---------------------- | :--------------------- |
+| `torch.amp.autocast` | ✅ `device_type='cuda'` | ✅ `device_type='mps'` |
+| `GradScaler`         | ✅ 사용                 | ✅ 사용                |
 
 ```python
-# trainer.py:91
-self.use_amp = config.get('use_amp', True) and device.type in ['cuda', 'mps']
-self.scaler = GradScaler('cuda') if device.type == 'cuda' and self.use_amp else None
-
-# trainer.py:179 — autocast 시 device_type fallback
-device_type = 'cuda' if self.device.type == 'cuda' else 'cpu'
-with torch.amp.autocast(device_type=device_type, enabled=self.use_amp):
+# trainer.py — cuda/mps 동일하게 처리
+self.scaler = torch.amp.GradScaler(self.device.type) if self.use_amp else None
+with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
 ```
-
-**영향**: MPS에서는 fp32로 실행되므로 CUDA 대비 ~2x 느릴 수 있음.
 
 ---
 
@@ -67,29 +62,33 @@ except NotImplementedError:
 
 ---
 
-## 3. 선형대수: Cholesky / linalg.solve → CPU Offload
+## 3. 선형대수: Cholesky / linalg.solve — ✅ RESOLVED (torch>=2.9)
 
 **파일**: `src/utils/gpu_accel.py`, `src/models/general/infinity_ae.py`
 
-MPS는 `torch.linalg.cholesky`, `torch.linalg.solve`, `torch.linalg.lu_solve` 등을 **지원하지 않습니다**.
+torch 2.9.1부터 MPS에서 `torch.linalg.cholesky`, `torch.linalg.solve` 네이티브 지원.
 
-### EASE / Linear AE 계열: CPU Cholesky
+### EASE / Linear AE 계열: MPS Cholesky (M ≤ 20k)
 
 ```python
-# gpu_accel.py:40
-# Note: MPS doesn't support cholesky/lu_solve, so CPU-only.
+# gpu_accel.py — MPS/CUDA 네이티브 → CPU fallback
+if dev in ('mps', 'cuda') and M <= 20000:
+    G_t = torch.from_numpy(G_np).float().to(dev)
+    L = torch.linalg.cholesky(G_t)
+    X_t = torch.cholesky_solve(rhs_t, L)
 ```
 
-- Gram 행렬 계산은 MPS에서 수행 (Dense matmul), Cholesky 분해만 CPU에서 수행
-- 결과를 다시 MPS로 전송
+- M ≤ 20,000: MPS 네이티브 cholesky (CPU 대비 ~2-3x 빠를 수 있음)
+- M > 20,000: 메모리 이슈로 CPU scipy block-wise Cholesky 유지
 
-### Infinity-AE: linalg.solve Fallback
+### Infinity-AE: linalg.solve 네이티브
 
 ```python
-# infinity_ae.py:75
-except:
-    print("[Infinity-AE] MPS solve failed, fallback to CPU...")
-    # CPU에서 solve 후 MPS로 이동
+# infinity_ae.py — 이제 MPS에서 직접 실행, 메모리 부족 시만 CPU fallback
+try:
+    Alpha = torch.linalg.solve(K_reg, K)
+except RuntimeError:
+    Alpha = torch.linalg.solve(K_reg.cpu(), K.cpu()).to(self.device)
 ```
 
 ---
@@ -223,18 +222,18 @@ Note: MPS는 torch.linalg.cholesky를 지원하지 않으므로 CPU scipy 사용
 
 ---
 
-## 요약: MPS 우회 패턴
+## 요약: MPS 우회 패턴 (torch 2.9.1 기준)
 
-| 패턴                          | 적용 위치              | 방법                        |
-| :---------------------------- | :--------------------- | :-------------------------- |
-| **GradScaler 비활성화**       | trainer.py             | `scaler = None`             |
-| **autocast device fallback**  | trainer.py             | `'cpu'` for MPS             |
-| **Sparse → CPU 보관**         | LIRALayer, LightGCN    | `.cpu().to_sparse()`        |
-| **Sparse mm → Dense mm**      | LightGCN               | `to_dense()` + `torch.mm()` |
-| **Cholesky/solve → CPU**      | gpu_accel, infinity_ae | CPU offload                 |
-| **Full SVD → Randomized SVD** | gpu_accel              | Halko algorithm on MPS      |
-| **QR → CPU**                  | LIRALayer              | CPU offload                 |
-| **gather → CPU**              | evaluation             | `.cpu()` before gather      |
-| **Sharpening → CPU**          | LIRALayer              | 수치 안정성                 |
+| 패턴                         | 적용 위치           | 상태                                   |
+| :--------------------------- | :------------------ | :------------------------------------- |
+| ~~GradScaler 비활성화~~      | trainer.py          | ✅ **해결** — MPS 네이티브             |
+| ~~autocast device fallback~~ | trainer.py          | ✅ **해결** — `device_type='mps'` 직접 |
+| ~~Cholesky → CPU~~           | gpu_accel.py        | ✅ **해결** — MPS 네이티브 (M≤20k)     |
+| ~~linalg.solve → CPU~~       | infinity_ae.py      | ✅ **해결** — MPS 네이티브             |
+| **Sparse → CPU 보관**        | LIRALayer, LightGCN | ❌ 유지 — sparse.mm 미지원             |
+| **Sparse mm → Dense mm**     | LightGCN            | ❌ 유지                                |
+| **QR → CPU**                 | LIRALayer           | ❌ 유지 — linalg.qr 미지원             |
+| **gather → CPU**             | evaluation.py       | ⚠️ 유지 (안정성)                       |
+| **Sharpening → CPU**         | LIRALayer           | ⚠️ 유지 (수치 안정성)                  |
 
 > **일반 원칙**: MPS에서는 **Dense 행렬곱(`torch.mm`)**이 가장 빠르고 안정적입니다. Sparse 연산, 분해(Cholesky/QR/SVD), 고급 선형대수는 CPU fallback이 현실적입니다.
