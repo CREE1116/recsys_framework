@@ -1,0 +1,8 @@
+model:
+  name: gf_cf
+  k: [64]
+  filter_type: ideal
+  alpha: 0.6
+  norm_weight: 0.1
+
+device: auto

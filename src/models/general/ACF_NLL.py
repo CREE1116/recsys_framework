@@ -174,12 +174,19 @@ class ACF_BPR(BaseModel):
         # --- 3. Inclusiveness Loss (전체 배치 기준) ---
         inc_loss = self.anchor_layer.inclusiveness_loss(item_coeffs)
         
+        # --- 4. L2 Regularization (On raw embeddings) ---
+        l2_loss = self.get_l2_reg_loss(user_embs_raw, pos_item_embs_raw, neg_item_embs_raw)
+
         # 로깅용 파라미터
         params_to_log = {
+            'loss_main': bpr_loss.item(),
+            'loss_exc': exc_loss.item(),
+            'loss_inc': inc_loss.item(),
+            'loss_l2': l2_loss.item(),
             'avg_coeff_entropy': -(item_coeffs * torch.log(item_coeffs + 1e-10)).sum(dim=-1).mean().item()
         }
         
-        return (bpr_loss,self.lambda_exc * exc_loss,self.lambda_inc * inc_loss), params_to_log
+        return (bpr_loss, self.lambda_exc * exc_loss, self.lambda_inc * inc_loss, l2_loss), params_to_log
     
     def __str__(self):
         return f"ACF_BPR(num_anchors={self.num_anchors}, embedding_dim={self.embedding_dim})"
@@ -272,12 +279,19 @@ class ACF_NLL(BaseModel):
         inc_loss = self.anchor_layer.inclusiveness_loss(all_item_coeff)
         
         
+        # --- 4. L2 Regularization (On raw embeddings) ---
+        l2_loss = self.get_l2_reg_loss(user_embs_raw, all_item_embs_recon[items])
+        
         # 로깅
         params_to_log = {
+            'loss_main': nll_loss.item(),
+            'loss_exc': exc_loss.item(),
+            'loss_inc': inc_loss.item(),
+            'loss_l2': l2_loss.item(),
             'avg_anchor_usage': all_item_coeff.mean(dim=0).std().item()  # 앵커 사용 불균형
         }
         
-        return (nll_loss,self.lambda_exc * exc_loss,self.lambda_inc * inc_loss), params_to_log
+        return (nll_loss, self.lambda_exc * exc_loss, self.lambda_inc * inc_loss, l2_loss), params_to_log
     
     def __str__(self):
         return f"ACF_NLL(num_anchors={self.num_anchors}, embedding_dim={self.embedding_dim})"

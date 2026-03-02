@@ -24,39 +24,26 @@ class EASE(BaseModel):
 
     def fit(self, data_loader):
         print("Fitting EASE model...")
-        # 1. Construct sparse Interaction Matrix X (Users x Items) from Training Data ONLY
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
         cols = train_df['item_id'].values
         values = np.ones(len(train_df))
         
-        # Create Sparse CSR Matrix
         X = sp.csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items), dtype=np.float32)
         self.train_matrix_csr = X
         
-        # Convert to Dense tensor for Gram matrix computation (Potential bottleneck for HUGE datasets)
-        # Optimized: Calculate G = X.T @ X directly using sparse multiplication if possible, 
-        # but torch.mm is faster on GPU if X fits in memory. 
-        # For EASE, standard implementation often converts G to dense.
+        # GPU-accelerated Cholesky solve
+        from src.utils.gpu_accel import gpu_gram_solve
+        P = gpu_gram_solve(X, self.reg_lambda)
         
-        # To avoid OOM on GPU with large n_users, we can compute G = X^T X
-        G = X.transpose().dot(X).toarray() # (n_items x n_items)
-        
-        # 2. Add regularization to diagonal
-        diag_indices = np.diag_indices(self.n_items)
-        G[diag_indices] += self.reg_lambda
-        
-        # 3. Invert G (P = G^-1)
-        # Using numpy/scipy for inversion might be more stable or torch.inverse on CPU/GPU
-        P = np.linalg.inv(G)
-        
-        # 4. Compute B (Weight Matrix): B_ij = -P_ij / P_jj (i != j), B_ii = 0
-        diag = np.diag(P)
-        B = -P / diag[None, :]  # 열(column) 기준으로 나눔
+        # B = -P / diag(P), with zero diagonal
+        diag = np.diag(P).copy()
+        B = -P / diag[None, :]
+        del P
         np.fill_diagonal(B, 0)
         
-        # 5. Store as Tensor
         self.weight_matrix.copy_(torch.from_numpy(B).float())
+        del B
         
         print("EASE model fitted.")
 
@@ -98,10 +85,6 @@ class EASE(BaseModel):
         # Gather specific item scores
         batch_indices = torch.arange(len(user_ids), device=user_ids.device)
         return scores[batch_indices, item_ids]
-
-    def get_embeddings(self):
-        """EASE는 임베딩 기반이 아니므로 None 반환"""
-        return None, None
 
     def get_final_item_embeddings(self):
         # EASE doesn't have "embeddings", it has Item-Item weights.

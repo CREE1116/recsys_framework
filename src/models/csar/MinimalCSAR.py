@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ..base_model import BaseModel
-from ...loss import ScaledSampledSoftplus
+from ...loss import SampledSoftmaxLoss
+import numpy as np
 
 def _safe_solve(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
     """
@@ -19,7 +20,7 @@ class MinimalCSAR(BaseModel):
     
     score(u, i) = scale * (E_u @ G @ E_i^T)
     
-    - Loss: ScaledSampledSoftplus (consistency with positive manifold)
+    - Loss: SampledSoftmaxLoss (InfoNCE)
     - Scale: Learnable logit scaling.
     - G: Centered OLS with EMA.
     """
@@ -28,6 +29,11 @@ class MinimalCSAR(BaseModel):
         
         self.embedding_dim = self.config['model']['embedding_dim']
         self.ols_eps = self.config['model'].get('ols_eps', 1e-4)
+        if isinstance(self.ols_eps, (list, np.ndarray)):
+            self.ols_eps = self.ols_eps[0]
+        self.reg_lambda = self.config['model'].get('reg_lambda', 500.0)
+        if isinstance(self.reg_lambda, (list, np.ndarray)):
+            self.reg_lambda = self.reg_lambda[0]
         self.ema_momentum = self.config['model'].get('ema_momentum', 0.05)
 
         self.n_users = self.data_loader.n_users
@@ -40,7 +46,7 @@ class MinimalCSAR(BaseModel):
         self.score_scale = nn.Parameter(torch.tensor(1.0))
         
         # Loss 함수 정의
-        self.loss_fn = ScaledSampledSoftplus(beta=1.0)
+        self.loss_fn = SampledSoftmaxLoss(temperature=0.1)
         
         # G 버퍼: 학습 중 EMA로 업데이트
         self.register_buffer('G', torch.eye(self.embedding_dim))
@@ -56,15 +62,9 @@ class MinimalCSAR(BaseModel):
 
     def _compute_G(self, e_u_c: torch.Tensor, e_i_c: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            I   = torch.eye(self.embedding_dim, device=e_u_c.device)
-            eps = self.ols_eps
-
-            EuT_Eu = e_u_c.t() @ e_u_c + eps * I
-            EiT_Ei = e_i_c.t() @ e_i_c + eps * I
-            EuT_Ei = e_u_c.t() @ e_i_c
-
-            lhs = _safe_solve(EuT_Eu, EuT_Ei)
-            G   = _safe_solve(EiT_Ei, lhs.t()).t()
+            # Simple Covariance (Correlation) instead of OLS
+            n = e_u_c.size(0)
+            G = (e_u_c.t() @ e_i_c) / (n + 1e-6)
             return G.clamp(-5.0, 5.0)
 
     # ──────────────────────────────────────────────
@@ -107,11 +107,11 @@ class MinimalCSAR(BaseModel):
         u_g = (e_u @ self.G).unsqueeze(1)
         neg_score = (u_g * e_neg).sum(-1) * self.score_scale
 
-        # 3. ScaledSampledSoftplus Loss
-        ssp_loss = self.loss_fn(pos_score, neg_score)
+        # 3. SampledSoftmax Loss
+        ssm_loss = self.loss_fn(pos_score, neg_score)
         
-        return (ssp_loss,), {
-            "loss": ssp_loss.item(),
+        return (ssm_loss,), {
+            "loss": ssm_loss.item(),
             "scale": self.score_scale.item(),
             "g_sum": self.G.abs().sum().item()
         }

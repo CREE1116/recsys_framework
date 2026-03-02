@@ -96,13 +96,9 @@ if __name__ == '__main__':
     with open(args.model_config, 'r') as f:
         model_config = yaml.safe_load(f)
 
-    # 두 설정을 병합
-    config = dataset_config
-    for key, value in model_config.items():
-        if key in config and isinstance(config[key], dict) and isinstance(value, dict):
-            config[key].update(value)
-        else:
-            config[key] = value
+    # 3단계 병합: evaluation.yaml(기본) → dataset → model
+    from config_utils import merge_all_configs
+    config = merge_all_configs(dataset_config, model_config)
 
     # MPS 장치 사용 설정
     if config.get('device', 'auto') == 'auto':

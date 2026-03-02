@@ -21,8 +21,7 @@ class SmartGridSearch:
         self.base_config = self.merge_configs(self.dataset_config, self.model_config)
         
         # Override specific args
-        if args.device:
-            self.base_config['device'] = args.device
+
 
         self.param_path = args.param.split('.')
         self.metric_key = args.metric
@@ -88,7 +87,7 @@ class SmartGridSearch:
         metrics_file = os.path.join(exp_dir, 'final_metrics.json')
         
         if os.path.exists(metrics_file):
-            print(f"Results already exist at {exp_dir}. Loading...")
+            print(f"Results already exist at {exp_dir}. Loading from {os.path.basename(metrics_file)}...")
             with open(metrics_file, 'r') as f:
                 metrics = json.load(f)
         else:
@@ -108,6 +107,7 @@ class SmartGridSearch:
         # Extract metric
         # Handle @k keys (e.g. NDCG@10)
         metric_val = metrics.get(self.metric_key)
+        
         if metric_val is None:
             # Try to find a loose match
             for k, v in metrics.items():
@@ -134,11 +134,27 @@ class SmartGridSearch:
         deleted_count = 0
         for path in self.all_experiment_dirs:
             if path == self.best_global_dir:
-                print(f"KEEPING Best: {path}")
+                best_path = os.path.dirname(path)
+                model_name = self.base_config['model']['name']
+                seed_num = self.base_config.get('seed', 42)
+                new_best_dir = os.path.join(best_path, f"BEST_{model_name}_seed_{seed_num}")
+                
+                if os.path.exists(new_best_dir) and new_best_dir != path:
+                    import shutil
+                    shutil.rmtree(new_best_dir)
+                    
+                if path != new_best_dir:
+                    print(f"RENAMING Best Trial: {path} -> {new_best_dir}")
+                    os.rename(path, new_best_dir)
+                    self.best_global_dir = new_best_dir
+                else:
+                    print(f"KEEPING Best: {path}")
+                
                 saved_count += 1
             elif os.path.exists(path):
                 print(f"DELETING: {path}")
                 try:
+                    import shutil
                     shutil.rmtree(path)
                     deleted_count += 1
                 except Exception as e:

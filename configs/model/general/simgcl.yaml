@@ -1,51 +1,22 @@
 model:
   name: simgcl
   embedding_dim: 64
-  n_layers: 2 # Standard LightGCN/SimGCL depth
-
-  # SimGCL specific
-  cl_rate: 0.2 # Contrastive Loss Weight
-  eps: 0.1 # Perturbation Magnitude
-  tau: 0.2 # Temperature for InfoNCE
-
+  n_layers: 2
+  cl_rate: 0.2
+  eps: 0.1
+  tau: 0.2
 train:
   embedding_l2: 0.0001
   weight_decay: 0.0
   epochs: 500
   batch_size: 1024
   lr: 0.001
-  optimizer: "adam"
-  loss_type: "pairwise"
+  optimizer: adam
+  loss_type: pairwise
   num_negatives: 1
-  negative_sampling_strategy: ["uniform"]
+  negative_sampling_strategy:
+  - uniform
   negative_sampling_alpha: 0.75
   early_stop_patience: 40
-  num_workers: 0 # Prevent hanging on macOS/MPS
-
-evaluation:
-  batch_size: 2048
-  validation_method: "sampled"
-  final_method: "full"
-  metrics:
-    [
-      "NDCG",
-      "PopRatio",
-      "HitRate",
-      "Coverage",
-      "GiniIndex",
-      "LongTailCoverage",
-      "LongTailHitRate",
-      "LongTailNDCG",
-      "HeadHitRate",
-      "HeadNDCG",
-      "Entropy",
-      "ILD",
-      "GiniIndex_emb",
-      "Novelty",
-    ]
-  top_k: [5, 10, 20, 50]
-  main_metric: "NDCG"
-  main_metric_k: 10
-  long_tail_percent: 0.8
-
-device: "auto"
+  num_workers: 0
+device: auto

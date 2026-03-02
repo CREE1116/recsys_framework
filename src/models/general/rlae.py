@@ -47,54 +47,38 @@ class RLAE(BaseModel):
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
         X = self.train_matrix_csr
         
-        # 2. Compute Gram matrix
-        G = X.T.dot(X).toarray()  # (M × M)
-        G_tensor = torch.from_numpy(G).float().to(self.device)
+        # GPU-accelerated Cholesky solve
+        from src.utils.gpu_accel import gpu_gram_solve
+        P = gpu_gram_solve(X, self.reg_lambda)
         
-        # 3. Compute P = (G + λI)^{-1}
-        I = torch.eye(self.n_items, device=self.device)
-        try:
-            P = torch.inverse(G_tensor + self.reg_lambda * I)
-        except (RuntimeError, NotImplementedError):
-            print("[RLAE] MPS inverse failed, fallback to CPU...")
-            P = torch.inverse(G_tensor.cpu() + self.reg_lambda * I.cpu()).to(self.device)
+        P_diag = np.diag(P).copy()
         
-        # 4. Compute μ for each diagonal element
-        μ = torch.zeros(self.n_items, device=self.device)
-        P_diag = torch.diag(P)
-        
-        n_active = 0
-        # [Vectorized] Constraint check
+        # 4. Compute μ for diagonal constraint
         constraint_vals = 1 - P_diag * self.reg_lambda
-        # Active if constraint_val > b
         active_mask = constraint_vals > self.b
+        n_active = active_mask.sum()
         
-        # μ = (1 - b)/P_ii - λ if active, else 0
-        μ[active_mask] = (1 - self.b) / P_diag[active_mask] - self.reg_lambda
-        n_active = active_mask.sum().item()
+        mu = np.zeros(self.n_items, dtype=np.float32)
+        mu[active_mask] = (1 - self.b) / P_diag[active_mask] - self.reg_lambda
         
-        # 5. Compute B = I - P @ diag(λ + μ)
-        diag_term = self.reg_lambda + μ
-        B = I - P @ torch.diag(diag_term)
+        # 5. B = I - P @ diag(λ + μ)
+        diag_term = self.reg_lambda + mu
+        B = np.eye(self.n_items, dtype=np.float32) - P @ np.diag(diag_term)
+        del P
         
         # 6. Store
-        self.weight_matrix.copy_(B)
+        self.weight_matrix.copy_(torch.from_numpy(B).float())
         
         elapsed = time.time() - start_time
-        
-        # Statistics
-        diag_vals = torch.diag(B).cpu().numpy()
+        diag_vals = np.diag(B)
+        del B
         
         print(f"\n{'='*60}")
         print(f"[RLAE] Training complete!")
         print(f"  - Time: {elapsed:.2f}s")
         print(f"  - Active constraints: {n_active}/{self.n_items}")
-        print(f"  - Diagonal stats:")
-        print(f"    * Min: {diag_vals.min():.4f}")
-        print(f"    * Max: {diag_vals.max():.4f}")
-        print(f"    * Mean: {diag_vals.mean():.4f}")
-        print(f"  - Constraint: diag(B) ≤ {self.b}")
-        print(f"  - Max violation: {max(0, diag_vals.max() - self.b):.6f}")
+        print(f"  - Diagonal: min={diag_vals.min():.4f}, max={diag_vals.max():.4f}, mean={diag_vals.mean():.4f}")
+        print(f"  - Constraint: diag(B) ≤ {self.b}, max violation: {max(0, diag_vals.max() - self.b):.6f}")
         print(f"{'='*60}\n")
 
     def forward(self, user_ids, item_ids=None):

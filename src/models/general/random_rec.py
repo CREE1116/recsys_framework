@@ -33,12 +33,6 @@ class RandomRec(BaseModel):
         """
         return torch.rand(len(user_ids)).to(self.device)
 
-    def get_embeddings(self):
-        """
-        RandomRec 모델은 임베딩이 없습니다.
-        """
-        return None, None
-
     def get_final_item_embeddings(self):
         """
         RandomRec uses random scores, so no meaningful embeddings.

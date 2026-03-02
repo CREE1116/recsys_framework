@@ -140,37 +140,45 @@ class ProtoMF(BaseModel):
         # BPR Loss (공식 구현과 동일)
         bpr_loss = self.loss_fn(pos_scores,neg_scores)
 
+        # [추가] L2 규제 계산을 위한 임베딩 수집
+        u_emb = self.user_embedding(users)
+        pos_emb = self.item_embedding(pos_items)
+        neg_emb = self.item_embedding(neg_items) if neg_items.ndim == 1 else self.item_embedding(neg_items.view(-1))
+        l2_loss = self.get_l2_reg_loss(u_emb, pos_emb, neg_emb)
+
         # Inclusion Regularization (ProtoMF-style: max similarity criteria)
         reg_loss = torch.zeros((), device=users.device)
 
         # User side
         if self.mode in ['U']:
-            u_emb = self.user_embedding(users)  # [B, D]
-            u_sim = self.prototype_similarity(u_emb, self.user_prototypes)  # [B, K]
+            u_sim = self.prototype_similarity(u_emb, self.user_prototypes)
             batch_inc_u, proto_inc_u = self._inclusion_regularizer(u_sim)
             reg_loss = reg_loss + self.sim_batch_weight * batch_inc_u + self.sim_proto_weight * proto_inc_u
-            return (bpr_loss, reg_loss), {}
+            return (bpr_loss, reg_loss, l2_loss), {'loss_main': bpr_loss.item(), 'loss_proto_reg': reg_loss.item(), 'loss_l2': l2_loss.item()}
 
         # Item side
         if self.mode in ['I']:
-            pos_emb = self.item_embedding(pos_items)  # [B, D]
-            t_sim = self.prototype_similarity(pos_emb, self.item_prototypes)  # [B, K]
+            t_sim = self.prototype_similarity(pos_emb, self.item_prototypes)
             batch_inc_t, proto_inc_t = self._inclusion_regularizer(t_sim)
             reg_loss = reg_loss + self.sim_batch_weight * batch_inc_t + self.sim_proto_weight * proto_inc_t
-            return (bpr_loss, reg_loss), {}
+            return (bpr_loss, reg_loss, l2_loss), {'loss_main': bpr_loss.item(), 'loss_proto_reg': reg_loss.item(), 'loss_l2': l2_loss.item()}
 
         # both side
         if self.mode in ['UI']:
-            u_emb = self.user_embedding(users)  # [B, D]
-            u_sim = self.prototype_similarity(u_emb, self.user_prototypes)  # [B, K]
+            u_sim = self.prototype_similarity(u_emb, self.user_prototypes)
             batch_inc_u, proto_inc_u = self._inclusion_regularizer(u_sim)
             user_reg_loss = self.sim_batch_weight * batch_inc_u + self.sim_proto_weight * proto_inc_u
 
-            pos_emb = self.item_embedding(pos_items)  # [B, D]
-            t_sim = self.prototype_similarity(pos_emb, self.item_prototypes)  # [B, K]
+            t_sim = self.prototype_similarity(pos_emb, self.item_prototypes)
             batch_inc_t, proto_inc_t = self._inclusion_regularizer(t_sim)
             item_reg_loss = self.sim_batch_weight * batch_inc_t + self.sim_proto_weight * proto_inc_t
-            return (bpr_loss, user_reg_loss, item_reg_loss), {}
+            
+            return (bpr_loss, user_reg_loss, item_reg_loss, l2_loss), {
+                'loss_main': bpr_loss.item(), 
+                'loss_user_proto': user_reg_loss.item(), 
+                'loss_item_proto': item_reg_loss.item(), 
+                'loss_l2': l2_loss.item()
+            }
     
 
 

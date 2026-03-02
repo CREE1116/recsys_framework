@@ -26,6 +26,15 @@ class BayesianOptimizer:
         elif 'device' not in self.base_config:
             self.base_config['device'] = 'auto'
 
+        if hasattr(args, 'seeds') and args.seeds is not None:
+            single_seed = args.seeds[0] if isinstance(args.seeds, list) else args.seeds
+            self.base_config['seed'] = int(single_seed)
+            self.optuna_seed = int(single_seed)
+        else:
+            self.optuna_seed = 42 # Default fallback
+
+
+
         # Check dataset dimensions to clamp K/Rank
         try:
             print(f"[BayesianOptimizer] Loading dataset to check dimensions...")
@@ -33,6 +42,7 @@ class BayesianOptimizer:
             check_config = copy.deepcopy(self.dataset_config)
             if 'evaluation' not in check_config:
                 check_config['evaluation'] = {'validation_method': 'holdout', 'final_method': 'holdout'}
+            check_config['seed'] = self.optuna_seed
             
             temp_loader = DataLoader(check_config)
             n_users = temp_loader.n_users
@@ -66,23 +76,29 @@ class BayesianOptimizer:
         # Clamp Rank/K parameters if type is 'int_min_dim'
         for param in self.params_list:
             if param['type'] == 'int_min_dim':
+                # 하드 캡: SVD/임베딩 차원은 2048 이상에서 수확 체감
+                MAX_DIM_CAP = 2048
+                effective_max = min(max_dim, MAX_DIM_CAP)
+                
                 if 'range' not in param:
-                    # Auto range: 1 to max_dim
-                    print(f"[BayesianOptimizer] Auto-setting range for '{param['name']}' to 1~{max_dim}")
-                    param['range'] = f"1 {max_dim}"
+                    print(f"[BayesianOptimizer] Auto-setting range for '{param['name']}' to 1~{effective_max}")
+                    param['range'] = f"1 {effective_max}"
                 else:
-                    # Existing range: clamp upper bound
                     low, high = map(int, param['range'].split())
-                    if high > max_dim:
-                        print(f"[BayesianOptimizer] Clamping parameter '{param['name']}' max from {high} to {max_dim}")
-                        new_high = max_dim
-                        if low >= new_high:
-                            low = max(1, new_high // 2)
-                            print(f"[BayesianOptimizer] Adjusted low bound to {low}")
-                        param['range'] = f"{low} {new_high}"
+                    clamped_high = min(high, effective_max)
+                    if clamped_high != high:
+                        print(f"[BayesianOptimizer] Clamping '{param['name']}' max: {high} → {clamped_high} (max_dim={max_dim}, cap={MAX_DIM_CAP})")
+                    if low >= clamped_high:
+                        low = max(1, clamped_high // 2)
+                        print(f"[BayesianOptimizer] Adjusted low bound to {low}")
+                    param['range'] = f"{low} {clamped_high}"
                 
                 # Convert type back to 'int' for Optuna compatibility
                 param['type'] = 'int'
+                
+                # [추가] 차원 관련 파라미터는 기본적으로 로그 스케일 탐색이 효율적임
+                if 'log' not in param:
+                    param['log'] = True
 
         self.metric_key = args.metric
         self.maximize = (args.direction == 'max')
@@ -95,13 +111,8 @@ class BayesianOptimizer:
             return yaml.safe_load(f)
 
     def merge_configs(self, dataset_conf, model_conf):
-        config = copy.deepcopy(dataset_conf)
-        for key, value in model_conf.items():
-            if key in config and isinstance(config[key], dict) and isinstance(value, dict):
-                config[key].update(value)
-            else:
-                config[key] = value
-        return config
+        from config_utils import merge_all_configs
+        return merge_all_configs(dataset_conf, model_conf)
 
     def set_nested_value(self, config, path_str, value):
         path = path_str.split('.')
@@ -126,33 +137,36 @@ class BayesianOptimizer:
     def run_experiment(self, param_values):
         # param_values is a dict {param_name: value}
         config = copy.deepcopy(self.base_config)
-        
+
+        # [HPO] Skip test set evaluation — only use validation metrics
+        config['hpo_mode'] = True
+
         run_name_parts = []
         for p_def in self.params_list:
             p_name = p_def['name']
             val = param_values[p_name]
-            
+
             # Type casting if needed (though optuna usually handles it)
             if p_def.get('type') == 'int':
                 val = int(val)
-            
+
             self.set_nested_value(config, p_name, val)
-            
+
             # Format run name
             short_name = p_name.split('.')[-1]
             if isinstance(val, float):
                 run_name_parts.append(f"{short_name}={val:.6g}")
             else:
                 run_name_parts.append(f"{short_name}={val}")
-        
+
         config['run_name'] = "_".join(run_name_parts)
-        print(f"\n>>> Running experiment: {config['run_name']}")
-        
+        print(f"\n>>> Running experiment: {config['run_name']} [hpo_mode]")
+
         exp_dir = self.get_experiment_dir(config)
         metrics_file = os.path.join(exp_dir, 'final_metrics.json')
-        
+
         if os.path.exists(metrics_file):
-            print(f"Results already exist at {exp_dir}. Loading...")
+            print(f"Results already exist at {exp_dir}. Loading from {os.path.basename(metrics_file)}...")
             try:
                 with open(metrics_file, 'r') as f:
                     metrics = json.load(f)
@@ -176,43 +190,109 @@ class BayesianOptimizer:
                 return -float('inf') if self.maximize else float('inf'), None
 
         self.all_experiment_dirs.append(exp_dir)
-        
+
         metric_val = metrics.get(self.metric_key)
+
+        # 키가 없으면 부분 일치로 탐색 (방어적 fallback)
         if metric_val is None:
-             for k, v in metrics.items():
+            for k, v in metrics.items():
                 if self.metric_key in k:
                     metric_val = v
                     break
-        
+
         if metric_val is None:
             print(f"Warning: Metric {self.metric_key} not found.")
             return -float('inf') if self.maximize else float('inf'), exp_dir
-            
+
         return metric_val, exp_dir
 
-    def cleanup(self, keep_best=True):
-        print("\n=== Cleaning up checkpoints ===")
-        saved_count = 0
+
+    def cleanup(self):
+        """HPO 완료 후 모든 trial 디렉토리 삭제. BEST 재실행은 rerun_best_with_test()에서 처리."""
+        print("\n=== Cleaning up all trial checkpoints ===")
+        model_name = self.base_config['model']['name']
+        dataset_name = self.base_config['dataset_name']
+        base_path = os.path.join('trained_model', dataset_name)
+
+        stray_dirs = glob.glob(os.path.join(base_path, f"{model_name}__*"))
+        if os.path.exists(os.path.join(base_path, model_name)):
+            stray_dirs.append(os.path.join(base_path, model_name))
+
+        all_to_check = set(stray_dirs) | set(self.all_experiment_dirs)
+
         deleted_count = 0
-        for path in self.all_experiment_dirs:
-            if keep_best and path == self.best_global_dir:
-                print(f"KEEPING Best: {path}")
-                saved_count += 1
-            elif os.path.exists(path):
-                # print(f"DELETING: {path}") # Reduce noise
-                try:
-                    shutil.rmtree(path)
-                    deleted_count += 1
-                except Exception as e:
-                    print(f"Error deleting {path}: {e}")
-        print(f"Cleanup complete. Kept {saved_count}, Deleted {deleted_count}.")
+        for path in all_to_check:
+            if not os.path.exists(path):
+                continue
+            # 이전 BEST 폴더는 건드리지 않음
+            if "/BEST_" in path or "\\BEST_" in path:
+                continue
+            try:
+                shutil.rmtree(path)
+                deleted_count += 1
+            except Exception as e:
+                print(f"Error deleting {path}: {e}")
+        print(f"Cleanup complete. Deleted {deleted_count} trial dirs.")
+
+    def rerun_best_with_test(self):
+        """
+        HPO 완료 후 메모리의 최적 하이퍼파라미터로 test 셋 평가를 1회 실행.
+        결과를 BEST_{model}_{seed} 디렉토리에 직접 저장합니다.
+        """
+        if not hasattr(self, 'study') or not self.study.trials:
+            print("[HPO] No completed trials, skipping test rerun.")
+            return
+
+        best_params = self.study.best_params
+        print(f"\n{'='*60}")
+        print(f"[HPO] Re-running BEST config with full TEST evaluation...")
+        print(f"[HPO] Best params: {best_params}")
+        print(f"{'='*60}")
+
+        config = copy.deepcopy(self.base_config)
+        config.pop('hpo_mode', None)  # test mode (hpo_mode=False)
+
+        for p_def in self.params_list:
+            p_name = p_def['name']
+            val = best_params.get(p_name)
+            if val is None:
+                continue
+            if p_def.get('type') == 'int':
+                val = int(val)
+            self.set_nested_value(config, p_name, val)
+
+        # run_name은 제거 — output_path_override로 직접 경로 지정
+        config.pop('run_name', None)
+        model_name = self.base_config['model']['name']
+        dataset_name = self.base_config['dataset_name']
+        best_dir = os.path.join('trained_model', dataset_name,
+                                f"BEST_{model_name}_seed_{self.optuna_seed}")
+
+        # 기존 BEST_ 폴더가 있으면 제거
+        if os.path.exists(best_dir):
+            shutil.rmtree(best_dir)
+        os.makedirs(best_dir, exist_ok=True)
+
+        config['output_path_override'] = best_dir
+        self.best_global_dir = best_dir
+
+        print(f"[HPO] Output → {best_dir}")
+        try:
+            run_single_experiment(config)
+            print(f"[HPO] Test evaluation saved to {best_dir}")
+        except Exception as e:
+            print(f"[HPO] Test rerun failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     def objective(self, trial):
         current_params = {}
         for p_def in self.params_list:
             name = p_def['name']
             p_type = p_def.get('type', 'float')
-            p_range = p_def['range']
+            p_range = p_def.get('range') or p_def.get('choices')
+            if p_range is None:
+                raise KeyError(f"Parameter '{name}' must have either 'range' or 'choices' defined.")
             p_log = p_def.get('log', False)
 
             if p_type == 'float':
@@ -343,7 +423,13 @@ class BayesianOptimizer:
             traceback.print_exc()
 
     def search(self, output_dir=None):
-        self.study = optuna.create_study(direction="maximize" if self.maximize else "minimize")
+        sampler = optuna.samplers.TPESampler(seed=self.optuna_seed)
+        print(f"Setting Optuna TPE Sampler seed to: {self.optuna_seed}")
+
+        self.study = optuna.create_study(
+            direction="maximize" if self.maximize else "minimize",
+            sampler=sampler
+        )
         
         patience = getattr(self.args, 'patience', 20)
         print(f"Starting Bayesian Optimization with {self.args.n_trials} trials (Patience: {patience}).")
@@ -367,7 +453,7 @@ class BayesianOptimizer:
                     else:
                         self.no_improve_count += 1
                         
-                    if self.no_improve_count >= self.patience:
+                    if self.patience is not None and self.no_improve_count >= self.patience:
                         print(f"\n[Early Stopping] Stopping optimization. No improvement for {self.patience} trials.")
                         study.stop()
 

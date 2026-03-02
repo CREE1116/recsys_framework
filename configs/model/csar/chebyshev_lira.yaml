@@ -1,0 +1,6 @@
+model:
+  name: chebyshev_lira
+  reg_lambda: 500.0
+  power: 1.0
+  threshold: 1e-6
+  K: 3

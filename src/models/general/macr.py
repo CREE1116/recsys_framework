@@ -129,19 +129,23 @@ class MACR(BaseModel):
         loss_i = -torch.mean(torch.log(torch.sigmoid(y_i_pos - y_i_neg) + 1e-8))
         
         # User Bias Loss
-        # In BPR with (u, i, j), user bias is constant. 
-        # Standard MACR BPR implementations often omit L_u or use BCE if non-pairwise.
-        # Here we only apply L2 reg to y_u implicitly via optimizer weight decay or just 0.
         loss_u = torch.tensor(0.0, device=user_ids.device)
+
+        # 3. L2 Regularization (Use framework standard helper)
+        l2_loss = self.get_l2_reg_loss(
+            u_emb, i_pos_emb, i_neg_emb, 
+            i_pop_pos_emb, i_pop_neg_emb,
+            u_act_emb
+        )
 
         log_info = {
             "main_loss": loss_main.item(),
             "item_loss": loss_i.item(),
-            "user_loss": loss_u.item()
+            "user_loss": loss_u.item(),
+            "l2_loss": l2_loss.item()
         }
 
-        # User criticized sharing labels, but BPR inherently handles relative ranking.
-        return (loss_main, self.alpha * loss_i, self.beta * loss_u), log_info
+        return (loss_main, self.alpha * loss_i, self.beta * loss_u, l2_loss), log_info
 
     # -------------------------------------------------
     # Pair prediction (Counterfactual inference)

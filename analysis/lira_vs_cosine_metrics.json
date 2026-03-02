@@ -1,7 +1,0 @@
-{
-    "global_shrinkage_mean": 0.12739998039248904,
-    "global_shrinkage_median": 0.455662182777426,
-    "head_shrinkage_mean": -0.15847528288789198,
-    "tail_shrinkage_mean": 1.0449117976373414,
-    "debiasing_ratio (head/tail)": -0.1516637894664619
-}

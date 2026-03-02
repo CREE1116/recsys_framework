@@ -1,0 +1,8 @@
+model:
+  name: norm_power_lira
+  reg_lambda: 500.0
+  power: 2.0
+  threshold: 1e-6
+  visualize: false
+
+device: auto

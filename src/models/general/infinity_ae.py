@@ -61,27 +61,27 @@ class Infinity_AE(BaseModel):
         
         print("[Infinity-AE] Computing Squared Kernel...")
         K = G @ G # (N x N)
+        del G  # 메모리 해제
         
         # 3. Ridge Regression: Alpha = (K + lambda*I)^-1 @ K
-        # actually solving (K + lambda*I) * Alpha = K
         print("[Infinity-AE] Solving Kernel Regression...")
         diag_indices = torch.arange(self.n_users, device=self.device)
         K_reg = K.clone()
         K_reg[diag_indices, diag_indices] += self.reg_lambda
         
-        # Alpha = torch.linalg.solve(K_reg, K)
-        # MPS fallback check
         try:
              Alpha = torch.linalg.solve(K_reg, K)
         except (RuntimeError, NotImplementedError):
              print("[Infinity-AE] MPS solve failed, fallback to CPU...")
              Alpha = torch.linalg.solve(K_reg.cpu(), K.cpu()).to(self.device)
+        del K, K_reg  # 메모리 해제
         
         # 4. Compute B = X.T @ Alpha @ X
         print("[Infinity-AE] Computing Weight Matrix B...")
-        # B = X.T @ (Alpha @ X)
         temp = Alpha @ X
+        del Alpha
         B = X.t() @ temp
+        del temp
         
         # 5. Enforce Diagonal Constraint
         B.fill_diagonal_(0)

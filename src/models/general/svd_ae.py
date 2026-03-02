@@ -3,133 +3,146 @@ import torch.nn as nn
 import numpy as np
 import scipy.sparse as sp
 from ..base_model import BaseModel
+from ...utils.gpu_accel import SVDCacheManager
 import time
+
 
 class SVD_AE(BaseModel):
     """
     SVD-AE (Simple Autoencoders for Collaborative Filtering) - IJCAI 2024
     Reference: Hong et al., "SVD-AE: Simple Autoencoders for Collaborative Filtering"
-    
-    Logic:
-    1. Train standard EASE to get weight matrix B.
-    2. Compute full reconstruction R = X @ B.
-    3. Perform truncated SVD on R: R ≈ U_k @ Sigma_k @ V_k.T
-    4. Use denoised R_k for prediction.
+
+    Theoretical Logic:
+    1. Problem: min_B || R - R_tilde @ B ||_2^2
+       where R_tilde = D_U^{-1/2} R D_I^{-1/2} is the Normalized Adjacency Matrix.
+    2. Closed-form Solution via Pseudo-inverse: B = R_tilde^+ @ R
+    3. Low-rank Inductive Bias (Truncated SVD):
+       R_tilde ~ Q_m @ Sigma_m @ V_m^T
+       Thus, R_tilde^+ ~ V_m @ Sigma_m^{-1} @ Q_m^T
+    4. Inference: R_hat = R @ B = (R @ V_m) @ (Sigma_m^{-1} Q_m^T R)
+
+    [Optimization] Uses SVDCacheManager for caching SVD results across HPO trials.
+    The cache key includes gamma (rank ratio) and norm_weight to avoid collision.
     """
     def __init__(self, config, data_loader):
         super(SVD_AE, self).__init__(config, data_loader)
-        
-        self.reg_lambda = config['model'].get('reg_lambda', 500.0)
-        self.k = config['model'].get('k', 100) # Rank for SVD truncation
-        
+
+        # User defined hyperparameter: ratio of min(|U|, |I|) to use for SVD rank
+        self.gamma = config['model'].get('gamma', 0.04)
+
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
-        
-        self.weight_matrix = None # Initial EASE weights
+
+        # Calculate dynamic rank m = floor(gamma * min(|U|, |I|))
+        raw_m = int(round(self.gamma * min(self.n_users, self.n_items)))
+        max_k = min(self.n_users, self.n_items) - 1
+        self.k = max(1, min(raw_m, max_k))
+
         self.train_matrix_csr = None
-        
-        # We store the low-rank components of the denoised reconstruction matrix R
-        self.U_k = None
-        self.Sigma_k = None
-        self.V_k = None
+
+        # SVDCacheManager for caching R_tilde SVD
+        self.svd_manager = SVDCacheManager(device=self.device.type)
+
+        # We store the decoupled components to avoid materializing the dense M x M matrix B
+        self.register_buffer('V_k', torch.empty(0))  # M x k
+        self.register_buffer('P_k', torch.empty(0))  # k x M
+
+        print(f"[SVD-AE] Initialized with gamma={self.gamma} -> k={self.k}")
 
     def fit(self, data_loader):
-        print(f"\n[SVD-AE] Fitting with lambda={self.reg_lambda}, k={self.k}...")
+        print(f"\n[SVD-AE] Fitting with k={self.k}...")
         start_time = time.time()
-        
-        # 1. Build Interaction Matrix X
+
+        # 1. Build Sparse Interaction Matrix R (X)
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
         cols = train_df['item_id'].values
         values = np.ones(len(train_df), dtype=np.float32)
-        
-        self.train_matrix_csr = sp.csr_matrix(
-            (values, (rows, cols)), 
+
+        R = sp.csr_matrix(
+            (values, (rows, cols)),
             shape=(self.n_users, self.n_items),
             dtype=np.float32
         )
-        
-        # Dense X for computation (N x M)
-        X = torch.from_numpy(self.train_matrix_csr.toarray()).float().to(self.device)
-        
-        # 2. Train Standard EASE
-        print("[SVD-AE] Computing EASE weights...")
-        G = X.t() @ X
-        diag_indices = torch.arange(self.n_items, device=self.device)
-        G[diag_indices, diag_indices] += self.reg_lambda
-        
-        try:
-             P = torch.linalg.inv(G)
-        except (RuntimeError, NotImplementedError):
-             print("[SVD-AE] MPS inv failed, fallback to CPU...")
-             P = torch.linalg.inv(G.cpu()).to(self.device)
-             
-        # B = P @ (X^T X)
-        # Recompute G_raw without lambda
-        G_raw = G.clone()
-        G_raw[diag_indices, diag_indices] -= self.reg_lambda
-        
-        B = P @ G_raw
-        B.fill_diagonal_(0)
-        self.weight_matrix = B
-        
-        # 3. Compute Reconstruction R = X @ B
-        print("[SVD-AE] Computing Reconstruction R...")
-        R = X @ B
-        
-        # 4. SVD Truncation (Denoising)
-        N, M = R.shape
-        max_k = min(N, M)
-        if self.k > max_k:
-             print(f"[SVD-AE] Warning: Requested k={self.k} > min(N, M)={max_k}. Capping to {max_k}.")
-             self.k = max_k
-             
-        print(f"[SVD-AE] Computing SVD on R (rank={self.k})...")
-        # Use torch.svd_lowrank or randomized SVD for speed if checking large matrices
-        # Standard svd might be slow for full N x M
-        try:
-             U, S, V = torch.svd_lowrank(R, q=self.k, niter=2)
-             # U: (N x k), S: (k,), V: (M x k)
-        except (RuntimeError, NotImplementedError):
-             print("[SVD-AE] MPS svd failed, fallback to CPU...")
-             U, S, V = torch.svd_lowrank(R.cpu(), q=self.k, niter=2)
-             U, S, V = U.to(self.device), S.to(self.device), V.to(self.device)
-             
-        self.U_k = U
-        self.Sigma_k = S
-        self.V_k = V
-        
+        self.train_matrix_csr = R
+
+        # 2. Compute Degree Matrices D_U^{-1/2} and D_I^{-1/2}
+        print("[SVD-AE] Computing Normalized Adjacency Matrix R_tilde...")
+        d_U = np.array(R.sum(axis=1)).flatten()
+        d_I = np.array(R.sum(axis=0)).flatten()
+
+        d_U[d_U == 0] = 1.0  # Prevent div by zero
+        d_I[d_I == 0] = 1.0
+
+        d_U_inv_sqrt = np.power(d_U, -0.5)
+        d_I_inv_sqrt = np.power(d_I, -0.5)
+
+        D_U_inv_sqrt = sp.diags(d_U_inv_sqrt)
+        D_I_inv_sqrt = sp.diags(d_I_inv_sqrt)
+        R_tilde = D_U_inv_sqrt.dot(R).dot(D_I_inv_sqrt)
+
+        # 3. Truncated SVD via SVDCacheManager (caching + MPS acceleration)
+        # Note: cache key = dataset_name + "_svdae_gamma{gamma}"
+        # - rank k is derived from gamma, so same gamma = same SVD for same dataset
+        dataset_name = self.config.get('dataset_name', 'unknown_svdae')
+        cache_key = f"{dataset_name}_svdae_g{self.gamma:.4f}"
+
+        print(f"[SVD-AE] Performing Truncated SVD via SVDCacheManager (k={self.k})...")
+        # SVDCacheManager.get_svd(matrix, k, dataset_name) returns (U, S, V, energy)
+        # U: (n_users, k), S: (k,), V: (n_items, k)
+        Q_k_t, Sigma_k_t, V_k_t, energy = self.svd_manager.get_svd(
+            R_tilde, k=self.k, dataset_name=cache_key
+        )
+        # SVDCacheManager returns: u:(N,k), s:(k,), v:(M,k)
+        Q_k = Q_k_t.to(self.device).float()     # N x k
+        Sigma_k = Sigma_k_t.to(self.device).float()  # k
+        V_k = V_k_t.to(self.device).float()     # M x k
+
+        self.V_k = V_k
+        del R_tilde, D_U_inv_sqrt, D_I_inv_sqrt
+
+        # 4. Precompute P_k = Sigma_k^{-1} @ Q_k^T @ R  =>  (k x M)
+        print("[SVD-AE] Constructing decoupled inference matrix P_k...")
+
+        Q_k_np = Q_k.cpu().numpy()           # N x k
+        # Q_k^T @ R  -> (k x N) @ (N x M) -> (k x M)
+        Q_k_proj_np = Q_k_np.T @ R           # scipy sparse handles this
+
+        Q_k_proj = torch.from_numpy(Q_k_proj_np.astype(np.float32)).to(self.device)
+        Sigma_k_inv = 1.0 / (Sigma_k + 1e-10)
+
+        # P_k = diag(Sigma_k_inv) @ Q_k_proj
+        self.P_k = Sigma_k_inv.unsqueeze(1) * Q_k_proj  # k x M
+
+        del Q_k_np, Q_k_proj_np, Q_k_proj, Sigma_k_inv
+
         elapsed = time.time() - start_time
         print(f"[SVD-AE] Training complete. Time: {elapsed:.2f}s")
+        print(f"         Energy captured: {energy:.4f}")
+        print(f"         V_k: {self.V_k.shape}, P_k: {self.P_k.shape}")
 
     def forward(self, user_ids, item_ids=None):
-        if self.U_k is None:
-             raise RuntimeError("[SVD-AE] Model not fitted.")
-             
-        # SVD-AE predictions are directly from the denoised matrix R_k
-        # This is tricky: R is (N x M). 
-        # For training users, we just look up the row in R_k.
-        # But what about *new* users during inference if any? EASE supports inductive.
-        # SVD-AE as formulated is transductive (requires user in R).
-        # We assume user_ids are indices into the training matrix rows (valid for this framework's standard eval).
-        
+        if self.V_k is None or self.P_k is None:
+            raise RuntimeError("[SVD-AE] Model not fitted.")
+
         if isinstance(user_ids, torch.Tensor):
-            u_indices = user_ids.to(self.device)
+            u_ids_np = user_ids.cpu().numpy()
         else:
-            u_indices = torch.tensor(user_ids, device=self.device)
-            
-        # R_k[u] = U_k[u] @ Sigma_k @ V_k.T
-        # U_k is (N x k). slice rows u.
-        
-        batch_U = self.U_k[u_indices] # (Batch x k)
-        scores = (batch_U * self.Sigma_k) @ self.V_k.t() # (Batch x k) @ (k x M) -> (Batch x M)
-        
+            u_ids_np = user_ids
+
+        user_input_sparse = self.train_matrix_csr[u_ids_np]
+        X_batch = torch.from_numpy(user_input_sparse.toarray()).float().to(self.device)
+
+        # Two-Step Projection: R_hat = (R @ V_k) @ P_k
+        latent_batch = torch.mm(X_batch, self.V_k)    # Batch x k
+        scores = torch.mm(latent_batch, self.P_k)      # Batch x M
+
         if item_ids is not None:
-             if not isinstance(item_ids, torch.Tensor):
+            if not isinstance(item_ids, torch.Tensor):
                 item_ids = torch.tensor(item_ids, device=self.device)
-             batch_indices = torch.arange(len(user_ids), device=self.device)
-             return scores[batch_indices, item_ids]
-             
+            batch_indices = torch.arange(len(user_ids), device=self.device)
+            return scores[batch_indices, item_ids]
+
         return scores
 
     def predict_for_pairs(self, user_ids, item_ids):
@@ -139,6 +152,7 @@ class SVD_AE(BaseModel):
         return torch.tensor(0.0, device=self.device), None
 
     def get_final_item_embeddings(self):
-        # SVD-AE doesn't technically have "item embeddings" in standard sense, 
-        # but V_k could be considered latent factors.
         return self.V_k
+
+    def get_embeddings(self):
+        return None, self.V_k

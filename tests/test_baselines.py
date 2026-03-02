@@ -101,7 +101,7 @@ class TestBaselines(unittest.TestCase):
         
     def test_ultragcn(self):
         print("\nTesting UltraGCN...")
-        self._test_model('ultragcn', {'embedding_size': 16, 'ii_neighbor_num': 2})
+        self._test_model('ultragcn', {'embedding_dim': 16, 'ii_neighbor_num': 2})
 
 if __name__ == '__main__':
     unittest.main()

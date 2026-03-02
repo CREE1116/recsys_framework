@@ -112,7 +112,7 @@ if __name__ == '__main__':
     # 실행할 모델 설정 파일 목록
     model_config_files_to_run = [
         # --- Matrix Factorization & Linear Models ---
-        # 'configs/model/general/mf.yaml',
+        'configs/model/general/mf.yaml',
         # 'configs/model/general/neumf.yaml',
         # 'configs/model/general/pure_svd.yaml',
         # 'configs/model/general/ease.yaml',
@@ -143,7 +143,7 @@ if __name__ == '__main__':
         # 'configs/model/csar/csar_svd_hybrid.yaml',
         # 'configs/model/csar/minimal_csar.yaml',
 
-        'configs/model/csar/usim.yaml',
+       
         # 'configs/model/csar/csar_bpr.yaml',
         # 'configs/model/csar/lira.yaml',
         # 'configs/model/csar/light_lira.yaml',

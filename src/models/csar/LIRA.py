@@ -6,7 +6,7 @@ import os
 from scipy.sparse import csr_matrix
 from src.models.base_model import BaseModel
 from src.models.csar.LIRALayer import LIRALayer
-from src.utils.svd_manager import SVDCacheManager
+from src.utils.gpu_accel import SVDCacheManager
 
 class LIRA(BaseModel):
     """
@@ -82,7 +82,7 @@ class LIRA(BaseModel):
         # Check device
         # train_matrix is CSR. We need to batch convert to dense for LIRA layer if N is large.
         user_history_dense = torch.from_numpy(train_matrix[users.cpu().numpy()].toarray()).float().to(self.device)
-        scores = self.lira_layer(user_history_dense, mask_observed=True)
+        scores = self.lira_layer(user_history_dense, user_ids=users)
         
         if items is not None:
              return scores.gather(1, items)
@@ -99,4 +99,4 @@ class LIRA(BaseModel):
         return self.lira_layer.S
     
     def calc_loss(self, batch_data):
-        return torch.tensor(0.0, device=self.device), None
+        return (torch.tensor(0.0, device=self.device, requires_grad=True),), None

@@ -1,0 +1,5 @@
+model:
+  name: "cg_lira"
+  reg_lambda: 500.0
+  max_iter: 30
+  tol: 1e-6

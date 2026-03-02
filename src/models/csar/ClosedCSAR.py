@@ -29,6 +29,8 @@ class ClosedCSAR(BaseModel):
         self.num_interests = self.config['model'].get('num_interests', 64)
         self.embedding_dim = self.config['model'].get('embedding_dim', 128)
         self.reg_lambda = self.config['model'].get('reg_lambda', 500.0)
+        if isinstance(self.reg_lambda, (list, np.ndarray)):
+            self.reg_lambda = self.reg_lambda[0]
         self.ols_eps = self.config['model'].get('ols_eps', 1e-6)
         self.normalize = self.config['model'].get('normalize', True)
 
@@ -80,15 +82,10 @@ class ClosedCSAR(BaseModel):
         
         # 3. Build G (Centered OLS)
         M_c = M_i - M_i.mean(dim=0, keepdim=True)
-        I = torch.eye(self.num_interests)
-        eps = self.ols_eps
-        
-        MtM = M_c.t() @ M_c + eps * I
         MtS = M_c.t() @ S @ M_c
         
-        # Solve (MtM @ G @ MtM = MtS)
-        # G = solve(MtM, solve(MtM, MtS.t()).t())
-        G = torch.linalg.solve(MtM, torch.linalg.solve(MtM, MtS.t()).t())
+        # Simple Covariance (Correlation) instead of OLS
+        G = MtS
         
         # 버퍼에 할당
         self.M_i.copy_(M_i)

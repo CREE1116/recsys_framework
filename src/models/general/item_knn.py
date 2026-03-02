@@ -214,19 +214,18 @@ class ItemKNN(BaseModel):
             
         return torch.FloatTensor(scores).to(self.device)
 
-    def get_embeddings(self):
-        """
-        ItemKNN 모델은 임베딩이 없으므로, ILD 계산을 위해 None을 반환합니다.
-        evaluation.py에서 이를 자동으로 건너뜁니다.
-        """
-        return None, None
-
     def get_final_item_embeddings(self):
         """
-        ItemKNN 모델은 임베딩이 없으므로, 시각화를 위한 placeholder로 단위 행렬을 반환합니다.
-        그러나 get_embeddings()가 None을 반환하므로 사실상 사용되지 않습니다.
+        ItemKNN 모델은 임베딩이 없으므로, 유사도 행렬을 아이템 표현으로 반환합니다.
+        가급적 밀집 행렬(Dense)로 변환하여 반환합니다.
         """
-        return torch.eye(self.n_items, device=self.device).detach()
+        if self.item_similarity_matrix is None:
+            return torch.eye(self.n_items, device=self.device)
+        
+        if sp.issparse(self.item_similarity_matrix):
+            return torch.from_numpy(self.item_similarity_matrix.toarray()).float().to(self.device)
+        else:
+            return torch.from_numpy(self.item_similarity_matrix).float().to(self.device)
 
     def calc_loss(self, batch_data):
         """

@@ -1,0 +1,28 @@
+# 평가 마스터 설정
+# 모든 모델이 이 설정을 기본으로 사용합니다.
+# 개별 model config에서 evaluation 섹션을 지정하면 해당 항목만 덮어씁니다.
+
+evaluation:
+  batch_size: 2048
+  validation_method: "full"
+  final_method: "full"
+  metrics:
+    - "NDCG"
+    - "Recall"
+    - "HitRate"
+    - "Precision"
+    - "PopRatio"
+    - "Coverage"
+    - "GiniIndex"
+    - "LongTailCoverage"
+    - "LongTailHitRate"
+    - "LongTailNDCG"
+    - "HeadHitRate"
+    - "HeadNDCG"
+    - "Entropy"
+    - "Novelty"
+  top_k: [5, 10, 20, 50]
+  main_metric: "NDCG"
+  main_metric_k: 20
+  long_tail_percent: 0.8
+device: "auto"

@@ -1,0 +1,9 @@
+model:
+  name: light_power_lira
+  k: 200
+  reg_lambda: 100.0
+  power: 1.1
+  threshold: 1e-4
+  visualize: false
+
+device: auto # Sparse stability

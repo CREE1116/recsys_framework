@@ -62,7 +62,7 @@ class LightLIRA(BaseModel):
         user_history_dense = torch.from_numpy(train_matrix[batch_users].toarray()).float().to(self.device)
         
         # Forward pass: (X @ V) * filter @ V.T
-        scores = self.lira_layer(user_history_dense, mask_observed=True)
+        scores = self.lira_layer(user_history_dense, user_ids=users)
         
         if items is not None:
              return scores.gather(1, items)
@@ -81,7 +81,7 @@ class LightLIRA(BaseModel):
         print(f"[LightLIRA] Analyzing model (Visualize Heavyweight: {self.visualize})...")
         try:
             # Use SVDCacheManager to resolve analysis path
-            from src.utils.svd_manager import SVDCacheManager
+            from src.utils.gpu_accel import SVDCacheManager
             analysis_dir = SVDCacheManager.get_analysis_dir(self.config)
             os.makedirs(analysis_dir, exist_ok=True)
             print(f"[LightLIRA] Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
@@ -107,4 +107,4 @@ class LightLIRA(BaseModel):
         return self.lira_layer.V_k
     
     def calc_loss(self, batch_data):
-        return torch.tensor(0.0, device=self.device), None
+        return (torch.tensor(0.0, device=self.device, requires_grad=True),), None

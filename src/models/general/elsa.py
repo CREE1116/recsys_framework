@@ -63,32 +63,14 @@ class ELSA(BaseModel):
         
         print(f"[ELSA] Matrix: {X.shape}, nnz={X.nnz:,}")
         
-        # 2. Compute EASE solution
-        print(f"[ELSA] Computing EASE solution...")
+        # GPU-accelerated EASE solution
+        from src.utils.gpu_accel import gpu_gram_solve
+        P = gpu_gram_solve(X, self.reg_lambda)
         
-        # Option A: For small datasets (M < 10K)
-        if self.n_items < 10000:
-            G = X.T.dot(X).toarray()  # (M × M)
-            G_tensor = torch.from_numpy(G).float().to(self.device)
-            
-            # B = (G + λI)^{-1} @ G
-            # MPS workaround: Inverse on CPU
-            G_cpu = G_tensor.cpu()
-            I_cpu = torch.eye(self.n_items)
-            P_cpu = torch.inverse(G_cpu + self.reg_lambda * I_cpu)
-            P = P_cpu.to(self.device)
-            
-            B = P @ G_tensor
-            B.fill_diagonal_(0)  # EASE constraint
-            
-            B_np = B.cpu().numpy()
-            
-        else:
-            # Option B: For large datasets - use iterative solver
-            raise NotImplementedError(
-                "[ELSA] Large-scale version not implemented. "
-                "Use column-wise optimization or approximate methods."
-            )
+        diag = np.diag(P).copy()
+        B_np = -P / diag[None, :]
+        del P
+        np.fill_diagonal(B_np, 0)
         
         # 3. Low-rank decomposition via SVD
         print(f"[ELSA] Computing SVD (rank={self.rank})...")

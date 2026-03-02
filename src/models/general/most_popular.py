@@ -48,13 +48,6 @@ class MostPopular(BaseModel):
         
         return self.popularity_scores[item_ids]
 
-    def get_embeddings(self):
-        """
-        MostPopular 모델은 임베딩이 없으므로, None을 반환합니다.
-        evaluation.py에서 이를 자동으로 건너뜁니다.
-        """
-        return None, None
-
     def get_final_item_embeddings(self):
         """
         MostPopular 모델은 임베딩이 없으므로, 인기도 점수를 pseudo-embedding으로 반환합니다.

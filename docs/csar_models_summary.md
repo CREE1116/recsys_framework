@@ -1,168 +1,82 @@
 # RecSys Framework CSAR Models 정리
 
-이 문서는 `src/models/`에 구현된 모든 **CSAR (Co-Support Learning based RecSys)** 계열 모델들의 구조, 철학, 그리고 특징을 정리한 것입니다.
+이 문서는 `src/models/csar/`에 구현된 **Active CSAR (Co-Support Learning based RecSys)** 계열 모델들의 구조와 특징을 정리한 것입니다.
+(Legacy 모델들은 제외되었습니다.)
 
 ---
 
-## 1. 기본 모델 (Base Models)
+## 1. 핵심 레이어 (Core Layer)
 
-### **CSAR (Co-Support Attention RecSys)**
+### **CoSupportAttentionLayer**
 
-- **위치**: `CSAR.py`
-- **철학**: "유저와 아이템은 내적(Dot Product)이 아니라, **공통된 관심사(Co-Support)의 세기(Intensity)**로 연결되어야 한다."
-- **구조**:
-  - `CoSupportAttentionLayer`: 임베딩을 $K$개의 관심사 벡터(Non-negative Intensity)로 변환.
-  - Score = $\sum (\text{UserInterest} \times \text{ItemInterest})$
-- **특징**:
-  - ReLU/Softplus 활성화를 사용하여 '음수 없는' 관심사 강도를 측정.
-  - 내적 기반 MF와 달리, '왜(Why)' 추천되었는지 설명 가능(Explainability).
-
-### **CSAR_R (Residual CSAR)**
-
-- **위치**: `CSAR_R.py`, `CSAR_R_BPR.py`
-- **철학**: "관심사만으로 모든 것을 설명할 순 없다. 기본 취향(MF) 위에 구체적 관심사(CSAR)를 얹자." (Residual Connection)
-- **구조**:
-  - Score = $\text{MF}(u, i) + \text{CSAR}(u, i)$
-  - MF: 전반적인 선호도 (Global Bias)
-  - CSAR: 구체적인 관심사 매칭 (Local Detail)
-- **특징**:
-  - 가장 안정적이고 성능이 좋은 베이스라인.
-  - MF가 뼈대를 잡고 CSAR이 디테일을 채우는 상호보완적 구조.
+- **위치**: `src/models/csar/csar_layers.py`
+- **역할**: 사용자 및 아이템의 $d$-차원 임베딩을 $K$-차원의 **관심사 강도(Interest Intensity)** 벡터로 변환.
+- **주요 파라미터**:
+  - `num_interests` ($K$): 관심사 개수 (Latent Topics).
+  - `soft_relu` (Bool): `Softplus` + `ReLU` 결합 활성화 함수 사용 여부 (Gradient Flow 개선).
+  - `scale` (Bool): Attention Logit 스케일링 ($\frac{1}{\sqrt{K}}$) 적용 여부.
+- **동작 원리**:
+  1. 임베딩과 $K$개의 `Interaction Key` 간의 내적 계산.
+  2. `Softplus` (또는 `SoftReLU`) 활성화 함수를 통해 **비음수(Non-negative) 에너지** 값으로 변환. (관심사의 '세기'는 음수가 될 수 없음)
 
 ---
 
-## 2. 구조적 변형 (Structural Variants)
+## 2. 기본 모델 (Base Variants)
 
-### **CSAR_Deep (Hierarchical CSAR)**
+### **1. CSAR (Co-Support Attention RecSys)**
 
-- **위치**: `CSAR_Deep.py`
-- **철학**: "관심사는 계층적이다. (예: 영화 -> 액션 -> 마블 영화)"
-- **구조**:
-  - 다중 `CoSupportAttentionLayer`를 적층(Stacking).
-  - 예: $d \to K_1 \to K_2$ 순으로 차원을 변환하며 더 추상적인 상위 관심사를 학습.
+- **위치**: `src/models/csar/CSAR.py`
+- **유형**: Pointwise Regression / Classfication
+- **철학**: "유저와 아이템은 내적(Similarity)이 아니라 **공통된 관심사(Co-Support)의 총량**으로 연결된다."
+- **수식**:
+  $$ Score(u, i) = \sum\_{k=1}^K I_u^{(k)} \times I_i^{(k)} $$
+  ($I$: Interest Intensity Vector)
 - **특징**:
-  - 단순 $K$개 관심사가 아닌, 깊이 있는 관심사 계층 구조를 학습 가능.
+  - 순수하게 관심사 매칭 점수만 사용.
+  - 내적 기반 모델(MF)과 달리 해석 가능성(Explainability)이 뛰어남. (어떤 관심사 $k$ 때문에 추천되었는지 확인 가능)
 
-### **CSAR_V / CSAR_VR (Variational CSAR)**
+### **2. CSAR_R (Residual CSAR)**
 
-- **위치**: `CSAR_V.py`, `CSAR_VR.py` (Residual 버전)
-- **철학**: "데이터가 부족한(Sparse) 유저는 전역적인 평균(Global Prior)을 참고해야 한다." (Bayesian Additive Smoothing)
-- **구조**:
-  - `VariationalInterestLayer` 사용.
-  - **Personal Interest** (개인 관측값) + **Global Prior** (전역 사전지식) 구조.
-  - $I_{hybrid} = \text{Softplus}(I_{personal}) + \text{Softplus}(I_{global})$
+- **위치**: `src/models/csar/CSAR_R.py`
+- **유형**: Pointwise Regression / Classification
+- **철학**: "관심사만으로는 부족하다. 기본 취향(MF) 위에 관심사(CSAR)를 더하자." (Residual Learning)
+- **수식**:
+  $$ Score(u, i) = \underbrace{(u \cdot i)}_{\text{MF Score}} + \underbrace{\sum I_u \times I_i}_{\text{CSAR Score}} $$
 - **특징**:
-  - Sparse 유저는 Personal 값이 작아 Global Prior(ACF 효과)가 주도함.
-  - Dense 유저는 Personal 값이 커서 Global Prior가 무시됨(CSAR 효과).
-  - VAE의 가우시안 샘플링 방식이 아니라, 에너지 기반의 베이지안 스무딩 방식을 사용함.
+  - MF의 안정적인 성능과 CSAR의 세밀한 표현력을 결합.
+  - 가장 성능이 안정적인 베이스라인 모델.
 
-### **CSAR_R_Softmax (Probabilistic CSAR)**
+### **3. CSAR_BPR (BPR Loss Variant)**
 
-- **위치**: `CSAR_R_Softmax.py`
-- **철학**: "관심사는 강도(Intensity)가 아니라 확률(Probability)이다."
-- **구조**:
-  - Softplus 대신 Softmax를 사용하여 관심사 가중치의 합을 1로 제한.
-  - Cross Entropy Loss와 결합하여 분류(Classification) 문제처럼 접근.
+- **위치**: `src/models/csar/CSAR_BPR.py`
+- **유형**: Pairwise Ranking
+- **철학**: "점수의 절대값보다는 **순위(Ranking)**가 중요하다."
 - **특징**:
-  - 관심사의 총량이 제한되어 있어, 모든 분야에 관심을 가질 수 없음 (선택과 집중).
+  - 모델 구조는 `CSAR`와 동일하지만, 학습에 **BPR Loss** (또는 `DynamicMarginBPRLoss`)를 사용.
+  - Implicit Feedback (클릭 여부 등) 데이터셋에서 표준 모델(`CSAR`)보다 월등한 성능.
+  - 직교성 손실(`Orthogonal Loss`)을 추가하여 관심사 벡터들이 서로 다른 특징을 학습하도록 유도.
+
+### **4. CSAR_R_BPR (Residual + BPR)**
+
+- **위치**: `src/models/csar/CSAR_R_BPR.py`
+- **유형**: Pairwise Ranking
+- **철학**: `CSAR_R` 구조에 BPR Loss를 결합.
+- **특징**:
+  - `CSAR_R`의 강력한 표현력(Residual) + BPR의 랭킹 최적화.
+  - 일반적으로 가장 **High Performance**를 보여주는 모델 조합.
 
 ---
 
-## 3. 정규화 및 희소성 모델 (Regularization & Sparsity)
+## 3. 고급 학습 모델 (Advanced Variants)
 
-### **CSAR_R_L0 (L0 Regularized)**
+### **5. CSAR_Sampled (Sampled Softmax)**
 
-- **위치**: `CSAR_R_L0.py`
-- **철학**: "유저는 수많은 관심사 중 **극히 일부(Sparse)**에만 반응한다. 나머지는 0이어야 한다."
+- **위치**: `src/models/csar/CSAR_Sampled.py`
+- **유형**: Listwise / Classification (Sampled Softmax)
+- **철학**: "BPR(1 vs 1)은 너무 느리고 정보가 적다. **배치 내의 모든 아이템(1 vs B)**을 비교하여 학습하자."
+- **Loss**: `NormalizedSampledSoftmaxLoss` (구 `CSARLossPower`)
+  - **Z-Score Normalization**: 에너지 점수 분포를 정규화하여 학습 안정성 확보.
+  - **Sampled Softmax Correction**: In-Batch Negative Sampling의 편향을 보정 ($\log \frac{N}{B}$).
 - **특징**:
-  - **L0 Gating**: Hard-Concrete 분포를 사용하여 유저별로 필요 없는 관심사 스위치를 아예 꺼버림(0).
-  - 결과적으로 유저마다 "활성화된 관심사 개수"가 다르게 학습됨.
-  - 노이즈 제거 효과가 탁월함.
-
-### **CSAR_STE (Straight-Through Estimator)**
-
-- **위치**: `CSAR_STE.py`
-- **철학**: "휴리스틱 없이, Top-K 선택 과정 자체를 미분 가능하게 만들자."
-- **구조**:
-  - Forward: 엄격하게 Top-K개의 관심사만 선택 (Masking).
-  - Backward: SoftmaxGradient를 통해 선택되지 않은 관심사로도 그라디언트 전파.
-- **특징**:
-  - L0 Gating보다 더 직접적으로 "상위 K개" 제약을 강제함.
-
-### **CSAR_R_Lasso (L1 Regularized)**
-
-- **위치**: `CSAR_R_Lasso.py`
-- **철학**: "공짜 점심은 없다. CSAR(상세 관심사)를 쓰려면 대가(Penalty)를 치러라."
-- **특징**:
-  - 관심사 활성화 값의 합(L1 Norm)을 손실 함수에 추가.
-  - L0보다 구현이 간단하고 학습이 안정적이지만, 완전히 0이 되지는 않는 경향이 있음(Soft Sparsity).
-
-### **CSAR_R_UBR (Uncertainty-Based Regularization)**
-
-- **위치**: `CSAR_R_UBR.py`
-- **철학**: "MF와 CSAR이 서로 동의하지 않는다면, 그 예측은 불확실한 것이다."
-- **특징**:
-  - **Disagreement**: $|Score_{MF} - Score_{CSAR}|$를 불확실성 지표로 사용.
-  - 불확실한 샘플(동의하지 않는 샘플)은 학습 가중치를 낮춤(Loss Attenuation).
-  - 이상치(Outlier)에 매우 강함.
-
-### **CSAR_R_Confidence (Confidence Gating)**
-
-- **위치**: `CSAR_R_Confidence.py`
-- **철학**: "자신 없으면 CSAR 쓰지 말고, 기본(MF)만 써라."
-- **구조**:
-  - 유저의 관심사 엔트로피(Entropy)를 측정.
-  - 엔트로피가 낮으면(확실하면) CSAR 점수를 반영하고, 높으면(산만하면) 무시.
-  - $Score = Score_{MF} + \alpha \cdot Score_{CSAR}$ ($\alpha$는 신뢰도)
-- **특징**:
-  - CSAR이 오히려 노이즈가 되는 상황(Cold User 등)을 방지.
-
----
-
-## 4. 학습 전략 변형 (Learning Strategy Variants)
-
-### **CSAR_R_KD (Knowledge Distillation)**
-
-- **위치**: `CSAR_R_KD.py`
-- **철학**: "안정적인 선배(MF)가 흔들리는 후배(CSAR)를 가르친다."
-- **특징**:
-  - MF 파트(Teacher)의 예측 분포를 CSAR 파트(Student)가 따라가도록 추가적인 Loss 부여.
-  - 학습 초기 CSAR의 불안정한 수렴을 MF가 가이드하여 성능 부스팅.
-
-### **CSAR_R_contrastive**
-
-- **위치**: `CSAR_R_contrastive.py`
-- **철학**: "같은 유저(아이템)의 관심사는 조금 변형되어도 본질이 유지되어야 한다."
-- **특징**:
-  - **Adaptive Contrastive Loss**: 불확실성에 따라 온도($\tau$)를 조절하며 대조 학습 수행.
-  - 데이터가 극도로 희소(Sparse)한 상황에서 임베딩 품질을 높이는 데 효과적.
-
----
-
-## 5. 손실 함수 특화 (Loss Specific)
-
-### **CSAR_Sampled (InfoNCE Specialized)**
-
-- **위치**: `CSAR_Sampled.py`
-- **철학**: "BPR(순위)보다 InfoNCE(분류)가 학습 신호가 풍부하다."
-- **특징**:
-  - `CSARLossPower`를 기본 Loss로 채택.
-  - 배치 내 Negative 샘플링을 효율적으로 수행하며, Softmax의 분모를 근사.
-  - 대규모 데이터셋 학습에 유리.
-
-### **CSAR_BPR_CE / CSAR_R_BPR**
-
-- **위치**: `CSAR_BPR_CE.py`, `CSAR_R_BPR_SoftRelu.py` 등
-- **철학**: 모델 구조보다는 **손실 함수의 최적 조합**을 탐구.
-- **특징**:
-  - **BPR_CE**: Ranking(BPR)과 Classification(InfoNCE/CE)를 동시에 수행하여 Multi-task 효과를 노림.
-  - **BPR_SoftRelu**: Softplus(Smooth ReLU) 등을 활성화 함수로 사용하여 미분 가능성과 학습 안정성을 높인 버전.
-
----
-
-## 요약 (추천)
-
-- **가장 무난한 시작**: `CSAR_R` (또는 `CSAR_R_BPR`)
-- **설명력이 중요할 때**: `CSAR` (Residual 없이 순수 관심사만 사용)
-- **노이즈가 많은 데이터**: `CSAR_R_L0` (불필요한 관심사 가지치기) 또는 `CSAR_R_UBR` (이상치 무시)
-- **데이터가 너무 적을 때**: `CSAR_R_contrastive` (대조 학습으로 표현력 강화)
+  - Pairwise가 아닌 Listwise(유사) 방식으로 학습하여 수렴 속도가 빠름.
+  - 대규모 데이터셋(Item이 많은 경우)에서 BPR보다 높은 성능을 내는 경향이 있음.

@@ -147,7 +147,10 @@ class MMR(BaseModel):
         
         bpr_loss = -torch.log(torch.sigmoid(pos_score - neg_score) + 1e-10).mean()
         
-        return (bpr_loss,), {'bpr': bpr_loss.item()}
+        # [추가] L2 규제
+        l2_loss = self.get_l2_reg_loss(u_emb, pos_emb, neg_emb)
+        
+        return (bpr_loss, l2_loss), {'loss_main': bpr_loss.item(), 'loss_l2': l2_loss.item()}
 
     def predict_for_pairs(self, user_ids, item_ids):
         u_emb = self.user_embedding(user_ids)

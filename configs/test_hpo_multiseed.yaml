@@ -1,0 +1,15 @@
+datasets:
+  - configs/dataset/ml100k.yaml
+
+seeds: [42, 43]
+
+searches:
+  - name: EASE
+    model_config: configs/test_multiseed.yaml
+    method: bayesian
+    n_trials: 1
+    params:
+      - name: model.reg_lambda
+        type: float
+        range: "10 500"
+        log: true

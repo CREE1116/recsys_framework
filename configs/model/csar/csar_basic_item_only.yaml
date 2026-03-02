@@ -1,0 +1,17 @@
+model:
+  name: csar_basic
+  embedding_dim: 64
+  num_interests: 64
+  reg_lambda: 100.0
+  align_weight: 0.1
+  ema_momentum: 0.1
+
+train:
+  epochs: 2
+  batch_size: 1024
+  lr: 0.001
+  optimizer: adam
+  loss_type: bpr
+
+dataset_name: ml-100k
+device: auto

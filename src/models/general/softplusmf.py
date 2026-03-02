@@ -60,10 +60,14 @@ class softplusMF(BaseModel):
         neg_scores = self.predict_for_pairs(users, neg_items)
         
         # neg_scores is [B, N] (where N=1 for BPR, or N>1 for InfoNCE)
-        loss = self.loss_fn(pos_scores, neg_scores)
-       
+        # [추가] L2 규제
+        l2_loss = self.get_l2_reg_loss(
+            self.user_embedding(users), 
+            self.item_embedding(pos_items), 
+            self.item_embedding(neg_items)
+        )
         
-        return (loss,), {"scale":self.scale.item()}
+        return (loss, l2_loss), {"scale": self.scale.item(), "loss_main": loss.item(), "loss_l2": l2_loss.item()}
 
     def forward(self, users):
         user_embeds = F.softplus(self.user_embedding(users)*self.scale)

@@ -87,10 +87,21 @@ class SimGCL(LightGCN):
         
         cl_loss = self.cl_rate * (user_cl_loss + item_cl_loss)
         
-        total_loss = rec_loss + cl_loss
+        # 3. L2 Regularization (On base embeddings)
+        l2_loss = self.get_l2_reg_loss(
+            self.user_embedding(users), 
+            self.item_embedding(pos_items), 
+            self.item_embedding(neg_items)
+        )
+        
+        total_loss = rec_loss + cl_loss + l2_loss
         
         # Return tensors specifically for Trainer logging
-        return (total_loss, rec_loss, cl_loss), None
+        return (total_loss, rec_loss, cl_loss, l2_loss), {
+            'loss_main': rec_loss.item(),
+            'loss_cl': cl_loss.item(),
+            'loss_l2': l2_loss.item()
+        }
 
     def info_nce_loss(self, view1, view2):
         """

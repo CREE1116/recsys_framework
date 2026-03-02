@@ -19,7 +19,7 @@ class UltraGCN(BaseModel):
     def __init__(self, config, data_loader):
         super(UltraGCN, self).__init__(config, data_loader)
         
-        self.embedding_size = config['model']['embedding_size']
+        self.embedding_dim = config['model'].get('embedding_dim', config['model'].get('embedding_size', 64))
         
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
@@ -31,8 +31,8 @@ class UltraGCN(BaseModel):
         self.w4 = float(config['model'].get('w4', 1e-4)) # Negative log-likelihood weight (if using BCE)
         
         # Embeddings
-        self.user_embedding = nn.Embedding(self.n_users, self.embedding_size)
-        self.item_embedding = nn.Embedding(self.n_items, self.embedding_size)
+        self.user_embedding = nn.Embedding(self.n_users, self.embedding_dim)
+        self.item_embedding = nn.Embedding(self.n_items, self.embedding_dim)
         
         # Init weights
         nn.init.normal_(self.user_embedding.weight, std=0.01)
@@ -158,27 +158,19 @@ class UltraGCN(BaseModel):
         return self.forward(user_ids, item_ids)
 
     def calc_loss(self, batch_data):
-        # 1. Main Loss (BCE/BPR) handled by return?
-        # Typically BaseModel expects loss to be returned.
-        # But here we need specific UltraGCN loss formula.
-        
         user_ids = batch_data['user_id'].squeeze()
         pos_items = batch_data['pos_item_id'].squeeze()
         neg_items = batch_data['neg_item_id'].squeeze() 
-        # neg_items might be [B, num_negs]
         
         u_emb = self.user_embedding(user_ids)
         pos_emb = self.item_embedding(pos_items)
         
-        # 1. Main Recommendation Loss (Log Sigmoid / BCE)
-        # UltraGCN uses BCE often.
+        # 1. Main Recommendation Loss (Log Sigmoid)
         pos_score = torch.sum(u_emb * pos_emb, dim=1)
         pos_loss = -F.logsigmoid(pos_score).mean()
         
         neg_loss = 0
         if neg_items.dim() == 2:
-            # Multiple negatives
-            num_negs = neg_items.size(1)
             neg_emb = self.item_embedding(neg_items) # [B, Neg, D]
             u_emb_expanded = u_emb.unsqueeze(1)      # [B, 1, D]
             neg_score = torch.sum(u_emb_expanded * neg_emb, dim=2) # [B, Neg]
@@ -191,33 +183,27 @@ class UltraGCN(BaseModel):
         main_loss = pos_loss + neg_loss
         
         # 2. Constraint Loss L_C (User-Item)
-        # Minimize (u - i)^2 for positive pairs
-        # Weighted by some importance (usually degree, but simplified to constant here or config)
-        # || u - i ||^2 = (u-i).T (u-i)
-        l_c = F.mse_loss(u_emb, pos_emb, reduction='mean') # Mean per batch
+        l_c = F.mse_loss(u_emb, pos_emb, reduction='mean')
         
         # 3. Item-Item Constraint Loss L_I
-        # Minimize (i - j)^2 for i, j in II-Graph
-        # Sample one neighbor k for each pos_item i in batch
-        l_i = 0
+        l_i = torch.tensor(0.0, device=self.device)
         if self.ii_neighbors is not None:
-            # pos_items [B]
-            # Sample random neighbor index from [0, K)
             rand_idx = torch.randint(0, self.ii_constraint_k, (len(pos_items),), device=self.device)
-            
-            neighbor_ids = self.ii_neighbors[pos_items, rand_idx] # [B]
-            neighbor_weights = self.ii_weights[pos_items, rand_idx] # [B]
-            
+            neighbor_ids = self.ii_neighbors[pos_items, rand_idx]
+            neighbor_weights = self.ii_weights[pos_items, rand_idx]
             neighbor_emb = self.item_embedding(neighbor_ids)
-            
-            # Weighted MSE directly: normalized weight * || i - k ||^2
             dist_sq = torch.sum((pos_emb - neighbor_emb)**2, dim=1)
             l_i = (neighbor_weights * dist_sq).mean()
             
-        # 4. L2 Regularization (Embeddings)
-        l2_reg = self.w3 * (u_emb.norm(2).pow(2) + pos_emb.norm(2).pow(2) + neg_emb.norm(2).pow(2)) / len(user_ids)
+        # 4. L2 Regularization (Use framework standard helper)
+        l2_reg = self.get_l2_reg_loss(u_emb, pos_emb, neg_emb if neg_items.dim() != 2 else neg_emb.view(-1, self.embedding_dim))
         
-        return (main_loss,self.w1 * l_c,self.w2 * l_i,l2_reg), None
+        return (main_loss, self.w1 * l_c, self.w2 * l_i, l2_reg), {
+            'loss_main': main_loss.item(), 
+            'loss_lc': l_c.item(), 
+            'loss_li': l_i.item(), 
+            'loss_l2': l2_reg.item()
+        }
         
     def get_final_item_embeddings(self):
         return self.item_embedding.weight

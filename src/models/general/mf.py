@@ -17,7 +17,17 @@ class MF(BaseModel):
 
         self.user_embedding = nn.Embedding(self.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.n_items, self.embedding_dim)
-        self.loss_fn = BPRLoss()
+        
+        # Loss configuration
+        self.loss_type = config.get('train', {}).get('loss_type', 'pairwise')
+        self.w_mse = config.get('train', {}).get('w_mse', 10.0)
+        
+        if self.loss_type == 'pointwise':
+            self.loss_fn = nn.MSELoss(reduction='none') # weight 적용을 위해 none으로 설정
+            print(f"[MF] Using All-Item Weighted MSE (w_mse={self.w_mse})")
+        else:
+            self.loss_fn = BPRLoss()
+            print("[MF] Using pairwise BPRLoss")
 
         self._init_weights()
 
@@ -32,16 +42,48 @@ class MF(BaseModel):
         return torch.sum(user_embeds * item_embeds, dim=-1)
 
     def calc_loss(self, batch_data):
-        users = batch_data['user_id']
-        pos_items = batch_data['pos_item_id']
-        neg_items = batch_data['neg_item_id']
+        if self.loss_type == 'pointwise':
+            # All-Item Weighted MSE (WMF 스타일)
+            users = batch_data['user_id'] # [B]
+            pos_items = batch_data['item_id'] # [B]
+            
+            # [Optimization] 임베딩 직접 조회 (L2 위해)
+            u_emb = self.user_embedding(users)
+            
+            # 1. 모든 아이템에 대한 점수 계산
+            all_scores = torch.matmul(u_emb, self.item_embedding.weight.transpose(0, 1))
+            
+            # 2. 타겟 생성 (0으로 초기화 후 긍정 아이템만 1로 설정)
+            targets = torch.zeros_like(all_scores)
+            targets.scatter_(1, pos_items.unsqueeze(1), 1.0)
+            
+            # 3. 가중치 생성 (긍정 아이템은 w_mse, 나머지는 1.0)
+            weights = targets * (self.w_mse - 1.0) + 1.0
+            
+            # 4. Weighted MSE 로스 계산
+            loss = (self.loss_fn(all_scores, targets) * weights).mean()
+            
+            # [추가] L2 규제 (사용된 임베딩만)
+            l2_loss = self.get_l2_reg_loss(u_emb, self.item_embedding(pos_items))
+        else:
+            # Pairwise (BPR)
+            users = batch_data['user_id']
+            pos_items = batch_data['pos_item_id']
+            neg_items = batch_data['neg_item_id']
 
-        pos_scores = self.predict_for_pairs(users, pos_items)
-        neg_scores = self.predict_for_pairs(users, neg_items)
-    
-        loss = self.loss_fn(pos_scores, neg_scores)
+            u_emb = self.user_embedding(users)
+            p_emb = self.item_embedding(pos_items)
+            n_emb = self.item_embedding(neg_items)
+
+            pos_scores = torch.sum(u_emb * p_emb, dim=-1)
+            neg_scores = torch.sum(u_emb * n_emb, dim=-1)
         
-        return (loss,), None
+            loss = self.loss_fn(pos_scores, neg_scores)
+            
+            # [추가] L2 규제
+            l2_loss = self.get_l2_reg_loss(u_emb, p_emb, n_emb)
+        
+        return (loss, l2_loss), {'loss_main': loss.item(), 'loss_l2': l2_loss.item()}
 
     def forward(self, users):
         user_embeds = self.user_embedding(users)

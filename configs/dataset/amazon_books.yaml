@@ -1,8 +1,8 @@
 # 데이터셋 설정
 dataset_name: "amazon_books"
-data_path: "/Users/leejongmin/code/recsys_framework/data/amazon_books/Books_subset_5P.csv"
-separator: ","
-columns: ["item_id", "user_id", "rating", "timestamp"]
+data_path: "/Users/leejongmin/code/recsys_framework/data/amazon_books/Amazon_Books.inter"
+separator: "\t"
+columns: ["user_id", "item_id", "rating", "timestamp"]
 
 rating_threshold: 4 # 이 값 이상의 평점만 상호작용으로 간주 (임시 비활성화)
 min_user_interactions: 5

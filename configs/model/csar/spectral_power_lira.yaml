@@ -1,0 +1,7 @@
+# SpectralPowerLIRA Configuration
+model:
+  name: "spectral_power_lira"
+  k: 200 # SVD rank
+  reg_lambda: 500.0 # L2 regularization
+  power: 1.0 # Power applied to singular values (s_new = s^power)
+  visualize: true

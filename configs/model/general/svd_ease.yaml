@@ -1,0 +1,6 @@
+model:
+  name: svd_ease
+  reg_lambda: 500.0
+  k: 256
+
+device: auto

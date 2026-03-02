@@ -40,19 +40,24 @@ class Trainer:
         self.device = model.device
         self.model.to(self.device)
 
-        model_name = self.config['model']['name']
-        dataset_name = self.config['dataset_name']
-        run_name = self.config.get('run_name')
-        
-        base_path = os.path.join('trained_model', dataset_name)
-        
-        if run_name and run_name != 'default':
-            experiment_folder_name = f"{model_name}__{run_name}"
-            self.output_path = os.path.join(base_path, experiment_folder_name)
-        else:
-            self.output_path = os.path.join(base_path, model_name)
-            
+        self.output_path = getattr(self.model, 'output_path', None)
+        if self.output_path is None:
+            # Fallback if model doesn't have it (should not happen with BaseModel)
+            model_name = self.config['model']['name']
+            dataset_name = self.config['dataset_name']
+            run_name = self.config.get('run_name')
+            base_path = os.path.join('trained_model', dataset_name)
+            if 'output_path_override' in self.config:
+                self.output_path = self.config['output_path_override']
+            elif run_name and run_name != 'default':
+                self.output_path = os.path.join(base_path, f"{model_name}__{run_name}")
+            else:
+                self.output_path = os.path.join(base_path, model_name)
+
         os.makedirs(self.output_path, exist_ok=True)
+
+        self.best_metric_value = -float('inf')
+        self.best_val_metrics = {}
 
         with open(os.path.join(self.output_path, 'config.yaml'), 'w') as f:
             config_to_save = copy.deepcopy(self.config)
@@ -60,7 +65,13 @@ class Trainer:
             yaml.dump(config_to_save, f, default_flow_style=False)
 
         # BUG FIX: 학습 관련 설정은 'train' 블록이 있을 때만 초기화
-        if 'train' in self.config:
+        # 비학습 모델도 안전하게 기본값 보유
+        self.is_trainable = 'train' in self.config
+        self.train_losses = collections.defaultdict(list)
+        self.eval_metrics = collections.defaultdict(list)
+        self.tracked_params = collections.defaultdict(list)
+
+        if self.is_trainable:
             self.epochs = self.config['train'].get('epochs', 0)
             self.early_stop_patience = self.config['train'].get('early_stop_patience', 10)
             
@@ -68,12 +79,7 @@ class Trainer:
                 self.optimizer = self._get_optimizer(self.config['train']['optimizer'])
             else:
                 self.optimizer = None
-            
-            self.train_losses = collections.defaultdict(list)
-            self.eval_metrics = collections.defaultdict(list)
-            self.tracked_params = collections.defaultdict(list)
 
-            self.best_metric_value = -float('inf')
             self.patience_counter = 0
             
             print("Initializing data loaders for training...")
@@ -81,46 +87,9 @@ class Trainer:
             self.validation_loader = self.data_loader.get_validation_loader(self.config['train']['batch_size'] * 2)
             print("Data loaders initialized.")
 
-            # [추가] 자동 L2 규제를 위한 임베딩 모듈 캐싱
-            self.embedding_modules = self._cache_embedding_modules()
-
-    def _cache_embedding_modules(self):
-        """모델 내의 nn.Embedding 모듈을 찾아 관련 키워드와 함께 저장합니다."""
-        cached = []
-        for name, module in self.model.named_modules():
-            if isinstance(module, nn.Embedding):
-                # 'user_id'나 'item_id' 배치를 보고 적절히 L2를 걸기 위해 타입 분류
-                if 'user' in name.lower():
-                    cached.append((module, 'user'))
-                elif 'item' in name.lower():
-                    cached.append((module, 'item'))
-        return cached
-
-    def _calculate_automatic_l2(self, batch_data):
-        """배치 데이터에 사용된 인덱스에 대해 L2 loss를 계산합니다."""
-        if self.model.l2_reg_weight <= 0:
-            return None
-        
-        l2_loss = 0
-        # 배치 사이즈 추정 (딕셔너리의 첫 번째 값의 행 크기)
-        batch_size = next(iter(batch_data.values())).size(0)
-        
-        for module, m_type in self.embedding_modules:
-            if m_type == 'user' and 'user_id' in batch_data:
-                indices = batch_data['user_id']
-                # [B, 1] or [B] -> [B, D]
-                embs = module(indices)
-                l2_loss += torch.sum(embs ** 2)
-            elif m_type == 'item':
-                if 'pos_item_id' in batch_data:
-                    embs = module(batch_data['pos_item_id'])
-                    l2_loss += torch.sum(embs ** 2)
-                if 'neg_item_id' in batch_data:
-                    embs = module(batch_data['neg_item_id'])
-                    l2_loss += torch.sum(embs ** 2)
-        
-        # BaseModel.get_l2_reg_loss와 동일한 스케일링 유지
-        return self.model.l2_reg_weight * l2_loss / (2 * batch_size)
+            # [추가] AMP 가속 (cuda에서는 GradScaler 사용, mps는 아직 scaler 미지원이나 autocast만 지원)
+            self.use_amp = self.config['train'].get('use_amp', True) and self.device.type in ['cuda', 'mps']
+            self.scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' and self.use_amp else None
 
     def _get_optimizer(self, optimizer_name):
         # 이 메소드는 self.config['train']이 존재할 때만 호출됨
@@ -158,20 +127,29 @@ class Trainer:
         else:
             raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
-    def train(self):
-        # train이 호출되면, 'train' config이 있다고 가정
-        if 'train' not in self.config:
-            print("[Error] 'train' configuration not found. Cannot start training.")
-            return
-
-        print(f"Training started on device: {self.device}")
-        
-        # [Bug Fix] Trainable models with closed-form initialization (e.g., EASE, ItemKNN)
-        # require fit() to be called even if 'train' config exists (for epochs=0 or hybrid cases).
+    def run(self):
+        """
+        통합 실행 오케스트레이터: fit → train loop → final evaluation
+        - fit()이 있으면 먼저 호출 (EASE, ItemKNN, UltraGCN 등)
+        - train 설정이 있으면 SGD 학습 루프 실행
+        - 없으면 비학습 모델로 간주하고 바로 최종 평가
+        """
+        # 1. fit() 호출 (모델이 지원하는 경우)
         if hasattr(self.model, 'fit'):
-            print("Model has 'fit' method. Calling fit() before training loop...")
+            print(f"Model has 'fit' method. Calling fit()...")
             self.model.fit(self.data_loader)
 
+        # 2. 학습 루프 또는 바로 평가
+        if self.is_trainable:
+            return self._train_loop()
+        else:
+            print("Non-trainable model. Proceeding directly to evaluation...")
+            return self.evaluate(is_final_evaluation=True)
+
+    def _train_loop(self):
+        """SGD 학습 루프 (내부용)"""
+        print(f"Training started on device: {self.device}")
+        
         
         for epoch in range(self.epochs):
             # Optional: Curriculum learning callback
@@ -196,18 +174,21 @@ class Trainer:
                         batch_data['neg_item_id'] = hard_neg_items
 
                 self.optimizer.zero_grad()
-                losses_tuple, params_to_log = self.model.calc_loss(batch_data)
+                
+                # AMP Autocast 적용
+                device_type = 'cuda' if self.device.type == 'cuda' else 'cpu' 
+                # mps일 경우에도 'cpu' autocast 혹은 별도 처리가 필요할 수 있으나, 최신 torch는 torch.amp.autocast 사용 권장
+                with torch.amp.autocast(device_type=device_type, enabled=self.use_amp):
+                    losses_tuple, params_to_log = self.model.calc_loss(batch_data)
+                    total_loss_for_backward = sum(losses_tuple)
 
-                # [추가] 배치 단위 자동 L2 규제 적용
-                reg_loss = self._calculate_automatic_l2(batch_data)
-                if reg_loss is not None and isinstance(reg_loss, torch.Tensor):
-                    losses_tuple = (*losses_tuple, reg_loss)
-                    if params_to_log is None: params_to_log = {}
-                    params_to_log['auto_l2_loss'] = reg_loss.item()
-
-                total_loss_for_backward = sum(losses_tuple)
-                total_loss_for_backward.backward()
-                self.optimizer.step()
+                if self.scaler:
+                    self.scaler.scale(total_loss_for_backward).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    total_loss_for_backward.backward()
+                    self.optimizer.step()
 
                 # [추가] 모델별 학습 스텝 후처리 (예: EMA 업데이트)
                 if hasattr(self.model, 'on_step_end'):
@@ -261,11 +242,12 @@ class Trainer:
         else:
             print("[Warning] Best model checkpoint not found. Using last epoch model.")
         
-        self.evaluate(is_final_evaluation=True)
+        current_metrics = self.evaluate(is_final_evaluation=True)
         
         self._visualize_results()
+        return current_metrics
 
-    def evaluate(self, loader=None, is_final_evaluation=False):
+    def evaluate(self, loader=None, is_final_evaluation=False, update_best_snapshot=False):
         self.model.eval()
         
         eval_config = self.config.get('evaluation', {})
@@ -296,13 +278,39 @@ class Trainer:
 
         current_metrics = evaluate_metrics(self.model, self.data_loader, config_for_eval, self.device, test_loader=loader, is_final=is_final_evaluation)
         
+        if not is_final_evaluation and update_best_snapshot:
+            # [추가] 검증 지표 스냅샷 업데이트 (비학습 모델이나 명시적 검증 호출 대응)
+            eval_config_val = self.config.get('evaluation', {})
+            m_name = f"{eval_config_val.get('main_metric', 'NDCG')}@{eval_config_val.get('main_metric_k', 10)}"
+            m_val = current_metrics.get(m_name, 0.0)
+            if m_val >= self.best_metric_value:
+                self.best_metric_value = m_val
+                self.best_val_metrics = copy.deepcopy(current_metrics)
+
         if is_final_evaluation:
-            print(f"Final Evaluation: {current_metrics}")
+            # [추가] 만약 검증이 한 번도 수행되지 않았다면 수행 (EASE 등 비학습 모델 대응)
+            if not self.best_val_metrics:
+                print("No validation metrics found. Running validation before final evaluation...")
+                self.evaluate(is_final_evaluation=False, update_best_snapshot=True)
+
+            print(f"Final Evaluation (Test): {current_metrics}")
+            
+            # [추가] 베스트 검증 지표가 있다면 접두사를 붙여 병합 (HPO에서 참조 가능하도록)
+            if hasattr(self, 'best_val_metrics') and self.best_val_metrics:
+                for k, v in self.best_val_metrics.items():
+                    current_metrics[f"val_{k}"] = v
+            
             metrics_path = os.path.join(self.output_path, 'final_metrics.json')
             dumpable_metrics = _convert_numpy_types_to_python_types(current_metrics)
             with open(metrics_path, 'w') as f:
                 json.dump(dumpable_metrics, f, indent=4)
             print(f"Final metrics saved to {metrics_path}")
+        else:
+            # 학습 중 검증 결과도 별도 저장 (디버깅 용도)
+            val_metrics_path = os.path.join(self.output_path, 'val_metrics.json')
+            dumpable_val = _convert_numpy_types_to_python_types(current_metrics)
+            with open(val_metrics_path, 'w') as f:
+                json.dump(dumpable_val, f, indent=4)
 
         return current_metrics
 
@@ -319,6 +327,7 @@ class Trainer:
 
         if current_main_metric > self.best_metric_value:
             self.best_metric_value = current_main_metric
+            self.best_val_metrics = copy.deepcopy(current_metrics) # 전체 지표 스냅샷 저장
             self.patience_counter = 0
             self._save_checkpoint()
         else:

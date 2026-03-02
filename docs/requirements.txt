@@ -1,13 +1,16 @@
-torch
-pandas
+# Core Dependencies
+torch>=2.0
 numpy
-PyYAML
-matplotlib
-seaborn
+pandas
 scipy
 tqdm
-torch_geometric     
+PyYAML
+matplotlib
+
+# HPO
+optuna
+
+# Analysis (optional)
+seaborn
 scikit-learn
-tmdbv3api
-wordcloud
 tabulate

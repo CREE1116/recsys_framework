@@ -1,0 +1,17 @@
+# Dataset Configuration Example
+# Copy this template and adjust paths for your environment.
+# Place dataset configs in configs/dataset/ (gitignored)
+
+dataset_name: "ml-100k"
+data_path: "/path/to/your/data/ml100k/u.data" # ← 로컬 경로로 수정
+separator: '\t'
+columns: ["user_id", "item_id", "rating", "timestamp"]
+
+# 데이터 전처리 및 분할 설정
+rating_threshold: 4 # 이 값 이상만 positive로 간주
+min_user_interactions: 5 # k-core 필터링
+min_item_interactions: 5
+split_method: "temporal_ratio" # loo | temporal_ratio | random
+train_ratio: 0.8
+valid_ratio: 0.1
+data_cache_path: "./data_cache/"

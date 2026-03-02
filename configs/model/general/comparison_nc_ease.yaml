@@ -1,0 +1,5 @@
+model:
+  name: nc_ease
+  reg_lambda: 169.62779713683116
+
+device: auto

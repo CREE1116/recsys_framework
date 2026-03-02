@@ -1,0 +1,5 @@
+model:
+  name: nc_ease
+  reg_lambda: 500.0
+
+device: auto

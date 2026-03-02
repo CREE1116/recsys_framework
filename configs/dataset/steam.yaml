@@ -4,5 +4,7 @@ separator: "::"
 columns: ["user_id", "item_id", "rating", "timestamp"]
 min_user_interactions: 10
 min_item_interactions: 10
-split_method: "temporal_ratio" # Leave-One-Out
+split_method: "temporal_ratio"
+train_ratio: 0.8
+valid_ratio: 0.1
 data_cache_path: "./data_cache/"

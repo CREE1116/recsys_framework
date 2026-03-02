@@ -1,15 +1,13 @@
-# LFM-10M 데이터셋 설정 (LFM-1B의 1% 유저 서브셋)
-# 약 3.1M 상호작용, 1,203 유저
+# LFM-10M (LFM-1B 1% subset, implicit feedback)
 dataset_name: "lfm_10m"
 data_path: "/Users/leejongmin/code/recsys_framework/data/lfm-10m/ratings.dat"
 separator: "\t"
 columns: ["user_id", "item_id", "timestamp", "num_repeat"]
 has_header: true
 
-rating_threshold: 4 # 이 값 이상의 평점만 상호작용으로 간주 (임시 비활성화)
 min_user_interactions: 5
 min_item_interactions: 5
-split_method: "temporal_ratio" # Leave-One-Out
-train_ratio: 0.8 # 학습 데이터 비율 (LOO에서는 미사용)
-valid_ratio: 0.1 # 검증 데이터 비율 (LOO에서는 미사용)
-data_cache_path: "./data_cache/" # 데이터셋 전처리 결과를 캐싱할 경로
+split_method: "temporal_ratio"
+train_ratio: 0.8
+valid_ratio: 0.1
+data_cache_path: "./data_cache/"

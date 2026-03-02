@@ -1,176 +1,174 @@
-# RecSys Framework 2.0
+# RecSys Framework
 
-이 프로젝트는 추천 시스템 모델을 쉽고 빠르게 실험, 평가, 그리고 확장하기 위해 설계된 강력한 연구용 프레임워크입니다.
-**PyTorch**를 기반으로 하며, 최신 추천 모델(Deep Learning, GNN, VAE 등)과 다양한 손실 함수를 모듈화하여 제공합니다.
-
----
-
-## 🌟 주요 기능 (Key Features)
-
-- **SOTA 모델 라인업**: MF부터 LightGCN, Multi-VAE, 그리고 최신 **CSAR (Co-Support Attention RecSys)** 모델군까지 다양한 베이스라인 제공.
-- **모듈화된 아키텍처**: 데이터 로더, 모델, 손실 함수, 학습 루프가 느슨하게 결합되어 있어 확장이 용이함.
-- **강력한 설정 시스템**: YAML 파일을 통해 모델 구조, 학습 전략, 평가 지표 등을 코드 수정 없이 변경 가능.
-- **자동화된 실험 파이프라인**:
-  - `grid_search.py`: 하이퍼파라미터 튜닝 자동화.
-  - `run_all_experiments.py`: 여러 모델 동시 실험 및 결과 요약(CSV).
-- **다양한 평가 지표**: NDCG, HitRate 뿐만 아니라 GiniIndex, Coverage, Entropy 등 다양성 지표 지원.
+PyTorch 기반의 **연구용 추천시스템 프레임워크**입니다. 50개 이상의 모델을 ~10K LOC로 관리하며, 빠른 프로토타이핑과 공정한 벤치마크를 목표로 합니다.
 
 ---
 
-## 🆚 RecBole 대비 강점 (Why This Framework?)
+## 🌟 주요 기능
 
-이 프레임워크는 대규모 라이브러리인 **RecBole**의 무거운 추상화를 걷어내고, **연구(Research)와 디버깅**에 최적화되었습니다.
+- **50+ 모델**: MF, LightGCN, Multi-VAE, EASE, UltraGCN, GF-CF, LIRA 시리즈 등
+- **통합 파이프라인**: `Trainer.run()` 하나로 fit → train → evaluate 자동 분기
+- **3가지 평가 프로토콜**: Full ranking, Uni99, Sampled validation
+- **15+ 평가 메트릭**: NDCG, HitRate, Recall, Precision, Coverage, ILD, Novelty, GiniIndex, PopRatio, LongTail 시리즈
+- **Bayesian HPO**: Optuna 기반, 멀티시드 평균, 자동 체크포인트 관리
+- **AMP 자동 적용**: CUDA/MPS Mixed Precision 가속
 
-| Feature                 | This Framework                                                                                                                                                    | RecBole                                                                                    |
-| :---------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------- |
-| **🔍 Deep Inspection**  | **Native Parameter Tracking** 지원. `calc_loss`에서 딕셔너리만 반환하면 TensorBoard 및 **PNG 그래프**가 자동 생성됨. (Gradient, Weight Scale 등 실시간 확인 가능) | 로깅이 제한적이며, 내부 파라미터를 추적하려면 코드를 깊게 뜯어고쳐야 함.                   |
-| **🎨 Visualization**    | 실험 종료 시 **Loss 곡선, Metric 변화, 파라미터 분포** 그래프를 `trained_model` 폴더에 즉시 생성. 별도 도구 불필요.                                               | TensorBoard 의존적이며, 결과 리포팅을 위해선 별도의 시각화 스크립트 작성 필요.             |
-| **🧩 Loss Flexibility** | `calc_loss`가 **Tuple**을 반환하여, Main Loss와 Regularization Term을 분리해서 추적 가능. 복합적인 Loss 설계가 매우 직관적.                                       | 단일 scalar loss 반환이 강제되어, 여러 Loss가 합쳐진 경우 각각의 기여도를 확인하기 어려움. |
-| **⚡ Lightweight**      | `torch`, `numpy` 외 의존성 최소화. 커스텀 모델 추가 시 `BaseModel` 상속 후 4개 메소드만 구현하면 끝.                                                              | 방대한 추상 클래스와 복잡한 상속 구조로 인해 커스텀 모델 구현의 진입 장벽이 높음.          |
+---
+
+## 🆚 RecBole 대비 강점
+
+| Feature             | This Framework                                             | RecBole                         |
+| :------------------ | :--------------------------------------------------------- | :------------------------------ |
+| **새 모델 추가**    | 파일 1개 + 등록 1줄 (5분)                                  | Config/Data 연동 복잡 (15분+)   |
+| **Deep Inspection** | `calc_loss` 튜플로 Loss 항목별 자동 추적 + PNG 그래프 생성 | 단일 scalar, 커스텀 로깅 어려움 |
+| **Loss 유연성**     | 튜플 반환 → Main/Reg 분리 추적 가능                        | 단일 loss 강제                  |
+| **코드 규모**       | ~10K LOC (이해 가능)                                       | ~100K LOC                       |
+| **커스터마이징**    | Python 그대로, 숨겨진 로직 없음                            | 방대한 추상 클래스 상속 구조    |
 
 > **"연구자는 프레임워크와 싸우지 말고, 모델링에 집중해야 합니다."**
-> 복잡한 Config 상속이나 숨겨진 로직 없이, 파이썬 코드 그대로의 직관성을 유지합니다.
 
 ---
 
-## 🧩 모델 라인업 (Model Zoo)
+## 🧩 모델 라인업
 
-이 프레임워크는 `src/models/` 하위에 카테고리별로 모델을 관리합니다. 상세 내용은 링크된 문서를 참고하세요.
+### General Baselines
 
-### 1. [CSAR Series (Co-Support Learning)](csar_models_summary.md)
+| 카테고리                 | 모델                                                                                       |
+| :----------------------- | :----------------------------------------------------------------------------------------- |
+| **Matrix Factorization** | MF, NeuMF, SoftplusMF, iALS, ProtoMF                                                       |
+| **Graph**                | LightGCN, UltraGCN, SimGCL, GF-CF                                                          |
+| **AutoEncoder**          | Multi-VAE, EASE, NormEASE, RLAE, SLIM, ELSA, SANSA, SVD-AE, SVD-EASE, NC-EASE, Infinity-AE |
+| **Others**               | ItemKNN, PureSVD, MostPopular, MACR, MMR, NaiveBayes, CoOccurrence                         |
 
-_전통적인 내적(Dot Product)을 넘어, **공통 관심사(Co-Support)의 총량**으로 선호도를 설명하는 모델._
+### CSAR Series (Co-Support Learning)
 
-- **CSAR**: 기본 Co-Support Attention 모델.
-- **CSAR_R**: Residual Connection을 추가하여 기본 취향(MF)과 상세 관심사(CSAR)를 결합.
-- **CSAR_Sampled**: Sampled Softmax Loss를 사용하여 대규모 아이템 공간을 효율적으로 학습.
-- **CSAR_BPR**: Pairwise Ranking Loss로 최적화된 버전.
+CSAR, CSAR_Basic, CSAR_Minimal, CSAR_BPR, CSAR_Pure, MinimalCSAR, ClosedCSAR
 
-### 2. [General Baselines](general_models_summary.md)
+### LIRA Series (Linear Recurrence Attention)
 
-_학계와 산업계에서 널리 쓰이는 표준 모델들._
-
-- **Graph**: LightGCN
-- **AutoEncoder**: Multi-VAE, EASE (Closed-form, High Performance)
-- **Matrix Factorization**: MF, NeuMF, SoftplusMF
-- **Prototype/Anchor**: ProtoMF, ACF
-- **Traditional**: ItemKNN, MostPopular
+LIRA, LightLIRA, PowerLIRA, LightPowerLIRA, SpectralPowerLIRA, TaylorLIRA, CGLIRA, ChebyshevLIRA, SpectralTikhonovLIRA
 
 ---
 
-## � 실험 설정 (Configuration)
+## ⚙️ 설정 시스템
 
-모든 실험은 `configs/` 디렉토리의 YAML 파일로 제어됩니다.
+모든 실험은 YAML 파일로 제어됩니다. 3단계 병합: `evaluation.yaml`(기본) → dataset(데이터셋 특화) → model(최종).
 
-- **`configs/dataset/`**: 데이터셋 경로 및 포맷 설정 (e.g., `ml100k.yaml`)
-- **`configs/model/`**: 모델별 하이퍼파라미터 설정
-  - `csar/`: CSAR 계열 모델 설정 (e.g., `csar.yaml`, `csar_r_bpr.yaml`)
-  - `general/`: 일반 베이스라인 설정 (e.g., `lightgcn.yaml`, `ease.yaml`)
+```
+configs/
+├── evaluation.yaml           # 평가 마스터 설정 (메트릭, 프로토콜)
+├── dataset/                  # 데이터셋별 설정
+│   ├── ml100k.yaml
+│   ├── ml1m.yaml
+│   └── ...
+├── model/                    # 모델별 하이퍼파라미터
+│   ├── general/              # 베이스라인 모델
+│   └── csar/                 # CSAR/LIRA 모델
+└── paper_baselines_search.yaml  # HPO 설정
+```
 
-### 예시: CSAR 모델 설정 (`configs/model/csar/csar.yaml`)
+### 예시: 모델 설정
 
 ```yaml
 model:
-  name: "CSAR"
+  name: "ease"
+  reg_weight: 500.0
+
+# train 블록이 없으면 비학습 모델 → fit() 후 바로 평가
+```
+
+```yaml
+model:
+  name: "lightgcn"
   embedding_dim: 64
-  num_interests: 4 # 관심사 개수
-  orth_loss_weight: 0.1
+  n_layers: 3
 
 train:
   batch_size: 1024
-  loss_type: "pairwise" # or "pointwise"
+  epochs: 100
   lr: 0.001
+  loss_type: "pairwise"
+  embedding_l2: 1.0e-5
 ```
 
 ---
 
-## 🛠 유틸리티 및 분석 도구 (Utility & Analysis)
+## 🚀 시작하기
 
-### 1. 데이터셋 유틸리티 (`util/`)
-
-- **`analyze_dataset.py`**: 데이터셋의 밀도, 희소성, 롱테일 분포(Gini, Entropy) 분석 리포트 생성.
-- **`create_subset.py`**: 대용량 데이터셋에서 가볍게 실험할 수 있는 서브셋 생성.
-- **`detect_delimiter.py`**: CSV/TSV 파일 구분자 자동 감지.
-
-### 2. 실험 결과 분석 (`analysis/`)
-
-실험 결과를 심층 분석하기 위한 스크립트가 기능별로 분류되어 있습니다.
-
-- **`analysis/common/` (공통 분석)**
-  - `plot_losses.py`: 학습 Loss 변화 곡선 시각화.
-  - `visualize_embeddings.py`: 기본 t-SNE 임베딩 시각화.
-  - `long_tail_model_analysis.py`: 모델별 Long-tail 아이템 추천 성능 비교.
-- **`analysis/csar/` (CSAR 전용 분석)**
-  - `visualize_CSAR_embedding.py`: Interest Key와 아이템 임베딩의 관계를 시각화.
-  - `analyze_interests.py`: 학습된 관심사 벡터(Topic)의 의미 분석.
-
----
-
-## 👩‍💻 개발자 가이드 (Advanced & Customization)
-
-새로운 모델을 추가하거나, 프레임워크의 내부 구조(`calc_loss` 튜플 반환 규약 등)를 이해하고 싶다면 아래 가이드를 참고하세요.
-
-- **[개발자 가이드 (Architecture & Extension)](DEVELOPER_GUIDE.md)**: `BaseModel` 인터페이스, `Trainer` 동작 원리, 모델 추가 방법 상세.
-
----
-
-## �🚀 시작하기 (Quick Start)
-
-### 1. 환경 설정 (Installation)
+### 환경 설정
 
 ```bash
-# 가상환경 생성 및 활성화
 uv venv --python 3.12.0
 source .venv/bin/activate
-
-# 필수 패키지 설치
-uv pip install -r requirements.txt
+uv pip install -r docs/requirements.txt
 ```
 
-### 2. 실험 실행 (Usage)
-
-#### 단일 모델 학습
+### 단일 모델 실행
 
 ```bash
-# EASE 모델, ML-100K 데이터셋 실행
-uv run python main.py --dataset_config configs/dataset/ml100k.yaml --model_config configs/model/general/ease.yaml
+cd scripts/
+uv run python main.py \
+  --dataset_config ../configs/dataset/ml100k.yaml \
+  --model_config ../configs/model/general/ease.yaml
 ```
 
-#### 그리드 서치 (Hyperparameter Tuning)
-
-설정 파일의 파라미터를 리스트(e.g., `[0.001, 0.01]`)로 변경 후 실행하면 자동으로 모든 조합을 탐색합니다.
+### Bayesian HPO
 
 ```bash
-uv run python grid_search.py --dataset_config configs/dataset/ml100k.yaml --model_config configs/model/csar/csar_r.yaml
+cd scripts/
+uv run python bayesian_opt.py \
+  --dataset_config ../configs/dataset/ml100k.yaml \
+  --model_config ../configs/model/general/lightgcn.yaml
 ```
 
-#### 전체 벤치마크 실행
-
-`run_all_experiments.py`에 등록된 모든 모델을 순차적으로 실행하고 결과를 CSV로 리포팅합니다.
+### 전체 벤치마크
 
 ```bash
-uv run python run_all_experiments.py --dataset_config configs/dataset/ml100k.yaml
+cd scripts/
+uv run python run_all_smart_searches.py \
+  --config ../configs/paper_baselines_search.yaml \
+  --output_dir ../output/paper_baselines
 ```
 
 ---
 
-## 📊 디렉토리 구조 (Structure)
+## 📊 디렉토리 구조
 
 ```
 .
-├── configs/              # 설정 파일
-│   ├── dataset/
-│   └── model/
-│       ├── csar/         # CSAR 모델 설정
-│       └── general/      # 베이스라인 모델 설정
-├── data/                 # 데이터셋 저장소
-├── src/                  # 소스 코드
-│   ├── models/
-│   │   ├── csar/         # CSAR 모델 구현
-│   │   └── general/      # 베이스라인 구현
-│   ├── losses.py         # 다양한 추천용 Loss Function 구현
-│   ├── data_loader.py    # 데이터 전처리 및 로딩
-│   └── trainer.py        # 학습 루프
-├── trained_model/        # 실험 결과 (모델, 로그, 메트릭)
-└── run_all_experiments.py
+├── configs/                  # YAML 설정 파일
+├── data/                     # 데이터셋 저장소
+├── scripts/                  # 실행 스크립트
+│   ├── main.py               #   단일 실험 엔트리포인트
+│   ├── bayesian_opt.py       #   Bayesian HPO
+│   └── run_all_smart_searches.py  # 전체 벤치마크
+├── src/                      # 프레임워크 코어
+│   ├── data_processing.py    #   순수 함수: 로드, 필터, 리매핑, 분할
+│   ├── data_loader.py        #   오케스트레이터 + 캐시 + 로더 팩토리
+│   ├── trainer.py            #   run() → fit/train/evaluate 통합
+│   ├── evaluation.py         #   15+ 메트릭 계산
+│   ├── loss.py               #   BPR, MSE, SampledSoftmax, DynamicMarginBPR
+│   └── models/
+│       ├── base_model.py     #   BaseModel 추상 클래스
+│       ├── general/          #   일반 베이스라인
+│       └── csar/             #   CSAR/LIRA 연구 모델
+├── analysis/                 # 실험 결과 분석 스크립트
+├── trained_model/            # 실험 결과 (모델, 메트릭, 그래프)
+├── docs/                     # 상세 문서
+│   ├── CONFIG.md
+│   └── EVALUATION_PROTOCOL.md
+└── tests/                    # 유닛 테스트
 ```
+
+---
+
+## 📚 문서
+
+모든 문서는 `docs/` 디렉토리에 있습니다.
+
+- **[개발자 가이드](docs/DEVELOPER_GUIDE.md)**: BaseModel 인터페이스, Trainer 동작 원리, 모델 추가 방법
+- **[설정 가이드](docs/CONFIG.md)**: YAML 설정 시스템 상세
+- **[평가 프로토콜](docs/EVALUATION_PROTOCOL.md)**: Full/Uni99/Sampled 평가 방식 설명
+- **[Loss 함수 정리](docs/loss_functions_summary.md)**: BPR, InfoNCE, MSE, DynamicMarginBPR 수식 및 용도
+- **[General 모델 요약](docs/general_models_summary.md)**: 일반 베이스라인 모델 상세
+- **[CSAR 모델 요약](docs/csar_models_summary.md)**: CSAR/LIRA 연구 모델 상세

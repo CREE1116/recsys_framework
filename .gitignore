@@ -1,6 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Framework outputs
 trained_model/
 data_cache/
-.venv/
-__pycache__/
-.DS_Store
+output/
+analysis_results/
+
+# Data (raw datasets - not tracked)
 data/
+
+# Dataset configs (contain local paths)
+configs/dataset/
+
+# Logs & temp
+*.log
+/tmp/
+
+# Gemini
+.gemini/

@@ -1,0 +1,5 @@
+dataset_name: "ml-100k"
+model:
+  name: "ease"
+  reg_lambda: 100.0
+seed: [42, 43, 44]

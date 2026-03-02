@@ -29,19 +29,30 @@ class BaseModel(nn.Module, ABC):
         else:
             self.device = torch.device(device_str)
 
+        # 공통 출력 경로 설정
+        import os
+        model_name = config['model']['name']
+        dataset_name = config.get('dataset_name', 'default')
+        run_name = config.get('run_name')
+        
+        base_path = os.path.join('trained_model', dataset_name)
+        if 'output_path_override' in config:
+            self.output_path = config['output_path_override']
+        elif run_name and run_name != 'default':
+            self.output_path = os.path.join(base_path, f"{model_name}__{run_name}")
+        else:
+            self.output_path = os.path.join(base_path, model_name)
+
         # [Strict Split] 임베딩 전용 L2 규제 (embedding_l2 키워드만 사용)
         train_config = self.config.get('train', {})
         self.l2_reg_weight = float(train_config.get('embedding_l2', 0.0))
-        
-        # 만약 리스트라면 첫 번째 값 사용
-        if isinstance(self.l2_reg_weight, list):
-            self.l2_reg_weight = self.l2_reg_weight[0]
-        self.l2_reg_weight = float(self.l2_reg_weight)
 
     def get_l2_reg_loss(self, *tensors):
         """
         주어진 텐서들에 대해 배치 단위 L2 규제 손실을 계산합니다.
-        ||x||^2_2 / (2 * batch_size)
+        각 모델의 calc_loss에서 직접 호출하여 사용합니다.
+        
+        Formula: l2_reg_weight * Σ||x||^2_2 / (2 * batch_size)
         """
         if self.l2_reg_weight <= 0:
             return torch.tensor(0.0, device=self.device)
@@ -51,7 +62,6 @@ class BaseModel(nn.Module, ABC):
             if tensor is not None:
                 l2_loss += torch.sum(tensor ** 2)
         
-        # 첫 번째 텐서의 size(0)을 배치 사이즈로 사용
         batch_size = tensors[0].size(0) if len(tensors) > 0 else 1
         return self.l2_reg_weight * l2_loss / (2 * batch_size)
 

@@ -1,0 +1,6 @@
+model:
+  name: taylor_lira
+  reg_lambda: 500.0
+  power: 1.0
+  threshold: 1e-6
+  K: 2 # 1=No Neumann (just power EASE), 2=add 1-hop, 3+=higher order

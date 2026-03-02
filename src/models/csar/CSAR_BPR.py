@@ -130,9 +130,21 @@ class CSAR_BPR(BaseModel):
 
         # Orthogonal Loss
         orth_loss = self.attention_layer.get_orth_loss(loss_type=self.orth_loss_type)
-        params_to_log = {'scale': self.attention_layer.scale.item()}
 
-        return (loss, self.lamda * orth_loss), params_to_log
+        # [추가] L2 규제
+        u_emb = self.user_embedding(users)
+        p_emb = self.item_embedding(pos_items)
+        n_emb = self.item_embedding(neg_items)
+        l2_loss = self.get_l2_reg_loss(u_emb, p_emb, n_emb)
+
+        params_to_log = {
+            'scale': self.attention_layer.scale.item(),
+            'loss_main': loss.item(),
+            'loss_orth': orth_loss.item(),
+            'loss_l2': l2_loss.item()
+        }
+
+        return (loss, self.lamda * orth_loss, l2_loss), params_to_log
     
     def get_final_item_embeddings(self):
         """CSAR_BPR의 최종 아이템 임베딩 (Topic-space)을 반환합니다."""

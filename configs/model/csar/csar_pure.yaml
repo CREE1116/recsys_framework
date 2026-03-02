@@ -1,0 +1,20 @@
+model:
+  name: csar_pure
+  embedding_dim: 64
+  num_interests: 128
+  align_weight: 1.0
+  ema_momentum: 0.9
+
+train:
+  embedding_l2: 0.0001
+  weight_decay: 0.0
+  epochs: 500
+  batch_size: 1024
+  lr: 0.001
+  optimizer: adam
+  loss_type: pairwise
+  num_negatives: 100
+  negative_sampling_strategy: uniform
+  negative_sampling_alpha: 0.75
+  early_stop_patience: 40
+device: auto

@@ -1,14 +1,25 @@
-# Yelp2018 Dataset Config (Simplified CSV)
+# Yelp2018 Dataset Config (Optimized Subset for EASE)
 dataset_name: "yelp2018"
-data_path: "/Users/leejongmin/code/recsys_framework/data/yelp2018/ratings.csv"
-separator: ","
+data_path: "/Users/leejongmin/code/recsys_framework/data/yelp2018/yelp2018_subset.txt"
+separator: "\t"
 has_header: True
-columns: ["user_id", "item_id", "rating", "timestamp"]
+# user_id item_id rating timestamp useful funny cool review_id
+columns:
+  [
+    "user_id",
+    "item_id",
+    "rating",
+    "timestamp",
+    "useful",
+    "funny",
+    "cool",
+    "review_id",
+  ]
 
-rating_threshold: 4 # 이 값 이상의 평점만 상호작용으로 간주 (임시 비활성화)
-min_user_interactions: 5
-min_item_interactions: 5
-split_method: "temporal_ratio" # Leave-One-Out
-train_ratio: 0.8 # 학습 데이터 비율 (LOO에서는 미사용)
-valid_ratio: 0.1 # 검증 데이터 비율 (LOO에서는 미사용)
-data_cache_path: "./data_cache/" # 데이터셋 전처리 결과를 캐싱할 경로
+rating_threshold: null
+min_user_interactions: 0 # Already filtered in subset script
+min_item_interactions: 0
+split_method: "temporal_ratio"
+train_ratio: 0.8
+valid_ratio: 0.1
+data_cache_path: "./data_cache/"

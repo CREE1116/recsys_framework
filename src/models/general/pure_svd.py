@@ -2,19 +2,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 import scipy.sparse as sp
-from scipy.sparse.linalg import svds
 
 from ..base_model import BaseModel
+from ...utils.gpu_accel import SVDCacheManager
 
 class PureSVD(BaseModel):
     """
     PureSVD: Singular Value Decomposition for Collaborative Filtering.
     A true 'One-Shot' Matrix Factorization model using analytic decomposition (SVD).
-    
-    Prediction score for user u, item i:
-    Score = U_u \cdot \Sigma \cdot V_i^T
-    
-    This is effectively computing the reconstructed matrix R_hat = U * Sigma * Vt.
+    Uses SVDCacheManager for caching and MPS acceleration.
     """
     def __init__(self, config, data_loader):
         super(PureSVD, self).__init__(config, data_loader)
@@ -23,18 +19,17 @@ class PureSVD(BaseModel):
         self.n_users = self.data_loader.n_users
         self.n_items = self.data_loader.n_items
         
-        self.user_factors = None # U
-        self.item_factors = None # Vt (transposed in typical storage, but svds returns Vt usually)
-        self.sigma = None        # Sigma (diagonal)
+        self.svd_manager = SVDCacheManager(device=self.device.type)
+        
+        self.user_factors = None
+        self.item_factors = None
+        self.sigma = None
         
         print(f"PureSVD model initialized with embedding_dim={self.embedding_dim}.")
 
     def fit(self, data_loader):
-        """
-        Perform SVD on the user-item interaction matrix.
-        """
+        """Perform SVD on the user-item interaction matrix via SVDCacheManager."""
         print("Building interaction matrix for PureSVD...")
-        # Construct CSR matrix (Users x Items)
         rows = data_loader.train_df['user_id'].values
         cols = data_loader.train_df['item_id'].values
         data = np.ones(len(rows))
@@ -46,41 +41,26 @@ class PureSVD(BaseModel):
         )
         
         # Check rank limits
-        # svds requires k < min(A.shape) strictly.
         min_dim = min(user_item_matrix.shape)
         if self.embedding_dim >= min_dim:
             print(f"[PureSVD] Warning: embedding_dim={self.embedding_dim} >= min_dim={min_dim}. Capping to {min_dim - 1}.")
             self.embedding_dim = min_dim - 1
-            
-        print(f"Performing SVD (scipy.sparse.linalg.svds) with k={self.embedding_dim}...")
 
-        # svds returns: u, s, vt
-        # u: (n_users, k)
-        # s: (k,)
-        # vt: (k, n_items)
-        try:
-             u, s, vt = svds(user_item_matrix, k=self.embedding_dim)
-        except Exception as e:
-             print(f"[PureSVD] SVD failed: {e}")
-             raise e
+        # SVDCacheManager: 캐싱 + MPS 가속 자동 지원
+        dataset_name = self.config.get('dataset_name', 'unknown')
+        u, s, v, energy = self.svd_manager.get_svd(
+            user_item_matrix, k=self.embedding_dim, dataset_name=dataset_name
+        )
         
-        # Sort singular values in descending order (svds returns ascending usually)
-        # But for reconstruction, order doesn't matter as long as indices match.
-        # We'll just store them.
+        self.user_factors = u.to(self.device).float()    # (n_users, k)
+        self.sigma = s.to(self.device).float()            # (k,)
+        self.item_factors = v.to(self.device).float()     # (n_items, k)
         
-        self.user_factors = torch.FloatTensor(u.copy()).to(self.device)
-        self.sigma = torch.FloatTensor(np.diag(s).copy()).to(self.device)
-        self.item_factors = torch.FloatTensor(vt.T.copy()).to(self.device) # Store as (n_items, k) for easier lookup
+        # Pre-compute U * Sigma for efficiency
+        self.user_factors_scaled = self.user_factors * self.sigma.unsqueeze(0)
         
-        # Pre-compute U * Sigma for efficiency?
-        # Score = (U * Sigma) @ Vt
-        # Let's verify dimensions:
-        # (n_users, k) * (k, k) -> (n_users, k)
-        # (n_users, k) @ (n_items, k).T -> (n_users, n_items)
-        
-        self.user_factors_scaled = torch.matmul(self.user_factors, self.sigma)
-        
-        print("PureSVD model fitted successfully.")
+        print(f"PureSVD fitted. Energy captured: {energy:.4f}")
+
 
     def forward(self, users):
         """

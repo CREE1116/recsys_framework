@@ -141,7 +141,19 @@ class NeuMF(BaseModel):
         neg_scores = self.predict_for_pairs(users, neg_items)
         
         loss = self.loss_fn(pos_scores, neg_scores)
-        return (loss,), None
+        
+        # [추가] L2 규제 (모든 임베딩 경로 합산)
+        u_gmf = self.user_embedding_gmf(users)
+        i_gmf_p = self.item_embedding_gmf(pos_items)
+        i_gmf_n = self.item_embedding_gmf(neg_items)
+        
+        u_mlp = self.user_embedding_mlp(users)
+        i_mlp_p = self.item_embedding_mlp(pos_items)
+        i_mlp_n = self.item_embedding_mlp(neg_items)
+        
+        l2_loss = self.get_l2_reg_loss(u_gmf, i_gmf_p, i_gmf_n, u_mlp, i_mlp_p, i_mlp_n)
+
+        return (loss, l2_loss), {'loss_main': loss.item(), 'loss_l2': l2_loss.item()}
 
     def __str__(self):
         return f"NeuMF(gmf_dim={self.embedding_dim_gmf}, mlp_dim={self.embedding_dim_mlp}, layers={self.mlp_layers})"

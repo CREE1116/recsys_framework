@@ -108,12 +108,13 @@ class CSAR_basic(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        nn.init.xavier_uniform_(self.interest_keys)
+        nn.init.orthogonal_(self.interest_keys)
 
     def get_membership(self, embs):
         """softplus membership → NMF 성질 (non-negative, part-based decomposition)"""
         logits = torch.einsum('...d,kd->...k', embs, self.interest_keys) * self.scale
-        return F.softplus(logits)
+        membership = F.softplus(logits)
+        return membership
 
     @property
     def orthogonality(self):
@@ -130,34 +131,115 @@ class CSAR_basic(nn.Module):
     def forward(self, embedding_tensor):
         return self.get_membership(embedding_tensor)
 
-    def get_gram_matrix(self, reg_lambda=None,
-                        use_ridge=False, M_u=None, M_i=None, X=None):
+    def get_propagation_matrix(self):
+        """
+        Returns the learned inter-interest similarity matrix PP^T with 
+        Symmetric Normalization and L2 Normalization.
+        """
+        # 1. Raw similarity PP = K @ K.T
+        PP = torch.matmul(self.interest_keys, self.interest_keys.t())
+        
+        # 2. Symmetric Normalization: D^-0.5 * PP * D^-0.5
+        # Row sum as degree
+        row_sum = torch.abs(PP).sum(dim=1)
+        d_inv_sqrt = torch.pow(row_sum + 1e-6, -0.5)
+        PP_norm = d_inv_sqrt.unsqueeze(1) * PP * d_inv_sqrt.unsqueeze(0)
+        
+        # 3. Row-wise L2 Normalization for constant energy scale
+        return F.normalize(PP_norm, p=2, dim=-1)
+
+    def get_alignment_loss(self, G_target):
+        """
+        Aligns interest similarities (K @ K.T) with the data-driven propagation matrix G.
+        Objective: minimize MSE( Norm(Center(KK^T)), Norm(Center(G_target)) )
+        """
+        G_target = G_target.detach() # Explicitly detach teacher
+        
+        # 1. Prediction: PP^T = K @ K.T
+        PP_t = torch.matmul(self.interest_keys, self.interest_keys.t())
+        
+        # 2. Centering (Subtract scalar mean)
+        PP_c = PP_t - PP_t.mean()
+        G_c = G_target - G_target.mean()
+        
+        # 3. L2 Normalization (Unit Frobenius Norm)
+        # We flatten to use F.normalize correctly across all elements
+        A = F.normalize(PP_c.reshape(-1), p=2, dim=0).reshape(PP_t.shape)
+        G_hat = F.normalize(G_c.reshape(-1), p=2, dim=0).reshape(G_target.shape)
+        
+        # 4. MSE Loss (A - G_hat)^2
+        return F.mse_loss(A, G_hat)
+
+    def get_gram_matrix(self, reg_lambda=None, mode='item_only',
+                        M_u=None, M_i=None, X=None):
         """
         Inter-interest propagation matrix.
 
-        [Mode 1] use_ridge=False (default):
+        [Mode 1] mode='none' (default):
             G = D^{-1/2} (K @ K.T) D^{-1/2}  (symmetric degree normalization)
 
-        [Mode 2] use_ridge=True (OLS closed-form):
-            G* = (M_u.T M_u)^{-1} M_u.T X M_i (M_i.T M_i + λI)^{-1}
-        """
-        if use_ridge:
-            assert M_u is not None and M_i is not None and X is not None, \
-                "use_ridge=True requires M_u, M_i, X"
+        [Mode 2] mode='item_only' (Legacy Item Ridge):
+            Original Item-only Ridge based on proxy-user matching.
 
-            lam = reg_lambda if reg_lambda is not None else self.reg_lambda
+        [Mode 3] mode='unified' (Scalable Unified Ridge v5.0):
+            Unified BIDIRECTIONAL Ridge-LS in interest space.
+            Solve G s.t. [X Mi; X.T Mu] \approx [Mu; Mi] @ G
+        """
+        lam = reg_lambda if reg_lambda is not None else self.reg_lambda
+        
+        if mode == 'unified':
+            assert M_u is not None and M_i is not None and X is not None
+            # Move to CPU for sparse MM stability (MPS issues)
+            M_u = M_u.cpu()
+            M_i = M_i.cpu()
+            # X is expected to be a sparse tensor on CPU
+            
+            # 1. Compute Propagated Memberships (Bi-directional)
+            P_u = torch.sparse.mm(X, M_i)       # (N, K)
+            P_i = torch.sparse.mm(X.t(), M_u)   # (M, K)
+            
+            # 2. Decomposed Gramian & Centering
+            N, M = M_u.size(0), M_i.size(0)
+            Total = N + M
+            
+            # Joint Means
+            mu_m = (M_u.sum(dim=0) + M_i.sum(dim=0)) / Total
+            mu_p = (P_u.sum(dim=0) + P_i.sum(dim=0)) / Total
+            
+            # Centered Gramian: (M^T M) - Total * mu_m * mu_m^T
+            MtM = (M_u.t() @ M_u) + (M_i.t() @ M_i)
+            MtM_centered = MtM - Total * torch.outer(mu_m, mu_m)
+            
+            # Centered Projection: (M^T P) - Total * mu_m * mu_p^T
+            MtP = (M_u.t() @ P_u) + (M_i.t() @ P_i)
+            MtP_centered = MtP - Total * torch.outer(mu_m, mu_p)
+            
+            # 3. Simple Covariance (Correlation) instead of Ridge LS
+            new_G = MtP_centered
+            
+            # Row-wise L2 Normalization (stabilize energy)
+            new_G = F.normalize(new_G, p=2, dim=-1)
+            
+            return new_G, None
+
+        if mode == 'item_only':
+            assert M_i is not None and X is not None, \
+                "mode='item_only' requires Mi, X"
 
             if X.is_sparse:
-                X = X.to_dense()
+                X = X.to_dense().to(M_i.device)
 
-            MuT_Mu = M_u.t() @ M_u
+            # Item-only Ridge: Project X through Item Membership to get Proxy User Membership
+            proxy_Mu = torch.matmul(X, M_i) # [N, K]
+
+            MuT_Mu = proxy_Mu.t() @ proxy_Mu
             MiT_Mi = M_i.t() @ M_i
 
-            lhs = torch.linalg.solve(MuT_Mu, M_u.t() @ X @ M_i)
-            rhs = torch.linalg.solve(
-                MiT_Mi + lam * torch.eye(self.num_interests, device=M_i.device),
-                lhs.t()
-            ).t()
+            # 3. Simple Covariance (Correlation) instead of OLS
+            rhs = proxy_Mu.t() @ X @ M_i
+
+            # Row-wise L2 Normalization
+            rhs = F.normalize(rhs, p=2, dim=-1)
 
             return rhs, None
 

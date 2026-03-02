@@ -1,0 +1,14 @@
+datasets:
+  - "configs/dataset/ml100k.yaml"
+
+searches:
+  - name: "EASE_Test_Cleanup"
+    method: "bayesian"
+    model_config: "configs/model/general/ease.yaml"
+    params:
+      - name: "model.reg_lambda"
+        type: "float"
+        range: "100.0 500.0"
+    n_trials: 2
+    patience: 2
+    metric: "val_NDCG@10"

@@ -62,53 +62,61 @@ class SANSA(BaseModel):
         self.train_matrix_csr = X_csr
         
         # 2. Compute Gram Matrix A = X^T X + lambda I
-        # Dense computation for now (assuming M < 20k is fine)
         print("[SANSA] Computing Gram Matrix...")
-        G = X_csr.T.dot(X_csr).toarray()
+        G = (X_csr.T @ X_csr).toarray().astype(np.float32)
         diag_indices = np.arange(self.n_items)
         G[diag_indices, diag_indices] += self.reg_lambda
         
-        A_tensor = torch.from_numpy(G).float().to(self.device)
-        
-        # 3. Cholesky Decomposition A = L L^T
+        # 3. Cholesky → L^-1 for sparsification
         print("[SANSA] Cholesky Decomposition...")
+        from src.utils.gpu_accel import get_device
+        device = get_device()
+        
         try:
-             L = torch.linalg.cholesky(A_tensor)
+            # GPU-accelerated Cholesky
+            import torch
+            G_t = torch.from_numpy(G).float().to(device)
+            L_t = torch.linalg.cholesky(G_t)
+            del G_t, G
+            
+            # Solve L @ L_inv = I on GPU
+            print("[SANSA] Inverting Cholesky Factor...")
+            I_t = torch.eye(self.n_items, device=device, dtype=torch.float32)
+            L_inv_t = torch.linalg.solve_triangular(L_t, I_t, upper=False)
+            del L_t, I_t
+            L_inv_np = L_inv_t.cpu().numpy()
+            del L_inv_t
         except (RuntimeError, NotImplementedError):
-             print("[SANSA] MPS Cholesky failed, fallback to CPU...")
-             L = torch.linalg.cholesky(A_tensor.cpu()).to(self.device)
-             
-        # 4. Invert Factor L -> L_inv
-        print("[SANSA] Inverting Cholesky Factor...")
-        # L is lower triangular. Solve L x = I
-        I = torch.eye(self.n_items, device=self.device)
-        try:
-             L_inv = torch.linalg.solve_triangular(L, I, upper=False)
-        except (RuntimeError, NotImplementedError):
-             print("[SANSA] MPS solve_triangular failed, fallback to CPU...")
-             L_inv = torch.linalg.solve_triangular(L.cpu(), I.cpu(), upper=False).to(self.device)
-             
-        # 5. Sparsify L_inv -> K
-        print(f"[SANSA] Sparsifying (density={self.density})...")
-        L_inv_np = L_inv.cpu().numpy()
+            print("[SANSA] GPU failed, CPU fallback...")
+            from scipy.linalg import cho_factor, solve_triangular as sp_solve_tri
+            cho, low = cho_factor(G)
+            del G
+            L = np.linalg.cholesky(cho if not low else cho.T)
+            del cho
+            L_inv_np = sp_solve_tri(L, np.eye(self.n_items, dtype=np.float32), lower=True)
+            del L
         
         # Global thresholding or Row-wise top-k?
         # Paper implies we want K to be sparse.
         # Let's use global density for simplicity or top-k per row if specified.
         
         K_sparse = np.zeros_like(L_inv_np)
-        
+
         if self.target_k > 0:
-             # Top-k per row
-             for i in range(self.n_items):
-                 row = np.abs(L_inv_np[i])
-                 idx = np.argpartition(row, -self.target_k)[-self.target_k:]
-                 K_sparse[i, idx] = L_inv_np[i, idx]
+            # Vectorized top-k per row (numpy argpartition across full matrix)
+            # L_inv_np: (M, M)
+            abs_L = np.abs(L_inv_np)
+            # argpartition returns indices of k largest in row (unordered)
+            top_k_idx = np.argpartition(abs_L, -self.target_k, axis=1)[:, -self.target_k:]
+            # Construct row indices
+            row_idx = np.arange(self.n_items)[:, None] * np.ones(self.target_k, dtype=int)
+            K_sparse[row_idx, top_k_idx] = L_inv_np[row_idx, top_k_idx]
+            print(f"[SANSA] Sparsified K: top-{self.target_k} per row (vectorized)")
         else:
-             # Global threshold
-             threshold = np.percentile(np.abs(L_inv_np), 100 * (1 - self.density))
-             mask = np.abs(L_inv_np) >= threshold
-             K_sparse[mask] = L_inv_np[mask]
+            # Global threshold
+            threshold = np.percentile(np.abs(L_inv_np), 100 * (1 - self.density))
+            mask = np.abs(L_inv_np) >= threshold
+            K_sparse[mask] = L_inv_np[mask]
              
         # Convert K to sparse tensor
         K_coo = sp.coo_matrix(K_sparse)

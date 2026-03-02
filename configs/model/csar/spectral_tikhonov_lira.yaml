@@ -1,0 +1,7 @@
+model:
+  name: "spectral_tikhonov_lira"
+  alpha: 500.0 # Same as regularize, but explicit name
+  beta: 0.5 # Tikhonov exponent range (0 ~ 2)
+  target_energy: 0.9
+  visualize: true # Skip heavy visualizations for Bayesian searches
+# Adaptive Spectral Popularity-aware Intrinsic REgularization
