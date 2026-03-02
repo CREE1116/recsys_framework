@@ -19,7 +19,7 @@ PyTorch 기반의 **연구용 추천시스템 프레임워크**입니다. 빠른
 
 | Feature             | This Framework                                             | RecBole                         |
 | :------------------ | :--------------------------------------------------------- | :------------------------------ |
-| **새 모델 추가**    | 파일 1개 + 등록 1줄                                   | Config/Data 연동 복잡    |
+| **새 모델 추가**    | 파일 1개 + 등록 1줄                                        | Config/Data 연동 복잡           |
 | **Deep Inspection** | `calc_loss` 튜플로 Loss 항목별 자동 추적 + PNG 그래프 생성 | 단일 scalar, 커스텀 로깅 어려움 |
 | **Loss 유연성**     | 튜플 반환 → Main/Reg 분리 추적 가능                        | 단일 loss 강제                  |
 | **커스터마이징**    | Python 그대로, 숨겨진 로직 없음                            | 방대한 추상 클래스 상속 구조    |
@@ -38,6 +38,7 @@ PyTorch 기반의 **연구용 추천시스템 프레임워크**입니다. 빠른
 | **Graph**                | LightGCN, UltraGCN, SimGCL, GF-CF                                                          |
 | **AutoEncoder**          | Multi-VAE, EASE, NormEASE, RLAE, SLIM, ELSA, SANSA, SVD-AE, SVD-EASE, NC-EASE, Infinity-AE |
 | **Others**               | ItemKNN, PureSVD, MostPopular, MACR, MMR, NaiveBayes, CoOccurrence                         |
+
 ---
 
 ## ⚙️ 설정 시스템
@@ -162,3 +163,4 @@ uv run python run_all_smart_searches.py \
 - **[Loss 함수 정리](docs/loss_functions_summary.md)**: BPR, InfoNCE, MSE, DynamicMarginBPR 수식 및 용도
 - **[General 모델 요약](docs/general_models_summary.md)**: 일반 베이스라인 모델 상세
 - **[CSAR 모델 요약](docs/csar_models_summary.md)**: CSAR/LIRA 연구 모델 상세
+- **[MPS Workarounds](docs/MPS_WORKAROUNDS.md)**: Apple Silicon MPS 우회 처리 정리
