@@ -15,7 +15,7 @@ class NCEASE(EASE):
         print(f"[NC-EASE] Initialized with λ={self.reg_lambda}")
 
     def fit(self, data_loader):
-        print(f"Fitting NC-EASE model (λ={self.reg_lambda})...")
+        self._log(f"Fitting (λ={self.reg_lambda})...")
         
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
@@ -36,4 +36,4 @@ class NCEASE(EASE):
         self.weight_matrix.copy_(torch.from_numpy(B).float())
         del B
         
-        print("NC-EASE model fitted.")
+        self._log("Fitted.")

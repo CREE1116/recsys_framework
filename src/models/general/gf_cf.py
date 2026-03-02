@@ -41,7 +41,7 @@ class GF_CF(BaseModel):
         self.item_factors = None
         self.sigma = None
         
-        print(f"GF-CF initialized: k={self.k}, filter={self.filter_type}, alpha={self.alpha}, norm_weight={self.norm_weight}")
+        self._log(f"Initialized (k={self.k}, filter={self.filter_type}, α={self.alpha}, w={self.norm_weight})")
 
     def _normalize_matrix(self, R, weight):
         """Generalized Symmetric Normalization: D_u^-w * R * D_i^-w"""
@@ -63,7 +63,7 @@ class GF_CF(BaseModel):
 
     def fit(self, data_loader):
         """SVD on normalized interaction matrix + apply graph filter."""
-        print(f"Building and Normalizing interaction matrix (w={self.norm_weight}) for GF-CF...")
+        self._log(f"Building interaction matrix (w={self.norm_weight})...")
         rows = data_loader.train_df['user_id'].values
         cols = data_loader.train_df['item_id'].values
         data = np.ones(len(rows))
@@ -97,7 +97,7 @@ class GF_CF(BaseModel):
         # Final User Factors = U * Sigma^alpha
         self.user_factors_scaled = self.user_factors * scaled_sigma.unsqueeze(0)
         
-        print(f"GF-CF fitted. alpha={self.alpha}, user_factors: {self.user_factors_scaled.shape}, item_factors: {self.item_factors.shape}")
+        self._log(f"Fitted. user_factors: {self.user_factors_scaled.shape}, item_factors: {self.item_factors.shape}")
 
     def forward(self, users):
         """Predict scores for given users over all items."""

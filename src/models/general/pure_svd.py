@@ -25,11 +25,11 @@ class PureSVD(BaseModel):
         self.item_factors = None
         self.sigma = None
         
-        print(f"PureSVD model initialized with embedding_dim={self.embedding_dim}.")
+        self._log(f"Initialized (embedding_dim={self.embedding_dim})")
 
     def fit(self, data_loader):
         """Perform SVD on the user-item interaction matrix via SVDCacheManager."""
-        print("Building interaction matrix for PureSVD...")
+        self._log("Building interaction matrix...")
         rows = data_loader.train_df['user_id'].values
         cols = data_loader.train_df['item_id'].values
         data = np.ones(len(rows))
@@ -43,7 +43,7 @@ class PureSVD(BaseModel):
         # Check rank limits
         min_dim = min(user_item_matrix.shape)
         if self.embedding_dim >= min_dim:
-            print(f"[PureSVD] Warning: embedding_dim={self.embedding_dim} >= min_dim={min_dim}. Capping to {min_dim - 1}.")
+            self._log(f"Warning: embedding_dim={self.embedding_dim} >= min_dim={min_dim}. Capping to {min_dim - 1}.")
             self.embedding_dim = min_dim - 1
 
         # SVDCacheManager: 캐싱 + MPS 가속 자동 지원
@@ -59,7 +59,7 @@ class PureSVD(BaseModel):
         # Pre-compute U * Sigma for efficiency
         self.user_factors_scaled = self.user_factors * self.sigma.unsqueeze(0)
         
-        print(f"PureSVD fitted. Energy captured: {energy:.4f}")
+        self._log(f"Fitted. Energy captured: {energy:.4f}")
 
 
     def forward(self, users):

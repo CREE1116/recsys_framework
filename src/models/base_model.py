@@ -47,6 +47,13 @@ class BaseModel(nn.Module, ABC):
         train_config = self.config.get('train', {})
         self.l2_reg_weight = float(train_config.get('embedding_l2', 0.0))
 
+        # 모델 이름 (로깅용)
+        self._model_name = self.__class__.__name__
+
+    def _log(self, msg):
+        """통일된 로깅: [ModelName] message"""
+        print(f"[{self._model_name}] {msg}")
+
     def get_l2_reg_loss(self, *tensors):
         """
         주어진 텐서들에 대해 배치 단위 L2 규제 손실을 계산합니다.

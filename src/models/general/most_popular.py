@@ -16,7 +16,7 @@ class MostPopular(BaseModel):
         # main.py에서 fit()을 명시적으로 호출하므로, __init__에서는 데이터 로드만 준비
         self.popularity_scores = None
         
-        print("MostPopular model initialized.")
+        self._log("Initialized.")
 
     def fit(self, data_loader):
         """
@@ -26,7 +26,7 @@ class MostPopular(BaseModel):
         # data_loader는 self.data_loader와 동일한 인스턴스
         item_popularity = data_loader.item_popularity
         self.popularity_scores = torch.FloatTensor(item_popularity.values).to(self.device)
-        print("MostPopular model fitted successfully.")
+        self._log("Fitted.")
 
     def forward(self, users):
         """

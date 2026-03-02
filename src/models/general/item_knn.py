@@ -24,7 +24,7 @@ class ItemKNN(BaseModel):
         self.user_item_matrix = None
         self.item_similarity_matrix = None
         
-        print(f"ItemKNN model initialized with k={self.k}.")
+        self._log(f"Initialized (k={self.k})")
 
     def fit(self, data_loader):
         """
@@ -32,24 +32,24 @@ class ItemKNN(BaseModel):
         이 메소드는 main.py에서 학습이 필요 없는 모델에 대해 호출됩니다.
         """
         # data_loader는 self.data_loader와 동일한 인스턴스
-        print("Building interaction matrix for ItemKNN...")
+        self._log("Building interaction matrix...")
         self.user_item_matrix = sp.csr_matrix(
             (np.ones(len(data_loader.train_df)), 
              (data_loader.train_df['user_id'], data_loader.train_df['item_id'])),
             shape=(data_loader.n_users, data_loader.n_items)
         )
         
-        print(f"Calculating item-item similarity matrix using {self.similarity_metric}...")
+        self._log(f"Calculating similarity ({self.similarity_metric})...")
         if self.similarity_metric == 'jaccard':
             # Manual Jaccard Calculation using Sparse Matrix Multiplication
             X = self.user_item_matrix.T  # (Items x Users)
             X.data = np.ones_like(X.data)  # Ensure binary
             
-            print("Calculating intersection (X @ X.T)...")
+            self._log("Calculating intersection (X @ X.T)...")
             intersection = X @ X.T 
 
             item_counts = np.array(X.sum(axis=1)).flatten()
-            print("Calculating union...")
+            self._log("Calculating union...")
             count_matrix = item_counts[:, None] + item_counts[None, :]
             
             intersection_dense = intersection.toarray()
@@ -65,20 +65,20 @@ class ItemKNN(BaseModel):
                 # dense_output=False is not always supported by cosine_similarity in older versions?
                 # It's better to check matrix size.
                 if self.n_items > 10000:
-                    print(f"[ItemKNN] Warning: n_items={self.n_items} is large. Cosine similarity might OOM.")
+                    self._log(f"Warning: n_items={self.n_items} is large. Cosine similarity might OOM.")
                 
                 self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T, dense_output=False)
             except TypeError:
                 # Fallback if dense_output param not supported
                 self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T)
             except (MemoryError, RuntimeError) as e:
-                print(f"[ItemKNN] OOM during cosine_similarity: {e}")
+                self._log(f"OOM during cosine_similarity: {e}")
                 raise e
         else:
             raise ValueError(f"Unsupported similarity metric: {self.similarity_metric}")
             
         # --- Top-K Pruning ---
-        print(f"Pruning similarity matrix to top {self.k} neighbors per item...")
+        self._log(f"Top-{self.k} pruning...")
         
         # Convert to CSR if not already (sklean cosine_similarity might return dense or csr)
         if not sp.issparse(self.item_similarity_matrix):
@@ -151,7 +151,7 @@ class ItemKNN(BaseModel):
             shape=self.item_similarity_matrix.shape
         )
             
-        print("ItemKNN model fitted successfully.")
+        self._log("Fitted.")
 
     def _scipy_sparse_to_torch_sparse(self, sparse_mx):
         """Scipy 희소 행렬을 PyTorch 희소 텐서로 변환합니다."""

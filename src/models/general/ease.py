@@ -23,7 +23,7 @@ class EASE(BaseModel):
         self.train_matrix_csr = None
 
     def fit(self, data_loader):
-        print("Fitting EASE model...")
+        self._log(f"Fitting (λ={self.reg_lambda})...")
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
         cols = train_df['item_id'].values
@@ -45,7 +45,7 @@ class EASE(BaseModel):
         self.weight_matrix.copy_(torch.from_numpy(B).float())
         del B
         
-        print("EASE model fitted.")
+        self._log(f"Fitted. B: {self.n_items}x{self.n_items}")
 
     def forward(self, user_ids, item_ids=None):
         """

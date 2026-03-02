@@ -25,7 +25,7 @@ class SVDEASE(EASE):
         print(f"[SVD-EASE] Initialized with k={self.k}, λ={self.reg_lambda}")
 
     def fit(self, data_loader):
-        print(f"Fitting SVD-EASE model (k={self.k}, λ={self.reg_lambda})...")
+        self._log(f"Fitting (k={self.k}, λ={self.reg_lambda})...")
         
         # 1. Build Interaction Matrix
         rows = data_loader.train_df['user_id'].values
@@ -79,7 +79,7 @@ class SVDEASE(EASE):
         self.register_buffer('d_inv_diag', d_inv_diag)
         self.register_buffer('p_diag_inv', 1.0 / (p_diag + 1e-10))
         
-        print("SVD-EASE model fitted.")
+        self._log("Fitted.")
 
     def forward(self, users):
         """

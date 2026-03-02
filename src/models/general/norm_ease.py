@@ -14,7 +14,7 @@ class NormEASE(EASE):
         self.normalize = config['model'].get('normalize', True)
 
     def fit(self, data_loader):
-        print("Fitting NormEASE model...")
+        self._log(f"Fitting (λ={self.reg_lambda})...")
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
         cols = train_df['item_id'].values
@@ -38,9 +38,9 @@ class NormEASE(EASE):
             d[d == 0] = 1.0
             d_inv_sqrt = np.power(d, -0.5)
             B = d_inv_sqrt[:, None] * B * d_inv_sqrt[None, :]
-            print("[NormEASE] Applied Symmetric Normalization.")
+            self._log("Applied Symmetric Normalization.")
             
         self.weight_matrix.copy_(torch.from_numpy(B).float())
         del B
         
-        print("NormEASE model fitted.")
+        self._log("Fitted.")
