@@ -174,3 +174,91 @@ data_processing.py (순수 함수)        data_loader.py (오케스트레이터)
 
 - **캐시 키**: `{dataset}_{split}_{threshold}_{min_u}_{min_i}_{ratio}_{dedup}.pkl`
 - **네거티브 샘플링**: collate_fn에서 배치 단위 생성 (set-based O(N) 필터링)
+
+---
+
+## 7. 일괄 HPO (Batch Bayesian Optimization)
+
+하나의 YAML 파일로 **여러 모델 × 여러 데이터셋 × 멀티시드** HPO를 한 번에 실행합니다.
+
+### 실행
+
+```bash
+cd scripts/
+uv run python run_all_smart_searches.py \
+  --config ../configs/paper_baselines_search.yaml \
+  --output_dir ../output/paper_baselines
+```
+
+### Search Config 구조 (`paper_baselines_search.yaml`)
+
+```yaml
+datasets:
+  - "configs/dataset/ml1m.yaml"
+  - "configs/dataset/ml20m.yaml"
+
+seeds: [42, 43, 44, 45, 46] # 멀티시드 평균으로 안정적 평가
+
+summary_metrics: # 데이터셋별 요약 테이블에 표시할 메트릭
+  - "NDCG@20"
+  - "Recall@20"
+  - "Coverage@20"
+
+searches:
+  - name: "EASE"
+    method: "bayesian"
+    model_config: "configs/model/general/ease.yaml"
+    params:
+      - name: "model.reg_lambda"
+        type: "float"
+        range: "0.1 100000"
+        log: true # log scale 탐색
+    n_trials: 60 # Optuna trial 수
+    patience: 20 # early stopping patience
+    metric: "NDCG@20" # 최적화 대상 메트릭
+
+  - name: "LightGCN"
+    method: "bayesian"
+    model_config: "configs/model/general/lightgcn.yaml"
+    params:
+      - name: "model.n_layers"
+        type: "int"
+        range: "1 3"
+      - name: "train.embedding_l2"
+        type: "categorical"
+        range: "0.01 0.005 0.001 0.0005 0.0001"
+      - name: "model.embedding_dim"
+        type: "categorical"
+        range: "32 48 64 96 128"
+    n_trials: 60
+    patience: 20
+    metric: "NDCG@20"
+```
+
+### 파라미터 타입
+
+| type          | 설명                         | range 형식         |
+| :------------ | :--------------------------- | :----------------- |
+| `float`       | 연속값                       | `"min max"`        |
+| `int`         | 정수                         | `"min max"`        |
+| `categorical` | 이산 선택지                  | `"val1 val2 val3"` |
+| `int_min_dim` | 데이터셋 크기 기반 자동 범위 | `log: true`        |
+
+### 출력 구조
+
+```
+output/paper_baselines/
+├── {dataset_name}/
+│   ├── {model_name}/
+│   │   ├── best_params.json       # 최적 하이퍼파라미터
+│   │   ├── best_val_metrics.json  # 검증 메트릭
+│   │   └── BEST_{model}_seed_{N}/ # 시드별 최종 모델
+│   └── dataset_summary_{dataset}.json  # 데이터셋별 모델 비교표
+```
+
+### 워크플로우
+
+1. 각 search 항목에 대해 Optuna 베이지안 최적화 실행
+2. 최적 하이퍼파라미터 발견 후 **모든 시드로 재실행**
+3. 시드별 결과를 평균하여 최종 메트릭 산출
+4. 데이터셋별 요약 JSON 자동 생성 (모델 간 비교)
