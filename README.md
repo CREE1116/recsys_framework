@@ -1,6 +1,6 @@
 # RecSys Framework
 
-PyTorch 기반의 **연구용 추천시스템 프레임워크**입니다. 50개 이상의 모델을 ~10K LOC로 관리하며, 빠른 프로토타이핑과 공정한 벤치마크를 목표로 합니다.
+PyTorch 기반의 **연구용 추천시스템 프레임워크**입니다. 빠른 프로토타이핑과 공정한 벤치마크를 목표로 합니다.
 
 ---
 
@@ -19,10 +19,9 @@ PyTorch 기반의 **연구용 추천시스템 프레임워크**입니다. 50개 
 
 | Feature             | This Framework                                             | RecBole                         |
 | :------------------ | :--------------------------------------------------------- | :------------------------------ |
-| **새 모델 추가**    | 파일 1개 + 등록 1줄 (5분)                                  | Config/Data 연동 복잡 (15분+)   |
+| **새 모델 추가**    | 파일 1개 + 등록 1줄                                   | Config/Data 연동 복잡    |
 | **Deep Inspection** | `calc_loss` 튜플로 Loss 항목별 자동 추적 + PNG 그래프 생성 | 단일 scalar, 커스텀 로깅 어려움 |
 | **Loss 유연성**     | 튜플 반환 → Main/Reg 분리 추적 가능                        | 단일 loss 강제                  |
-| **코드 규모**       | ~10K LOC (이해 가능)                                       | ~100K LOC                       |
 | **커스터마이징**    | Python 그대로, 숨겨진 로직 없음                            | 방대한 추상 클래스 상속 구조    |
 
 > **"연구자는 프레임워크와 싸우지 말고, 모델링에 집중해야 합니다."**
@@ -39,15 +38,6 @@ PyTorch 기반의 **연구용 추천시스템 프레임워크**입니다. 50개 
 | **Graph**                | LightGCN, UltraGCN, SimGCL, GF-CF                                                          |
 | **AutoEncoder**          | Multi-VAE, EASE, NormEASE, RLAE, SLIM, ELSA, SANSA, SVD-AE, SVD-EASE, NC-EASE, Infinity-AE |
 | **Others**               | ItemKNN, PureSVD, MostPopular, MACR, MMR, NaiveBayes, CoOccurrence                         |
-
-### CSAR Series (Co-Support Learning)
-
-CSAR, CSAR_Basic, CSAR_Minimal, CSAR_BPR, CSAR_Pure, MinimalCSAR, ClosedCSAR
-
-### LIRA Series (Linear Recurrence Attention)
-
-LIRA, LightLIRA, PowerLIRA, LightPowerLIRA, SpectralPowerLIRA, TaylorLIRA, CGLIRA, ChebyshevLIRA, SpectralTikhonovLIRA
-
 ---
 
 ## ⚙️ 설정 시스템
