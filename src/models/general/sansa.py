@@ -42,9 +42,9 @@ class SANSA(BaseModel):
         self.train_matrix_csr = None
 
     def fit(self, data_loader):
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log(f"Fitting with lambda={self.reg_lambda}, density={self.density}...")
-        print(f"{'='*60}")
+        self._log(f"{'='*60}")
         
         start_time = time.time()
         
@@ -126,11 +126,11 @@ class SANSA(BaseModel):
         self.K_shape = (self.n_items, self.n_items)
         
         elapsed = time.time() - start_time
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log("Training complete!")
-        print(f"  - Time: {elapsed:.2f}s")
-        print(f"  - K nnz: {K_coo.nnz:,} (Density: {K_coo.nnz / (self.n_items**2):.4f})")
-        print(f"{'='*60}\n")
+        self._log(f"  - Time: {elapsed:.2f}s")
+        self._log(f"  - K nnz: {K_coo.nnz:,} (Density: {K_coo.nnz / (self.n_items**2):.4f})")
+        self._log(f"{'='*60}\n")
         
     def forward(self, user_ids, item_ids=None):
         if self.K_indices is None:

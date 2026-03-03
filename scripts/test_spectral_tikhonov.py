@@ -2,7 +2,7 @@ import torch
 import scipy.sparse as sp
 import numpy as np
 
-from src.models.csar.SpectralTikhonovLIRA import SpectralTikhonovLIRA
+from src.models.csar.ASPIRE import ASPIRE
 
 class DummyLoader:
     def __init__(self, u, i):
@@ -17,9 +17,9 @@ config = {
     'device': 'cpu'
 }
 
-print("Testing SpectralTikhonovLIRA target_energy...")
+print("Testing ASPIRE target_energy...")
 loader = DummyLoader(100, 100)
-model = SpectralTikhonovLIRA(config, loader)
+model = ASPIRE(config, loader)
 
 users = torch.tensor([0, 1, 2])
 res = model(users)

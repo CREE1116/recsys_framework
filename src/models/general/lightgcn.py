@@ -25,7 +25,7 @@ class LightGCN(BaseModel):
         # [NEW] 노드 수가 일정 수준 이하이면 Dense로 변환하여 GPU 가속 극대화 (특히 MPS)
         total_nodes = self.n_users + self.n_items
         if total_nodes < 15000:
-            print(f"[LightGCN] Node count {total_nodes} < 15000. Converting to Dense for GPU acceleration.")
+            self._log(f"Node count {total_nodes} < 15000. Converting to Dense for GPU acceleration.")
             self.norm_adj_matrix = self.norm_adj_matrix.to_dense()
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)

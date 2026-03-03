@@ -36,9 +36,9 @@ class RLAE(BaseModel):
         )
 
     def fit(self, data_loader):
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log(f"Training with b={self.b}, λ={self.reg_lambda}")
-        print(f"{'='*60}")
+        self._log(f"{'='*60}")
         
         import time
         start_time = time.time()
@@ -73,13 +73,13 @@ class RLAE(BaseModel):
         diag_vals = np.diag(B)
         del B
         
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log("Training complete!")
-        print(f"  - Time: {elapsed:.2f}s")
-        print(f"  - Active constraints: {n_active}/{self.n_items}")
-        print(f"  - Diagonal: min={diag_vals.min():.4f}, max={diag_vals.max():.4f}, mean={diag_vals.mean():.4f}")
-        print(f"  - Constraint: diag(B) ≤ {self.b}, max violation: {max(0, diag_vals.max() - self.b):.6f}")
-        print(f"{'='*60}\n")
+        self._log(f"  - Time: {elapsed:.2f}s")
+        self._log(f"  - Active constraints: {n_active}/{self.n_items}")
+        self._log(f"  - Diagonal: min={diag_vals.min():.4f}, max={diag_vals.max():.4f}, mean={diag_vals.mean():.4f}")
+        self._log(f"  - Constraint: diag(B) ≤ {self.b}, max violation: {max(0, diag_vals.max() - self.b):.6f}")
+        self._log(f"{'='*60}\n")
 
     def forward(self, user_ids, item_ids=None):
         if self.train_matrix_csr is None:

@@ -74,9 +74,9 @@ class LightLIRA(BaseModel):
         return scores.gather(1, item_ids)
 
     def fit(self, data_loader):
-        print(f"\n{'='*60}")
-        self._log(f"Training (k={self.k}, Lambda={self.reg_lambda})")
-        print("="*60)
+        self._log(f"\n{'='*60}")
+        self._log(f"Training (λ={self.reg_lambda})")
+        self._log("="*60)
         
         # Always perform visualization (Lightweight vs Heavyweight controlled by visualize flag)
         self._log("Precomputing Gram Matrix...")
@@ -98,7 +98,7 @@ class LightLIRA(BaseModel):
             self._log(f"Visualization skipped: {e}")
             import traceback
             traceback.print_exc()
-        print("="*60 + "\n")
+        self._log("="*60 + "\n")
 
     def get_embeddings(self):
         # Return V_k as Item Embeddings (approximated)

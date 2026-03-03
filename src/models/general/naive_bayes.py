@@ -67,7 +67,7 @@ class NaiveBayes(BaseModel):
         
         # 3. Compute Co-occurrence Counts (Count(i, j))
         # X.T @ X gives (n_items, n_items) matrix where (i, j) is count of users who interacted with both i and j
-        print("Computing co-occurrence matrix...")
+        self._log("Computing co-occurrence matrix...")
         # This might be memory intensive for large item sets.
         # But ml-1m (3k items) is fine. 
         co_occurrence = (self.user_item_matrix.T @ self.user_item_matrix)
@@ -105,7 +105,7 @@ class NaiveBayes(BaseModel):
         self.log_cond_prob = np.log(cond_prob)
         self.log_cond_prob = torch.FloatTensor(self.log_cond_prob).to(self.device)
         
-        print("NaiveBayes fitted successfully.")
+        self._log("NaiveBayes fitted successfully.")
 
     def forward(self, users):
         """

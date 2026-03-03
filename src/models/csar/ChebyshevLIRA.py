@@ -65,7 +65,7 @@ class ChebyshevLIRA(BaseModel):
 
     def fit(self, data_loader):
         self._log("Training completed during initialization.")
-        print("="*60 + "\n")
+        self._log("="*60 + "\n")
 
     def predict_for_pairs(self, user_ids, item_ids):
         scores = self.predict_full(user_ids)

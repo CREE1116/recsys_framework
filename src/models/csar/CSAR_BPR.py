@@ -148,7 +148,7 @@ class CSAR_BPR(BaseModel):
     
     def get_final_item_embeddings(self):
         """CSAR_BPR의 최종 아이템 임베딩 (Topic-space)을 반환합니다."""
-        print("Getting final item embeddings from CSAR_BPR...")
+        self._log("Getting final item embeddings from CSAR_BPR...")
         return self._get_all_item_interests().detach()
 
 

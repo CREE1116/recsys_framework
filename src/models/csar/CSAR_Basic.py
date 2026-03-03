@@ -117,7 +117,7 @@ class CSAR_Basic(BaseModel):
             m = self.ema_momentum
             self._cached_G = m * self._cached_G + (1 - m) * new_G
             
-        print(f"[CSAR_Basic] G (Unified-Ridge) updated (EMA m={self.ema_momentum}, stability={self.g_stability.item():.4f}) at epoch {epoch}")
+        self._log(f"G (Unified-Ridge) updated (EMA m={self.ema_momentum}, stability={self.g_stability.item():.4f}) at epoch {epoch}")
 
     def _get_target_g(self):
         """Returns the data-driven Ridge matrix G (teacher target)"""

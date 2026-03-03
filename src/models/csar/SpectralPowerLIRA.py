@@ -44,9 +44,9 @@ class SpectralPowerLIRA(BaseModel):
 
     def fit(self, data_loader):
         """Build SpectralPowerLIRA model"""
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log(f"Training (k={self.k}, λ={self.reg_lambda}, Power={self.power})")
-        print(f"{'='*60}")
+        self._log(f"{'='*60}")
         
         start_time = time.time()
         
@@ -57,9 +57,9 @@ class SpectralPowerLIRA(BaseModel):
         self.model.build(X_sparse, dataset_name=self.dataset_name)
         
         elapsed = time.time() - start_time
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log(f"Training completed in {elapsed:.2f}s")
-        print(f"{'='*60}\n")
+        self._log(f"{'='*60}\n")
         
         if self.visualize:
             self.model.visualize_matrices(X_sparse, save_dir=f"checkpoints/{self.dataset_name}/spectral_power_lira_k{self.k}")

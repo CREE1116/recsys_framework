@@ -4,27 +4,27 @@ import numpy as np
 import os
 from scipy.sparse import csr_matrix
 from src.models.base_model import BaseModel
-from src.models.csar.LIRALayer import SpectralTikhonovLIRALayer
+from src.models.csar.LIRALayer import ASPIRELayer
 
-class SpectralTikhonovLIRA(BaseModel):
+class ASPIRE(BaseModel):
     """
-    Spectral Tikhonov LIRA - Scalable LIRA using SVD with Popularity Decay.
+    ASPIRE - Scalable LIRA using SVD with Popularity Decay.
     h(sigma_k) = sigma_k^(2-beta) / (sigma_k^(2-beta) + alpha)
     """
     def __init__(self, config, data_loader):
-        super(SpectralTikhonovLIRA, self).__init__(config, data_loader)
+        super(ASPIRE, self).__init__(config, data_loader)
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
         
         model_config = config.get('model', {})
         self.alpha = model_config.get('alpha', 500.0)
-        self.beta = model_config.get('beta', 1.0)
-        self.target_energy = model_config.get('target_energy', 0.99)
-        self.k = model_config.get('k', 100000)
-        self.visualize = model_config.get('visualize', False)
+        self.beta = model_config.get('beta', 0.5)
+        self.target_energy = model_config.get('target_energy', 0.9)
+        self.k = model_config.get('k', 128)
+        self.visualize = model_config.get('visualize', True)
         
-        # SpectralTikhonovLIRA Layer
-        self.lira_layer = SpectralTikhonovLIRALayer(
+        # ASPIRE Layer
+        self.lira_layer = ASPIRELayer(
             k=self.k,
             alpha=self.alpha,
             beta=self.beta,
@@ -76,9 +76,9 @@ class SpectralTikhonovLIRA(BaseModel):
         return scores.gather(1, item_ids)
 
     def fit(self, data_loader):
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log(f"Training (k={self.k}, α={self.alpha}, β={self.beta})")
-        print("="*60)
+        self._log("="*60)
         
         # Always perform visualization (Lightweight vs Heavyweight controlled by visualize flag)
         self._log(f"Analyzing model (Visualize Heavyweight: {self.visualize})...")
@@ -98,7 +98,7 @@ class SpectralTikhonovLIRA(BaseModel):
                 self._log(f"Analysis results saved to {analysis_dir}")
         except Exception as e:
             self._log(f"Visualization skipped: {e}")
-        print("="*60 + "\n")
+        self._log("="*60 + "\n")
 
     def get_embeddings(self):
         # Return V_k as Item Embeddings (approximated)

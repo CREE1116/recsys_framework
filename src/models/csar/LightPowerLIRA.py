@@ -52,9 +52,9 @@ class LightPowerLIRA(BaseModel):
         return self.train_matrix_csr
 
     def fit(self, data_loader):
-        print(f"\n{'='*60}")
-        self._log(f"Training (k={self.k}, λ={self.reg_lambda}, Power={self.power}, Threshold={self.threshold})")
-        print("="*60)
+        self._log(f"\n{'='*60}")
+        self._log(f"Training (λ={self.reg_lambda}, k={self.k}, Power={self.power})")
+        self._log("="*60)
         
         if not hasattr(self.lira_layer, 'S_sparse') or self.lira_layer.S_sparse is None:
              self.lira_layer.build(self.get_train_matrix(data_loader), dataset_name=self.config.get('dataset_name'))
@@ -69,7 +69,7 @@ class LightPowerLIRA(BaseModel):
                 save_dir=analysis_dir
             )
         
-        print("="*60 + "\n")
+        self._log("="*60 + "\n")
 
     def forward(self, users, items=None):
         return self.predict_full(users, items)

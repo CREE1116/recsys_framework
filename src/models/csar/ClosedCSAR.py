@@ -52,7 +52,7 @@ class ClosedCSAR(BaseModel):
         return csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items))
 
     def build(self):
-        print(f"[ClosedCSAR] Building with K={self.num_interests}, D={self.embedding_dim}, λ={self.reg_lambda} ...")
+        self._log(f"Building with K={self.num_interests}, D={self.embedding_dim}, λ={self.reg_lambda} ...")
         
         # 1. SVD & LIRA S Matrix
         u, s, vt = svds(self.train_matrix_csr, k=self.embedding_dim)
@@ -94,7 +94,7 @@ class ClosedCSAR(BaseModel):
         # 재구성 에러 로깅
         S_approx = M_i @ G @ M_i.t()
         recon_err = (S - S_approx).norm() / (S.norm() + 1e-8)
-        print(f"[ClosedCSAR] Done. Recon error: {recon_err:.4f}")
+        self._log(f"Done. Recon error: {recon_err:.4f}")
 
     def forward(self, users):
         # 유저 히스토리 가져오기

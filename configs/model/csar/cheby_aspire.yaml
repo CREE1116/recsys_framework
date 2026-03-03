@@ -1,0 +1,7 @@
+model:
+  name: cheby_aspire
+  alpha: 500.0
+  degree: 100
+  beta: 0.5
+  lambda_max_estimate: "auto"
+device: auto

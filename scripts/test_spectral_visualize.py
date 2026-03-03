@@ -2,7 +2,7 @@ import torch
 import scipy.sparse as sp
 import numpy as np
 
-from src.models.csar.SpectralTikhonovLIRA import SpectralTikhonovLIRA
+from src.models.csar.ASPIRE import ASPIRE
 
 class DummyLoader:
     def __init__(self, u, i):
@@ -17,8 +17,8 @@ config = {
     'device': 'cpu'
 }
 
-print("Testing SpectralTikhonovLIRA sigma vs h(sigma) visualization...")
+print("Testing ASPIRE sigma vs h(sigma) visualization...")
 loader = DummyLoader(100, 100)
-model = SpectralTikhonovLIRA(config, loader)
+model = ASPIRE(config, loader)
 model.fit(loader)
 print("Success!")

@@ -51,9 +51,9 @@ class ELSA(BaseModel):
         """
         ELSA training: Closed-form + SVD decomposition
         """
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log("Starting training...")
-        print(f"{'='*60}")
+        self._log(f"{'='*60}")
         
         start_time = time.time()
         
@@ -118,14 +118,14 @@ class ELSA(BaseModel):
         B_approx = B_lowrank + R_sparse
         recon_error = np.linalg.norm(B_np - B_approx) / np.linalg.norm(B_np)
         
-        print(f"\n{'='*60}")
+        self._log(f"\n{'='*60}")
         self._log("Training complete!")
-        print(f"  - Time: {elapsed:.2f}s")
-        print(f"  - Low-rank: {L.shape}")
-        print(f"  - Sparse nnz: {R_coo.nnz:,}")
-        print(f"  - Reconstruction error: {recon_error:.4f}")
-        print(f"  - Memory (approx): {(L.size + S.size + R_coo.nnz)*4/1e6:.1f} MB")
-        print(f"{'='*60}\n")
+        self._log(f"  - Time: {elapsed:.2f}s")
+        self._log(f"  - Low-rank: {L.shape}")
+        self._log(f"  - Sparse nnz: {R_coo.nnz:,}")
+        self._log(f"  - Reconstruction error: {recon_error:.4f}")
+        self._log(f"  - Memory (approx): {(L.size + S.size + R_coo.nnz)*4/1e6:.1f} MB")
+        self._log(f"{'='*60}\n")
 
     def forward(self, user_ids, item_ids=None):
         """

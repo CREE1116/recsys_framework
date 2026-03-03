@@ -50,8 +50,9 @@ class ASAP_LIRA(BaseModel):
         return self.train_matrix_csr
 
     def fit(self, data_loader):
-        print(f"\n[ASAP-LIRA] Training (λ={self.reg_lambda}, η={self.eta}, z={self.z})")
-        print("="*60)
+        self._log(f"\n{'='*60}")
+        self._log(f"Training (λ={self.reg_lambda}, η={self.eta}, z={self.z})")
+        self._log("="*60)
         
         if not hasattr(self.lira_layer, 'S_sparse') or self.lira_layer.S_sparse is None:
              self.lira_layer.build(self.get_train_matrix(data_loader))
@@ -60,13 +61,13 @@ class ASAP_LIRA(BaseModel):
         analysis_dir = SVDCacheManager.get_analysis_dir(self.config)
         
         if self.visualize:
-            print(f"[ASAP-LIRA] Saving visualizations to {analysis_dir}...")
+            self._log(f"Saving visualizations to {analysis_dir}...")
             self.lira_layer.visualize_matrices(
                 X_sparse=self.train_matrix_csr, 
                 save_dir=analysis_dir
             )
         
-        print("="*60 + "\n")
+        self._log("="*60 + "\n")
 
     def forward(self, users, items=None):
         return self.predict_full(users, items)

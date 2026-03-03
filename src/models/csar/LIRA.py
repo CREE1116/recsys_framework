@@ -27,7 +27,7 @@ class LIRA(BaseModel):
         self.lira_layer.to(self.device)
         
         # Initialize
-        print(f"[LIRA] Initialized with λ={self.reg_lambda}, Visualize={self.visualize}")
+        self._log(f"Initialized with λ={self.reg_lambda}, Visualize={self.visualize}")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
@@ -47,8 +47,9 @@ class LIRA(BaseModel):
 
 
     def fit(self, data_loader):
-        print(f"\n[LIRA] Training (Lambda={self.reg_lambda})")
-        print("="*60)
+        self._log(f"\n{'='*60}")
+        self._log(f"Training (Lambda={self.reg_lambda})")
+        self._log("="*60)
         
         # Build is already done in __init__ for this model structure
         # But if fit is called explicitly, we can rebuild or just log.
@@ -69,7 +70,7 @@ class LIRA(BaseModel):
                 save_dir=analysis_dir
             )
         
-        print("="*60 + "\n")
+        self._log("="*60 + "\n")
 
     def forward(self, users, items=None):
         # Compatible with AbstractModel
