@@ -25,9 +25,12 @@ class _LIRAGraphCache:
         if not sp.issparse(X_sparse):
             return None
         d = X_sparse.data
+        idx = X_sparse.indices
+        ptr = X_sparse.indptr
         checksum = hash((X_sparse.shape, X_sparse.nnz, 
-                        d[:5].tobytes() if len(d) >= 5 else b'',
-                        d[-5:].tobytes() if len(d) >= 5 else b''))
+                        d[:10].tobytes() if len(d) >= 10 else d.tobytes(),
+                        idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
+                        ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
         return checksum
     
     @classmethod
@@ -46,6 +49,37 @@ class _LIRAGraphCache:
     def clear(cls):
         cls._cache.clear()
 
+class _MNARGammaCache:
+    """
+    Cache for estimated MNAR gamma values, keyed by dataset properties.
+    """
+    _cache = {}
+
+    @classmethod
+    def _key(cls, X_sparse=None, singular_values=None):
+        if singular_values is not None:
+            # Hash based on sample of singular values and length
+            s_sample = singular_values[:10].detach().cpu().numpy().tobytes()
+            return hash(("sv", len(singular_values), s_sample))
+        if X_sparse is not None:
+            # Hash based on shape, nnz, and structure
+            idx = X_sparse.indices
+            ptr = X_sparse.indptr
+            return hash(("X", X_sparse.shape, X_sparse.nnz, 
+                        idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
+                        ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
+        return None
+
+    @classmethod
+    def get(cls, X_sparse=None, singular_values=None):
+        key = cls._key(X_sparse, singular_values)
+        return cls._cache.get(key) if key else None
+
+    @classmethod
+    def put(cls, val, X_sparse=None, singular_values=None):
+        key = cls._key(X_sparse, singular_values)
+        if key: cls._cache[key] = val
+
 class LIRALayer(nn.Module):
     """
     LIRA - Linear Interest covariance Ridge Analysis (Dual Ridge Regression)
@@ -60,17 +94,43 @@ class LIRALayer(nn.Module):
     def build(self, X_sparse):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if torch.backends.mps.is_available(): device = 'mps'
-        X_raw = torch.from_numpy(X_sparse.toarray()).float().to(device)
-        n_users, n_items = X_raw.shape
-        K_raw = torch.mm(X_raw, X_raw.t())
-        self.gram_matrix = K_raw
-        K_reg = K_raw + self.reg_lambda * torch.eye(n_users, device=device)
-        CX = torch.linalg.solve(K_reg, X_raw)  
-        del K_reg
-        S = torch.mm(X_raw.t(), CX)
-        del CX
-        self.S = S
-        print(f"[{self.__class__.__name__}] Raw S built. Norm: {S.norm():.2f}")
+        
+        # [MEMORY FIX] Do NOT use X_sparse.toarray() on CPU.
+        # Compute Gram matrix G = X^T X directly to VRAM
+        
+        # Convert X to Sparse Tensor on Device
+        dev = device
+        X_coo = X_sparse.tocoo()
+        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long().to(dev)
+        values = torch.from_numpy(X_coo.data).float().to(dev)
+        X_t = torch.sparse_coo_tensor(indices, values, X_sparse.shape, device=dev).coalesce()
+        del X_coo, indices, values
+        
+        # K = X @ X^T (User-User Gram)
+        # LIRA implementation uses User-User Gram for dual solve
+        # K: (n_users, n_users)
+        K = torch.sparse.mm(X_t, X_t.t().to_dense()) 
+        
+        # (K + λI) S = X @ X^T -> No, S = X^T (X X^T + λI)^-1 X
+        K.diagonal().add_(self.reg_lambda)
+        
+        # Solve for user-wise coefficients: CX = (K + λI)^-1 X
+        # Solve A @ CX = X_t (dense)
+        CX = torch.linalg.solve(K, X_t.to_dense())
+        del K, X_t
+        
+        # S = X^T @ CX (Item-Item Shift)
+        # S: (n_items, n_items)
+        # Resulting S is DENSE, which is fine for these models.
+        X_coo = X_sparse.tocoo()
+        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long().to(dev)
+        values = torch.from_numpy(X_coo.data).float().to(dev)
+        X_t = torch.sparse_coo_tensor(indices, values, X_sparse.shape, device=dev).coalesce()
+        
+        self.register_buffer('S', torch.mm(X_t.t().to_dense(), CX))
+        del X_t, CX
+        
+        print(f"[{self.__class__.__name__}] GPU-Native build complete. Device: {dev}")
 
     @torch.no_grad()
     def forward(self, X_batch, user_ids=None):
@@ -100,13 +160,16 @@ class LightLIRALayer(nn.Module):
     def build(self, X_sparse, dataset_name=None):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if torch.backends.mps.is_available(): device = 'mps'
-        manager = SVDCacheManager(device=device)
+        manager = SVDCacheManager(device=self.singular_values.device)
+        # manager.get_svd returns tensors on CPU/Device depending on cache. 
+        # Move them to target device immediately.
+        dev = self.singular_values.device
         u, s, v, total_energy = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
-        self.singular_values = s.to(device)
-        self.V_raw = v.to(device)
+        self.register_buffer('singular_values', s.to(dev))
+        self.register_buffer('V_raw', v.to(dev))
         s2 = self.singular_values.pow(2)
-        self.filter_diag = s2 / (s2 + self.reg_lambda)
-        print(f"[{self.__class__.__name__}] Finished building Raw LowRank.")
+        self.register_buffer('filter_diag', s2 / (s2 + self.reg_lambda))
+        print(f"[{self.__class__.__name__}] SVD-based build complete. Device: {dev}")
 
     @torch.no_grad()
     def forward(self, X_batch, user_ids=None):
@@ -119,13 +182,71 @@ class LightLIRALayer(nn.Module):
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
         LIRAVisualizer.visualize_svd_lira(self.singular_values, self.filter_diag, self.reg_lambda, X_sparse=X_sparse, save_dir=save_dir, file_prefix='lightlira')
 
+def estimate_mnar_gamma(X_sparse=None, singular_values=None):
+    """
+    [이론적 근거 완벽 반영]: log(n_i) = a * log(λ_i) + C 를 통해 γ = 2a - 1 도출
+    """
+    cached = _MNARGammaCache.get(X_sparse, singular_values)
+    if cached is not None: return cached
+    
+    if X_sparse is not None and singular_values is not None:
+        # 1. 아이템 인기도 n_i (내림차순 정렬)
+        item_pops = np.array(X_sparse.sum(axis=0)).flatten()
+        n_i = np.sort(item_pops)[::-1]
+        
+        # 2. 고유값 λ_i = σ_i^2 (이미 내림차순 정렬되어 있음)
+        k = len(singular_values)
+        n_i_trunc = n_i[:k] # SVD K개 차원에 맞춰 슬라이싱
+        lam_i = singular_values.pow(2).cpu().numpy()
+        
+        # 3. 로그 변환을 위한 안전한 필터링 (0 방지)
+        valid_mask = (n_i_trunc > 0) & (lam_i > 1e-10)
+        n_i_valid = n_i_trunc[valid_mask]
+        lam_i_valid = lam_i[valid_mask]
+        
+        if len(n_i_valid) < 10:
+            return 1.0 # 샘플이 너무 적으면 기본값 반환
+            
+        # 4. [핵심] Step 0 구현: log(n_i) vs log(λ_i) 선형 회귀
+        x = np.log(lam_i_valid)
+        y = np.log(n_i_valid)
+        slope, _ = np.polyfit(x, y, 1)
+        
+        # 5. γ = 2a - 1 도출 (a가 slope)
+        gamma = (2.0 * slope) - 1.0
+        
+        # MNAR 편향은 음수가 될 수 없으므로 하한선 방어 (안전장치)
+        gamma = max(0.1, float(gamma))
+        
+        _MNARGammaCache.put(gamma, X_sparse=X_sparse, singular_values=singular_values)
+        return gamma
+
+    if X_sparse is not None:
+        # Fallback for models without SVD (like ChebyASPIRE)
+        # item popularity ≈ rank^-p
+        # Assume γ = p (Empirical Zipf-based relation)
+        item_pops = np.array(X_sparse.sum(axis=0)).flatten()
+        item_pops = np.sort(item_pops)[::-1]
+        item_pops = item_pops[item_pops > 0]
+        if len(item_pops) < 10: return 1.0
+        
+        y = np.log(item_pops)
+        x = np.log(np.arange(1, len(item_pops) + 1))
+        slope, _ = np.polyfit(x, y, 1)
+        res = max(0.1, float(-slope))
+        _MNARGammaCache.put(res, X_sparse=X_sparse)
+        return res
+
+    return 1.0 # fallback
+
 
 class ASPIRELayer(nn.Module):
     def __init__(self, k=200, alpha=500.0, beta=1.0, target_energy=0.99):
         super(ASPIRELayer, self).__init__()
         self.k = int(k[0] if isinstance(k, (list, np.ndarray)) else k)
         self.alpha = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
-        self.beta = float(beta[0] if isinstance(beta, (list, np.ndarray)) else beta)
+        self.beta_config = beta[0] if isinstance(beta, (list, np.ndarray)) else beta
+        self.beta = 1.0 # Placeholder, will be set in build()
         self.target_energy = float(target_energy[0] if isinstance(target_energy, (list, np.ndarray)) else target_energy)
         self.register_buffer('singular_values', torch.empty(0)) 
         self.register_buffer('filter_diag', torch.empty(0))
@@ -136,16 +257,29 @@ class ASPIRELayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None):
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        if torch.backends.mps.is_available(): device = 'mps'
-        manager = SVDCacheManager(device=device)
+        dev = self.singular_values.device
+        manager = SVDCacheManager(device=dev)
         u, s, v, total_energy = manager.get_svd(X_sparse, k=None, target_energy=self.target_energy, dataset_name=dataset_name)
         self.k = len(s)
-        self.singular_values = s.to(device)
-        self.V_raw = v.to(device)
+        self.register_buffer('singular_values', s.to(dev))
+        self.register_buffer('V_raw', v.to(dev))
+        
+        # Auto Beta Determination
+        if isinstance(self.beta_config, str):
+            gamma = estimate_mnar_gamma(X_sparse=X_sparse, singular_values=self.singular_values)
+            if self.beta_config == 'auto_bias':
+                self.beta = gamma / (1 + gamma)
+            elif self.beta_config == 'auto_compromise':
+                self.beta = gamma / 2.0
+            else:
+                self.beta = 0.5 # Default
+            print(f"[{self.__class__.__name__}] Estimated gamma={gamma:.4f} -> beta={self.beta:.4f} ({self.beta_config})")
+        else:
+            self.beta = float(self.beta_config)
+
         s_pow = torch.pow(self.singular_values, 2.0 - self.beta)
-        self.filter_diag = s_pow / (s_pow + self.alpha)
-        print(f"[{self.__class__.__name__}] Finished building Spectral Tikhonov Filter.")
+        self.register_buffer('filter_diag', s_pow / (s_pow + self.alpha))
+        print(f"[{self.__class__.__name__}] ASPIRE build complete (k={self.k}). Device: {dev}")
 
     @torch.no_grad()
     def forward(self, X_batch, user_ids=None):
@@ -153,6 +287,18 @@ class ASPIRELayer(nn.Module):
         XV = torch.mm(X_batch, self.V_raw)
         XV_filtered = XV * self.filter_diag
         return torch.mm(XV_filtered, self.V_raw.t())
+
+    @torch.no_grad()
+    def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
+        LIRAVisualizer.visualize_spectral_tikhonov(
+            self.singular_values, 
+            self.filter_diag, 
+            self.alpha, 
+            self.beta, 
+            X_sparse=X_sparse, 
+            save_dir=save_dir, 
+            file_prefix='aspire'
+        )
 
 
 class PowerLIRALayer(nn.Module):
@@ -176,14 +322,18 @@ class PowerLIRALayer(nn.Module):
         S_sharpened = torch.sign(S) * torch.pow(torch.abs(S), self.power)
         mask = torch.abs(S_sharpened) >= self.threshold
         S_final = S_sharpened * mask.float()
-        if 'mps' in str(S.device).lower(): self.S_sparse = S_final.cpu().to_sparse().coalesce()
-        else: self.S_sparse = S_final.cpu().to_sparse().to(S.device).coalesce()
-        print(f"[{self.__class__.__name__}] Power={self.power} build complete.")
+        
+        S_coo = S_final.to_sparse_coo().coalesce()
+        self.register_buffer('S_indices', S_coo.indices())
+        self.register_buffer('S_values', S_coo.values())
+        self.S_shape = tuple(S_coo.shape)
+        
+        print(f"[{self.__class__.__name__}] Power={self.power} build complete on {device}.")
 
     def forward(self, X, user_ids=None):
-        if not hasattr(self, 'W_dense') or self.W_dense is None:
-            self.W_dense = self.S_sparse.to_dense().to(X.device)
-        return torch.mm(X, self.W_dense)
+        S = torch.sparse_coo_tensor(self.S_indices, self.S_values, self.S_shape, device=X.device)
+        # Use (S @ X.T).T as workaround for no mm(dense, sparse)
+        return torch.sparse.mm(S, X.t()).t()
 
 
 class LightPowerLIRALayer(nn.Module):
@@ -211,13 +361,15 @@ class LightPowerLIRALayer(nn.Module):
         S_sharpened = torch.sign(S_approx) * torch.pow(torch.abs(S_approx), self.power)
         mask = torch.abs(S_sharpened) >= self.threshold
         S_final = S_sharpened * mask.float()
-        self.S_sparse = S_final.to_sparse().coalesce()
-        if 'cuda' in str(device): self.S_sparse = self.S_sparse.to(device)
+        
+        S_coo = S_final.to_sparse_coo().coalesce()
+        self.register_buffer('S_indices', S_coo.indices())
+        self.register_buffer('S_values', S_coo.values())
+        self.S_shape = S_coo.shape
 
     def forward(self, X, user_ids=None):
-        if self.S_sparse.device != X.device:
-            return torch.sparse.mm(self.S_sparse, X.t().to(self.S_sparse.device)).t().to(X.device)
-        return torch.sparse.mm(self.S_sparse, X.t()).t()
+        S = torch.sparse_coo_tensor(self.S_indices, self.S_values, self.S_shape, device=X.device)
+        return torch.sparse.mm(S, X.t()).t()
 
 
 class SpectralPowerLIRALayer(nn.Module):
@@ -236,10 +388,10 @@ class SpectralPowerLIRALayer(nn.Module):
         if torch.backends.mps.is_available(): device = 'mps'
         manager = SVDCacheManager(device=device)
         u, s, v, total_energy = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
-        self.singular_values = s.pow(self.power).to(device)
-        self.V_raw = v.to(device)
+        self.register_buffer('singular_values', s.pow(self.power).to(device))
+        self.register_buffer('V_raw', v.to(device))
         s2 = self.singular_values.pow(2)
-        self.filter_diag = s2 / (s2 + self.reg_lambda)
+        self.register_buffer('filter_diag', s2 / (s2 + self.reg_lambda))
 
     @torch.no_grad()
     def forward(self, X_batch, user_ids=None):
@@ -297,14 +449,13 @@ class TaylorLIRALayer(nn.Module):
                 S_power_sp = sp.csr_matrix((values, (indices[0], indices[1])), shape=next_S_sparse.shape)
         
         W_sp = W_sp.tocoo()
-        idx_W = torch.from_numpy(np.vstack((W_sp.row, W_sp.col))).long()
-        val_W = torch.from_numpy(W_sp.data).float()
-        self.S_sparse = torch.sparse_coo_tensor(idx_W, val_W, W_sp.shape).to('cpu' if 'mps' in str(device).lower() else device).coalesce()
+        self.register_buffer('S_indices', torch.from_numpy(np.vstack((W_sp.row, W_sp.col))).long())
+        self.register_buffer('S_values', torch.from_numpy(W_sp.data).float())
+        self.S_shape = W_sp.shape
 
     def forward(self, X_batch, user_ids=None):
-        if not hasattr(self, 'W_dense') or self.W_dense is None:
-            self.W_dense = self.S_sparse.to_dense().to(X_batch.device)
-        return torch.mm(X_batch, self.W_dense)
+        S = torch.sparse_coo_tensor(self.S_indices, self.S_values, self.S_shape, device=X_batch.device)
+        return torch.sparse.mm(S, X_batch.t()).t()
 
 
 class CGLIRALayer(nn.Module):
@@ -363,7 +514,9 @@ class ChebyshevLIRALayer(nn.Module):
         self.power = float(power)
         self.threshold = float(threshold)
         self.K = int(K)
-        self.W_sparse = None
+        self.register_buffer('K_indices', torch.empty(2, 0, dtype=torch.long))
+        self.register_buffer('K_values', torch.empty(0))
+        self.K_shape = (0, 0)
 
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None):
@@ -405,20 +558,16 @@ class ChebyshevLIRALayer(nn.Module):
             W_final.eliminate_zeros()
             
         W_coo = W_final.tocoo()
-        idx = torch.from_numpy(np.vstack((W_coo.row, W_coo.col))).long()
-        val = torch.from_numpy(W_coo.data).float()
-        self.W_sparse = torch.sparse_coo_tensor(idx, val, W_final.shape).to('cpu' if 'mps' in str(device).lower() else device).coalesce()
+        self.register_buffer('K_indices', torch.from_numpy(np.vstack((W_coo.row, W_coo.col))).long())
+        self.register_buffer('K_values', torch.from_numpy(W_coo.data).float())
+        self.K_shape = tuple(W_final.shape)
 
     def forward(self, X_batch, user_ids=None):
-        # [IMPROVEMENT 2] OOM 폭탄 제거! to_dense() 없이 Sparse 행렬곱으로 처리
-        # W_sparse는 대칭행렬이므로 X @ W = (W @ X.T).T 와 동치입니다.
         device = X_batch.device
-        sparse_dev = self.W_sparse.device
-        
-        X_batch_t = X_batch.t().to(sparse_dev) # (Items, Batch)
-        out_t = torch.sparse.mm(self.W_sparse, X_batch_t) # Sparse(M,M) @ Dense(M,B) -> Dense(M,B)
-        
-        return out_t.t().to(device) # 다시 (Batch, Items)로 복구
+        S = torch.sparse_coo_tensor(self.K_indices, self.K_values, self.K_shape, device=device)
+        X_batch_t = X_batch.t() # (Items, Batch)
+        out_t = torch.sparse.mm(S, X_batch_t)
+        return out_t.t()
 
 
 class ChebyASPIRELayer(nn.Module):
@@ -426,19 +575,21 @@ class ChebyASPIRELayer(nn.Module):
         super().__init__()
         self.alpha = float(alpha)
         self.degree = int(degree)
-        self.beta = float(beta)
+        self.beta_config = beta
+        self.beta = 0.5 # Placeholder
         self.lambda_max_estimate = lambda_max_estimate
         self.threshold = float(threshold)
         
         self.register_buffer('cheby_coeffs', torch.empty(0))
         self.register_buffer('t_mid', torch.tensor(0.0))
         self.register_buffer('t_half', torch.tensor(0.0))
-        self.X_sparse_torch = None
-        self.X_sparse_torch_t = None
+        self.register_buffer('X_indices', torch.empty(2, 0, dtype=torch.long))
+        self.register_buffer('X_values', torch.empty(0))
+        self.X_shape = (0, 0)
 
     def _aspire_filter(self, lam):
         # 수학적 증명 확인 완료: lambda는 X^TX의 고유값(σ^2). 
-        # 따라서 lam^(0.75)는 σ^(1.5)와 정확히 일치합니다.
+        # 따라서 lam^(0.75)는 σ^(1.5)와 정확히 일치합니다!
         exponent = 2.0 - self.beta 
         lam_pow = np.power(np.maximum(lam, 0.0), exponent / 2.0)
         return lam_pow / (lam_pow + self.alpha)
@@ -479,19 +630,31 @@ class ChebyASPIRELayer(nn.Module):
         self.sparse_device = 'cpu' if 'mps' in str(device).lower() else device
         
         X_coo = X_sparse.tocoo()
-        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
-        values = torch.from_numpy(X_coo.data).float()
-        
-        self.X_sparse_torch = torch.sparse_coo_tensor(indices, values, X_coo.shape).to(self.sparse_device).coalesce()
-        self.X_sparse_torch_t = self.X_sparse_torch.t().coalesce()
+        self.register_buffer('X_indices', torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long())
+        self.register_buffer('X_values', torch.from_numpy(X_coo.data).float())
+        self.X_shape = X_coo.shape
 
         if self.lambda_max_estimate == 'auto':
-            lambda_max = self._estimate_lambda_max(self.X_sparse_torch, self.X_sparse_torch_t)
+            X_torch = torch.sparse_coo_tensor(self.X_indices, self.X_values, self.X_shape, device=self.sparse_device).coalesce()
+            lambda_max = self._estimate_lambda_max(X_torch, X_torch.t().coalesce())
         else:
             lambda_max = float(self.lambda_max_estimate)
             
         lambda_min = 0.0
         
+        # Auto Beta Determination
+        if isinstance(self.beta_config, str):
+            gamma = estimate_mnar_gamma(X_sparse=X_sparse)
+            if self.beta_config == 'auto_bias':
+                self.beta = gamma / (1 + gamma)
+            elif self.beta_config == 'auto_compromise':
+                self.beta = gamma / 2.0
+            else:
+                self.beta = 0.5
+            print(f"[{self.__class__.__name__}] Estimated gamma={gamma:.4f} -> beta={self.beta:.4f} ({self.beta_config})")
+        else:
+            self.beta = float(self.beta_config)
+
         coeffs = self._compute_chebyshev_coeffs(lambda_min, lambda_max, self.degree)
         self.cheby_coeffs = torch.from_numpy(coeffs).float().to(device)
         self.t_mid = torch.tensor((lambda_max + lambda_min) / 2.0, device=device)
@@ -501,19 +664,27 @@ class ChebyASPIRELayer(nn.Module):
 
     @torch.no_grad()
     def forward(self, X_batch, user_ids=None):
-        if self.X_sparse_torch is None:
+        if self.X_values.numel() == 0:
             raise RuntimeError("build() first")
 
         device = X_batch.device
         coeffs = self.cheby_coeffs.to(device)
         t_mid = self.t_mid.to(device)
         t_half = self.t_half.to(device)
-        sparse_dev = self.X_sparse_torch.device
+        sparse_dev = self.X_indices.device
+        X_torch = torch.sparse_coo_tensor(self.X_indices, self.X_values, self.X_shape, device=sparse_dev).coalesce()
+        X_torch_t = X_torch.t().coalesce()
         
         def S_mapped(v):
-            v_sp = v.to(sparse_dev)
-            res = torch.sparse.mm(self.X_sparse_torch_t, torch.sparse.mm(self.X_sparse_torch, v_sp))
-            res = res.to(device)
+            # v is on 'device' (batch device). 
+            v_sp = v.to(sparse_dev) if v.device != torch.device(sparse_dev) else v
+            
+            # Sparse Multiplications on sparse_dev
+            res = torch.sparse.mm(X_torch_t, torch.sparse.mm(X_torch, v_sp))
+            
+            # Transfer back to 'device' for the rest of the 3-term recurrence
+            if res.device != device:
+                res = res.to(device)
             return (res - t_mid * v) / t_half
 
         X_t = X_batch.t() # (items, batch)
@@ -528,3 +699,33 @@ class ChebyASPIRELayer(nn.Module):
             T_prev, T_curr = T_curr, T_next
 
         return out.t() # (batch, items)
+
+    @torch.no_grad()
+    def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
+        # ChebyASPIRE visualization: Plot coefficients and the filter shape
+        if not save_dir: return
+        os.makedirs(save_dir, exist_ok=True)
+        
+        coeffs = self.cheby_coeffs.cpu().numpy()
+        plt.figure(figsize=(12, 5))
+        
+        plt.subplot(1, 2, 1)
+        plt.bar(range(len(coeffs)), coeffs)
+        plt.title(f"Chebyshev Coefficients (degree={self.degree})")
+        plt.xlabel("k")
+        plt.ylabel("c_k")
+        
+        plt.subplot(1, 2, 2)
+        # Plot theoretical filter shape
+        lam = np.linspace(0, 1.0, 100) # Assumes normalized or relative
+        f_lam = self._aspire_filter(lam)
+        plt.plot(lam, f_lam, color='orange', label='ASPIRE Target')
+        plt.title(fr"Filter Shape ($\alpha={self.alpha}, \beta={self.beta}$)")
+        plt.xlabel(r"Eigenvalue $\lambda$")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, "cheby_aspire_analysis.png"))
+        plt.close()
+        print(f"[{self.__class__.__name__}] Analysis saved to {save_dir}")

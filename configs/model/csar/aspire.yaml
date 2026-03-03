@@ -1,7 +1,12 @@
 model:
   name: "aspire"
   alpha: 500.0 # Same as regularize, but explicit name
-  beta: 0.5 # Tikhonov exponent range (0 ~ 2)
+
+  # Beta: Spectral Penalty Selection
+  # 'auto_bias': Theoretically derived beta = gamma / (1+gamma)
+  # 'auto_compromise': Theoretically derived beta = gamma / 2
+  beta: "auto_compromise"
+
   target_energy: 0.99
-  visualize: false # Skip heavy visualizations for Bayesian searches
+  visualize: true # Skip heavy visualizations for Bayesian searches
 # Adaptive Spectral Popularity-aware Intrinsic REgularization

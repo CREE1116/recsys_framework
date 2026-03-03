@@ -185,11 +185,13 @@ class LIRAVisualizer:
         plt.grid(True, alpha=0.3)
         
         plt.subplot(1, 4, 3)
-        plt.plot(s_vals, wiener_filter, color='blue', label=r'Wiener ($\beta=0$)')
-        plt.plot(s_vals, filter_w, color='orange', label=fr'Tikhonov ($\beta={beta}$)')
-        plt.title(fr"Filters $h(\sigma)$ vs $\sigma$ ($\alpha={alpha}$)")
-        plt.xlabel(r"Singular Value $\sigma$")
-        plt.ylabel(r"Filter Value $h(\sigma)$")
+        # Plot against rank index for more intuitive scale
+        ranks = np.arange(len(s_vals))
+        plt.plot(ranks, wiener_filter, color='blue', linestyle='--', label=r'Wiener ($\beta=0$)')
+        plt.plot(ranks, filter_w, color='orange', label=fr'Tikhonov ($\beta={beta:.2f}$)')
+        plt.title(fr"Filter $h(k)$ vs Rank $k$ ($\alpha={alpha:.1f}$)")
+        plt.xlabel("Component Rank k")
+        plt.ylabel(r"Filter Value $h(\sigma_k)$")
         plt.legend()
         plt.grid(True, alpha=0.3)
         

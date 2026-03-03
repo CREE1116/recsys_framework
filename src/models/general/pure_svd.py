@@ -21,9 +21,10 @@ class PureSVD(BaseModel):
         
         self.svd_manager = SVDCacheManager(device=self.device.type)
         
-        self.user_factors = None
-        self.item_factors = None
-        self.sigma = None
+        self.register_buffer('user_factors', torch.empty(0))
+        self.register_buffer('item_factors', torch.empty(0))
+        self.register_buffer('sigma', torch.empty(0))
+        self.register_buffer('user_factors_scaled', torch.empty(0))
         
         self._log(f"Initialized (embedding_dim={self.embedding_dim})")
 
@@ -52,12 +53,12 @@ class PureSVD(BaseModel):
             user_item_matrix, k=self.embedding_dim, dataset_name=dataset_name
         )
         
-        self.user_factors = u.to(self.device).float()    # (n_users, k)
-        self.sigma = s.to(self.device).float()            # (k,)
-        self.item_factors = v.to(self.device).float()     # (n_items, k)
+        self.register_buffer('user_factors', u.to(self.device).float())
+        self.register_buffer('sigma', s.to(self.device).float())
+        self.register_buffer('item_factors', v.to(self.device).float())
         
         # Pre-compute U * Sigma for efficiency
-        self.user_factors_scaled = self.user_factors * self.sigma.unsqueeze(0)
+        self.register_buffer('user_factors_scaled', self.user_factors * self.sigma.unsqueeze(0))
         
         self._log(f"Fitted. Energy captured: {energy:.4f}")
 

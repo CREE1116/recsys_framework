@@ -37,9 +37,10 @@ class GF_CF(BaseModel):
         # SVD Manager initialization
         self.svd_manager = SVDCacheManager(device=self.device.type)
         
-        self.user_factors = None
-        self.item_factors = None
-        self.sigma = None
+        self.register_buffer('user_factors', torch.empty(0))
+        self.register_buffer('item_factors', torch.empty(0))
+        self.register_buffer('sigma', torch.empty(0))
+        self.register_buffer('user_factors_scaled', torch.empty(0))
         
         self._log(f"Initialized (k={self.k}, filter={self.filter_type}, α={self.alpha}, w={self.norm_weight})")
 
@@ -85,9 +86,9 @@ class GF_CF(BaseModel):
         u, s, v, _ = self.svd_manager.get_svd(R_norm, k=self.k, dataset_name=f"{dataset_name}{cache_suffix}")
         
         # Move factors to device
-        self.user_factors = u.to(self.device).float()
-        self.item_factors = v.to(self.device).float() # (n_items, k)
-        self.sigma = s.to(self.device).float()
+        self.register_buffer('user_factors', u.to(self.device).float())
+        self.register_buffer('item_factors', v.to(self.device).float())
+        self.register_buffer('sigma', s.to(self.device).float())
         
         # Apply alpha scaling to singular values
         # Score = U * Sig^alpha * V^T
@@ -95,7 +96,7 @@ class GF_CF(BaseModel):
         scaled_sigma = torch.pow(self.sigma, self.alpha)
         
         # Final User Factors = U * Sigma^alpha
-        self.user_factors_scaled = self.user_factors * scaled_sigma.unsqueeze(0)
+        self.register_buffer('user_factors_scaled', self.user_factors * scaled_sigma.unsqueeze(0))
         
         self._log(f"Fitted. user_factors: {self.user_factors_scaled.shape}, item_factors: {self.item_factors.shape}")
 

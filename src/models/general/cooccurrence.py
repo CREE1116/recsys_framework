@@ -26,58 +26,60 @@ class CoOccurrence(BaseModel):
         self.train_matrix_csr = None
 
     def fit(self, data_loader):
-        self._log(f"Fitting CoOccurrence model (metric={self.metric})...")
+        self._log(f"Fitting CoOccurrence model on {self.device} (metric={self.metric})...")
         
-        # 1. Construct Sparse Interaction Matrix X
+        # 1. Construct interaction matrix
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
         cols = train_df['item_id'].values
-        values = np.ones(len(train_df))
+        values = np.ones(len(train_df), dtype=np.float32)
         
-        X = sp.csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items), dtype=np.float32)
-        self.train_matrix_csr = X
+        X_sp = sp.csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items), dtype=np.float32)
+        self.train_matrix_csr = X_sp
         
-        # 2. Compute Co-occurrence G = X^T X
-        # shape: (n_items, n_items)
-        G = X.transpose().dot(X).toarray()
+        # 2. Compute Co-occurrence G = X^T X on GPU
+        # Optimization: use batching if n_items is very large, but for now we try full matrix
+        # Move to GPU first
+        from src.utils.gpu_accel import get_device
+        dev = self.device
         
-        # Diagonal elements (item popularity / self-occurrence)
-        diag = np.diag(G).copy()
+        # To avoid OOM, we can convert to torch sparse and then matmul
+        # But torch sparse @ torch sparse.T -> dense is often efficient
+        indices = torch.from_numpy(np.vstack((X_sp.indices, X_sp.indices))).long() # Not correct, need COO
+        X_coo = X_sp.tocoo()
+        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
+        values = torch.from_numpy(X_coo.data).float()
+        X_t = torch.sparse_coo_tensor(indices, values, X_sp.shape, device=dev).coalesce()
         
-        # 3. Normalize
+        self._log(f"Computing Gram matrix G = X.T @ X on {dev}...")
+        # G = X.T @ X
+        G = torch.sparse.mm(X_t.t(), X_t.to_dense()) # Returns dense
+        del X_t, X_coo
+        
+        # 3. Normalize on GPU
+        diag = torch.diagonal(G).clone()
+        
         if self.metric == 'cosine':
-            # Cosine: G_ij / sqrt(G_ii * G_jj)
-            # sqrt_diag = G_ii^0.5
-            sqrt_diag = np.sqrt(diag)
-            # Avoid division by zero
-            sqrt_diag[sqrt_diag == 0] = 1.0
-            
-            # Outer product for denominator: D_ij = sqrt(G_ii) * sqrt(G_jj)
-            denominator = np.outer(sqrt_diag, sqrt_diag)
-            S = G / denominator
-            
+            sqrt_diag = torch.sqrt(diag).clamp(min=1e-12)
+            # S = G / (sqrt_diag_i * sqrt_diag_j)
+            S = G / (sqrt_diag.view(-1, 1) * sqrt_diag.view(1, -1))
         elif self.metric == 'jaccard':
-            # Jaccard: G_ij / (G_ii + G_jj - G_ij)
-            # D_ij = G_ii + G_jj
-            D = np.add.outer(diag, diag)
-            denominator = D - G
-            # Avoid division by zero
-            denominator[denominator == 0] = 1.0
+            # S = G / (G_ii + G_jj - G_ij)
+            D = diag.view(-1, 1) + diag.view(1, -1)
+            denominator = (D - G).clamp(min=1e-12)
             S = G / denominator
-            
-        else: # 'none' or 'raw'
+        else:
             S = G
             if self.normalize:
-               # Simple max normalization if requested but no metric specific
-               m = S.max()
-               if m > 0: S /= m
+                m = S.max()
+                if m > 0: S /= m
 
-        # 4. Zero out diagonal (usually we don't recommend the item itself based on itself)
-        np.fill_diagonal(S, 0.0)
+        # 4. Zero out diagonal
+        S.fill_diagonal_(0.0)
         
         # 5. Store
-        self.similarity_matrix.copy_(torch.from_numpy(S).float())
-        self._log("CoOccurrence model fitted.")
+        self.similarity_matrix = S
+        self._log("CoOccurrence model fitted on GPU.")
 
     def forward(self, user_ids, item_ids=None):
         if self.train_matrix_csr is None:

@@ -22,11 +22,13 @@ from scipy.sparse.linalg import svds
 def get_device(preference='auto'):
     """Get the best available device."""
     if preference == 'auto':
-        if torch.backends.mps.is_available():
-            return 'mps'
-        elif torch.cuda.is_available():
-            return 'cuda'
-        return 'cpu'
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            return torch.device('mps')
+        return torch.device('cpu')
+    if isinstance(preference, str):
+        return torch.device(preference)
     return preference
 
 
@@ -34,23 +36,18 @@ def get_device(preference='auto'):
 # GPU-Accelerated Cholesky Solver
 # ============================================================
 
-def gpu_cholesky_solve(G_np, rhs_np=None, device='auto'):
+def gpu_cholesky_solve(G_np, rhs_np=None, device='auto', return_tensor=False):
     """
     Solve G @ X = rhs via Cholesky.
-    torch>=2.9: MPS/CUDA 네이티브 cholesky 지원. OOM 시 CPU scipy fallback.
-    
     Args:
-        G_np: (M, M) numpy array, symmetric positive definite (float32)
-        rhs_np: (M, K) numpy array. If None, resolves full inverse G^-1.
-        
-    Returns:
-        X_np: (M, K) numpy array (float32)
+        G_np: (M, M) numpy array
+        rhs_np: (M, K) numpy array
+        return_tensor: If True, returns torch.Tensor on device.
     """
     dev = get_device(device)
     M = G_np.shape[0]
     
-    # GPU/MPS 네이티브 경로 (torch>=2.9)
-    if dev in ('mps', 'cuda'):
+    if dev.type in ('mps', 'cuda'):
         try:
             t0 = time.time()
             G_t = torch.from_numpy(G_np).float().to(dev)
@@ -63,13 +60,19 @@ def gpu_cholesky_solve(G_np, rhs_np=None, device='auto'):
                 rhs_t = torch.from_numpy(rhs_np).float().to(dev)
                 X_t = torch.cholesky_solve(rhs_t, L)
             del L, G_t
+            
+            if return_tensor:
+                print(f"[gpu_accel] {dev.upper()} Cholesky Solve ({M}x{M}) [Tensor]: {time.time()-t0:.2f}s")
+                return X_t
+                
             result = X_t.cpu().numpy()
-            print(f"[gpu_accel] {dev.upper()} Cholesky Solve ({M}x{M}): {time.time()-t0:.2f}s")
+            print(f"[gpu_accel] {dev.upper()} Cholesky Solve ({M}x{M}) [NumPy]: {time.time()-t0:.2f}s")
             return result
         except RuntimeError as e:
             print(f"[gpu_accel] {dev.upper()} cholesky OOM ({e}), CPU fallback...")
     
-    return _cpu_cholesky(G_np, rhs_np)
+    res_np = _cpu_cholesky(G_np, rhs_np)
+    return torch.from_numpy(res_np).float().to(dev) if return_tensor else res_np
 
 
 def _cpu_cholesky(G_np, rhs_np, block_size=2000):
@@ -108,73 +111,58 @@ def _cpu_cholesky(G_np, rhs_np, block_size=2000):
     return result
 
 
-def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto'):
+def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', return_tensor=False):
     """
     Compute (X^T X + λI)^-1 @ rhs.
-    - M ≤ 20k: Eigendecomposition cache (first call ~60s, subsequent ~1s)
-    - M > 20k: Cholesky per call (~77s each, but no slow eigen overhead)
-    
-    Args:
-        X_sparse: scipy sparse (N, M)
-        reg_lambda: regularization
-        rhs: (M, K) numpy array. If None, solves for identity (full inverse).
-        device: device preference
-        
-    Returns:
-        P: (M, K) numpy array (float32)
     """
     M = X_sparse.shape[1]
-    EIGEN_THRESHOLD = 15000  # eigh O(M³): 15k→~30s OK, 40k→~30min 비실용적
+    EIGEN_THRESHOLD = 15000
+    dev = get_device(device)
     
-    # === Check eigen cache first (any size) ===
+    # 1. Check eigen cache
     cache = _GramEigenCache.get(X_sparse)
     if cache is not None:
-        V, eigvals = cache
-        print(f"[gpu_accel] Eigen cache hit! ({M}x{M}, λ={reg_lambda:.4f}) → O(M²) solve")
+        V_np, eigvals_np = cache
         t0 = time.time()
-        inv_eigvals = (1.0 / (eigvals + reg_lambda)).astype(np.float32)
-        if rhs is None:
-            P = (V * inv_eigvals[None, :]) @ V.T
+        if return_tensor and dev.type in ('cuda', 'mps'):
+            V = torch.from_numpy(V_np).float().to(dev)
+            eigvals = torch.from_numpy(eigvals_np).float().to(dev)
+            inv_eig = 1.0 / (eigvals + reg_lambda)
+            if rhs is None:
+                P = (V * inv_eig.unsqueeze(0)) @ V.t()
+            else:
+                rhs_t = torch.from_numpy(rhs).float().to(dev) if isinstance(rhs, np.ndarray) else rhs.to(dev)
+                P = (V * inv_eig.unsqueeze(0)) @ (V.t() @ rhs_t)
+            print(f"[gpu_accel] Eigen solve [Tensor] on {dev}: {time.time()-t0:.2f}s")
+            return P
         else:
-            P = (V * inv_eigvals[None, :]) @ (V.T @ rhs.astype(np.float32))
-        print(f"[gpu_accel] Eigen solve ({M}x{M}): {time.time()-t0:.2f}s")
-        return P
-    
-    # === Eigen path (M ≤ 15k): first call computes eigh, caches for subsequent λ ===
+            inv_eigvals = (1.0 / (eigvals_np + reg_lambda)).astype(np.float32)
+            if rhs is None:
+                P = (V_np * inv_eigvals[None, :]) @ V_np.T
+            else:
+                P = (V_np * inv_eigvals[None, :]) @ (V_np.T @ rhs.astype(np.float32))
+            print(f"[gpu_accel] Eigen solve [NumPy] on CPU: {time.time()-t0:.2f}s")
+            return torch.from_numpy(P).float().to(dev) if return_tensor else P
+
+    # 2. Eigen Path
     if M <= EIGEN_THRESHOLD:
-        print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition (cached for subsequent λ)...")
-        t0 = time.time()
+        print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition (first call)...")
+        # Optimization: compute Gram matrix directly if small
         G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
         from scipy.linalg import eigh
         eigvals, V = eigh(G)
         del G
-        print(f"[gpu_accel] Eigendecomposition ({M}x{M}): {time.time()-t0:.1f}s ✓")
         _GramEigenCache.put(X_sparse, V.astype(np.float32), eigvals.astype(np.float32))
-        
-        inv_eigvals = (1.0 / (eigvals + reg_lambda)).astype(np.float32)
-        if rhs is None:
-            P = (V * inv_eigvals[None, :]) @ V.T
-        else:
-            P = (V * inv_eigvals[None, :]) @ (V.T @ rhs.astype(np.float32))
-        return P
-    
-    # === Large matrix path (M > 15k): Force memory-efficient Cholesky ===
-    # No more SVD approximations. We use the block-wise Cholesky solver to keep OOM low while being exact.
-    print(f"[gpu_accel] Gram ({M}x{M}) + Block-wise Cholesky (Exact)...")
+        return gpu_gram_solve(X_sparse, reg_lambda, rhs, device, return_tensor)
+
+    # 3. Cholesky Path
+    print(f"[gpu_accel] Gram ({M}x{M}) + Exact Cholesky...")
     t0 = time.time()
-    
-    # 1. Compute G_np in a memory efficient way (not allocating M*M immediately if possible, but X^TX is M*M anyway)
-    # Since G is M*M float32 (e.g. 35k x 35k = 4.5GB), we must be careful.
     G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
     G[np.diag_indices(M)] += reg_lambda
     
-    # gpu_cholesky_solve automatically uses block-wise inversion if rhs is None
-    P = gpu_cholesky_solve(G, rhs, device=device)
-    
-    # G is deleted inside gpu_cholesky_solve's overwriting Factorization, but let's be safe
+    P = gpu_cholesky_solve(G, rhs, device=device, return_tensor=return_tensor)
     del G
-    print(f"[gpu_accel] Exact Block-wise Cholesky done: {time.time()-t0:.1f}s")
-    
     return P
 
 
@@ -187,11 +175,14 @@ class _GramEigenCache:
     
     @classmethod
     def _key(cls, X_sparse):
-        # Fast hash: shape + nnz + first/last few data values
+        # Inclusion of indices and indptr ensures uniqueness across different data splits
         d = X_sparse.data
+        idx = X_sparse.indices
+        ptr = X_sparse.indptr
         checksum = hash((X_sparse.shape, X_sparse.nnz, 
-                        d[:5].tobytes() if len(d) >= 5 else d.tobytes(),
-                        d[-5:].tobytes() if len(d) >= 5 else b''))
+                        d[:10].tobytes() if len(d) >= 10 else d.tobytes(),
+                        idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
+                        ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
         return checksum
     
     @classmethod
@@ -218,9 +209,12 @@ class _TruncatedSVDCache:
     @classmethod
     def _key(cls, X_sparse):
         d = X_sparse.data
+        idx = X_sparse.indices
+        ptr = X_sparse.indptr
         return hash((X_sparse.shape, X_sparse.nnz,
-                    d[:5].tobytes() if len(d) >= 5 else d.tobytes(),
-                    d[-5:].tobytes() if len(d) >= 5 else b''))
+                    d[:10].tobytes() if len(d) >= 10 else d.tobytes(),
+                    idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
+                    ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
     
     @classmethod
     def get(cls, X_sparse):

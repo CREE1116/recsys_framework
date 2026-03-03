@@ -14,8 +14,12 @@ class _SLIMMatrixCache:
     @classmethod
     def _key(cls, X_csr):
         d = X_csr.data
+        idx = X_csr.indices
+        ptr = X_csr.indptr
         return hash((X_csr.shape, X_csr.nnz,
-                     d[:8].tobytes() if len(d) >= 8 else d.tobytes()))
+                     d[:10].tobytes() if len(d) >= 10 else d.tobytes(),
+                     idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
+                     ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
 
     @classmethod
     def get(cls, X_csr):
@@ -94,6 +98,7 @@ class SLIM(BaseModel):
         self.n_items = data_loader.n_items
 
         self.W = None
+        self.register_buffer('W_tensor', torch.empty(0, 0))
         self.train_matrix_csr = None
 
         self._log(f"Initialized: alpha={self.alpha}, l1_ratio={self.l1_ratio}, "
@@ -142,6 +147,7 @@ class SLIM(BaseModel):
 
         W_out = np.stack(results, axis=1).astype(np.float32)  # (M, M)
         self.W = W_out
+        self.register_buffer('W_tensor', torch.from_numpy(W_out).to(self.device))
 
         elapsed = time.time() - start_time
         nnz = np.sum(W_out > 1e-8)
@@ -162,8 +168,8 @@ class SLIM(BaseModel):
             u_ids_np = np.array(user_ids)
 
         # GPU inference: W_tensor를 self.device에 올려두고 user input도 같이 올림
-        if not hasattr(self, 'W_tensor') or self.W_tensor is None:
-            self.W_tensor = torch.from_numpy(self.W).to(self.device)
+        if self.W_tensor.numel() == 0:
+             self.register_buffer('W_tensor', torch.from_numpy(self.W).to(self.device))
 
         user_input = torch.from_numpy(
             self.train_matrix_csr[u_ids_np].toarray().astype(np.float32)

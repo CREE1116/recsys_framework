@@ -18,7 +18,7 @@ class RLAE(BaseModel):
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
         
-        self.register_buffer('weight_matrix', torch.zeros(self.n_items, self.n_items))
+        self.register_buffer('weight_matrix', torch.empty(0, 0))
         self.train_matrix_csr = None
         
         self._log(f"Initialized: λ={self.reg_lambda}, b={self.b}")
@@ -37,7 +37,7 @@ class RLAE(BaseModel):
 
     def fit(self, data_loader):
         self._log(f"\n{'='*60}")
-        self._log(f"Training with b={self.b}, λ={self.reg_lambda}")
+        self._log(f"Training RLAE on {self.device}")
         self._log(f"{'='*60}")
         
         import time
@@ -47,38 +47,35 @@ class RLAE(BaseModel):
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
         X = self.train_matrix_csr
         
-        # GPU-accelerated Cholesky solve
+        # 2. Solve (X^TX + λI)^-1 on GPU
         from src.utils.gpu_accel import gpu_gram_solve
-        P = gpu_gram_solve(X, self.reg_lambda)
+        P = gpu_gram_solve(X, self.reg_lambda, device=self.device, return_tensor=True)
         
-        P_diag = np.diag(P).copy()
+        # 3. Compute diagonal terms on GPU
+        P_diag = torch.diagonal(P).clone() # (M,)
         
         # 4. Compute μ for diagonal constraint
-        constraint_vals = 1 - P_diag * self.reg_lambda
+        # constraint_vals = 1 - P_diag * λ
+        constraint_vals = 1.0 - P_diag * self.reg_lambda
         active_mask = constraint_vals > self.b
-        n_active = active_mask.sum()
+        n_active = active_mask.sum().item()
         
-        mu = np.zeros(self.n_items, dtype=np.float32)
-        mu[active_mask] = (1 - self.b) / P_diag[active_mask] - self.reg_lambda
+        mu = torch.zeros(self.n_items, device=self.device, dtype=torch.float32)
+        if n_active > 0:
+             mu[active_mask] = (1.0 - self.b) / P_diag[active_mask].clamp(min=1e-12) - self.reg_lambda
         
         # 5. B = I - P @ diag(λ + μ)
-        diag_term = self.reg_lambda + mu
-        B = np.eye(self.n_items, dtype=np.float32) - P @ np.diag(diag_term)
-        del P
+        # Use element-wise multiplication for diag term
+        diag_term = self.reg_lambda + mu # (M,)
+        B = - (P * diag_term.view(1, -1))
+        B.diagonal().add_(1.0)
         
-        # 6. Store
-        self.weight_matrix.copy_(torch.from_numpy(B).float())
+        del P
+        self.weight_matrix = B
         
         elapsed = time.time() - start_time
-        diag_vals = np.diag(B)
-        del B
-        
-        self._log(f"\n{'='*60}")
-        self._log("Training complete!")
-        self._log(f"  - Time: {elapsed:.2f}s")
+        self._log(f"Training complete in {elapsed:.2f}s!")
         self._log(f"  - Active constraints: {n_active}/{self.n_items}")
-        self._log(f"  - Diagonal: min={diag_vals.min():.4f}, max={diag_vals.max():.4f}, mean={diag_vals.mean():.4f}")
-        self._log(f"  - Constraint: diag(B) ≤ {self.b}, max violation: {max(0, diag_vals.max() - self.b):.6f}")
         self._log(f"{'='*60}\n")
 
     def forward(self, user_ids, item_ids=None):

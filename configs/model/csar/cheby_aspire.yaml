@@ -2,6 +2,12 @@ model:
   name: cheby_aspire
   alpha: 500.0
   degree: 100
-  beta: 0.5
+
+  # Beta: Spectral Penalty Selection
+  # 'auto_bias': Theoretically derived beta = gamma / (1+gamma)
+  # 'auto_compromise': Theoretically derived beta = gamma / 2
+  # beta: "auto_compromise"
+  beta: "auto_compromise"
+
   lambda_max_estimate: "auto"
 device: auto

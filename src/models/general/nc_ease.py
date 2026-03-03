@@ -15,7 +15,7 @@ class NCEASE(EASE):
         self._log(f"Initialized (λ={self.reg_lambda})")
 
     def fit(self, data_loader):
-        self._log(f"Fitting (λ={self.reg_lambda})...")
+        self._log(f"Fitting NCEASE on {self.device} (λ={self.reg_lambda})...")
         
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
@@ -25,15 +25,16 @@ class NCEASE(EASE):
         X = sp.csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items), dtype=np.float32)
         self.train_matrix_csr = X
         
-        # GPU-accelerated Cholesky solve
+        # 1. Solve (X^T X + λI)^-1 via GPU
         from src.utils.gpu_accel import gpu_gram_solve
-        P = gpu_gram_solve(X, self.reg_lambda)
+        P = gpu_gram_solve(X, self.reg_lambda, device=self.device, return_tensor=True)
         
-        # B = I - λP
-        B = np.eye(self.n_items, dtype=np.float32) - self.reg_lambda * P
+        # 2. B = I - λP on GPU
+        # B = - λP + I
+        B = -self.reg_lambda * P
+        B.diagonal().add_(1.0)
         del P
         
-        self.weight_matrix.copy_(torch.from_numpy(B).float())
-        del B
-        
+        # 3. Store
+        self.weight_matrix = B
         self._log("Fitted.")

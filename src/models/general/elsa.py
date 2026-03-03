@@ -26,9 +26,9 @@ class ELSA(BaseModel):
         self.n_items = data_loader.n_items
         
         # Low-rank components (will be computed in fit())
-        self.L = None  # (M × d)
-        self.S = None  # (d × M)
-        self.R = None  # (M × M) sparse
+        self.register_buffer('L', torch.empty(0, 0))  # (M × d)
+        self.register_buffer('S', torch.empty(0, 0))  # (d × M)
+        self.register_buffer('R', torch.empty(0, 0))  # (M × M) sparse
         
         self.train_matrix_csr = None
         
@@ -65,51 +65,50 @@ class ELSA(BaseModel):
         
         # GPU-accelerated EASE solution
         from src.utils.gpu_accel import gpu_gram_solve
-        P = gpu_gram_solve(X, self.reg_lambda)
+        P = gpu_gram_solve(X, self.reg_lambda, device=self.device, return_tensor=True)
         
-        diag = np.diag(P).copy()
-        B_np = -P / diag[None, :]
+        diag = torch.diagonal(P).clone()
+        B_t = -P / diag.view(1, -1)
+        B_t.diagonal().fill_(0)
         del P
-        np.fill_diagonal(B_np, 0)
         
         # 3. Low-rank decomposition via SVD
-        self._log(f"Computing SVD (rank={self.rank})...")
+        self._log(f"Computing SVD (rank={self.rank}) on {self.device}...")
         
-        U, Σ, Vt = np.linalg.svd(B_np, full_matrices=False)
-        
-        # Truncate to rank d
-        Σ_d = Σ[:self.rank]
-        U_d = U[:, :self.rank]
-        Vt_d = Vt[:self.rank, :]
-        
+        try:
+            U, Sigma, Vh = torch.linalg.svd(B_t, full_matrices=False)
+            U_d = U[:, :self.rank]
+            Sigma_d = Sigma[:self.rank]
+            Vh_d = Vh[:self.rank, :]
+            del U, Sigma, Vh
+        except RuntimeError:
+            self._log("GPU SVD failed, fallback to CPU...")
+            B_np = B_t.cpu().numpy()
+            U, Sigma, Vh = np.linalg.svd(B_np, full_matrices=False)
+            U_d = torch.from_numpy(U[:, :self.rank]).to(self.device)
+            Sigma_d = torch.from_numpy(Sigma[:self.rank]).to(self.device)
+            Vh_d = torch.from_numpy(Vh[:self.rank, :]).to(self.device)
+            del B_np, U, Sigma, Vh
+
         # L @ S decomposition
-        L = U_d @ np.diag(np.sqrt(Σ_d))  # (M × d)
-        S = np.diag(np.sqrt(Σ_d)) @ Vt_d  # (d × M)
+        sqrt_sigma = torch.sqrt(Sigma_d)
+        L = U_d * sqrt_sigma.view(1, -1)
+        S = sqrt_sigma.view(-1, 1) * Vh_d
         
         # 4. Sparse residual
-        self._log("Computing sparse residual...")
+        self._log("Filtering sparse residual...")
+        R = B_t - (L @ S)
         
-        B_lowrank = L @ S
-        R = B_np - B_lowrank
-        
-        # Sparsify: keep top-k per row
-        R_sparse = np.zeros_like(R)
-        for i in range(self.n_items):
-            topk_idx = np.argpartition(np.abs(R[i]), -self.sparse_k)[-self.sparse_k:]
-            R_sparse[i, topk_idx] = R[i, topk_idx]
+        # Sparsify: keep top-k per row (using torch.topk)
+        mask = torch.zeros_like(R, dtype=torch.bool)
+        _, topk_indices = torch.topk(torch.abs(R), self.sparse_k, dim=1)
+        mask.scatter_(1, topk_indices, True)
+        R = R * mask
         
         # 5. Store components
-        self.L = torch.from_numpy(L).float()
-        self.S = torch.from_numpy(S).float()
-        
-        # Convert R to sparse tensor
-        R_coo = sp.coo_matrix(R_sparse)
-        indices = torch.LongTensor([R_coo.row, R_coo.col])
-        values = torch.FloatTensor(R_coo.data)
-        self.R = torch.sparse_coo_tensor(
-            indices, values, 
-            (self.n_items, self.n_items)
-        )
+        self.register_buffer('L', L)
+        self.register_buffer('S', S)
+        self.register_buffer('R', R.to_sparse_coo().coalesce())
         
         # 6. Statistics
         elapsed = time.time() - start_time
@@ -145,25 +144,17 @@ class ELSA(BaseModel):
             user_input_sparse.toarray()
         ).float().to(self.device)
         
-        # Move components to device
-        L = self.L.to(self.device)
-        S = self.S.to(self.device)
-        R = self.R.to(self.device)
-        
         # Low-rank component: (X @ L) @ S
-        latent = user_input @ L  # (batch × d)
-        scores_lr = latent @ S   # (batch × M)
+        latent = user_input @ self.L  # (batch × d)
+        scores_lr = latent @ self.S   # (batch × M)
         
         # Sparse component: X @ R
-        # MPS workaround: Sparse MM on CPU
+        # Use coalesced R directly from buffer
         try:
-            scores_sp = torch.sparse.mm(user_input, R.t().coalesce())
+            scores_sp = torch.sparse.mm(user_input, self.R.t())
         except (RuntimeError, NotImplementedError):
-            # Fallback to CPU if MPS fails
-            user_input_cpu = user_input.cpu()
-            R_cpu = R.cpu()
-            scores_sp_cpu = torch.sparse.mm(user_input_cpu, R_cpu.t().coalesce())
-            scores_sp = scores_sp_cpu.to(self.device)
+            # Fallback for MPS
+            scores_sp = torch.sparse.mm(user_input.cpu(), self.R.cpu().t()).to(self.device)
         
         # Combine
         scores = scores_lr + scores_sp

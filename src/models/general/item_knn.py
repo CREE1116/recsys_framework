@@ -21,8 +21,14 @@ class ItemKNN(BaseModel):
         self.n_items = self.data_loader.n_items
         
         # main.py에서 fit()을 명시적으로 호출하므로, __init__에서는 데이터 로드만 준비
-        self.user_item_matrix = None
-        self.item_similarity_matrix = None
+        # Sparse buffers for interaction and similarity
+        self.register_buffer('ui_indices', torch.empty(2, 0, dtype=torch.long))
+        self.register_buffer('ui_values', torch.empty(0))
+        self.register_buffer('sim_indices', torch.empty(2, 0, dtype=torch.long))
+        self.register_buffer('sim_values', torch.empty(0))
+        
+        self.ui_shape = (self.n_users, self.n_items)
+        self.sim_shape = (self.n_items, self.n_items)
         
         self._log(f"Initialized (k={self.k})")
 
@@ -146,12 +152,16 @@ class ItemKNN(BaseModel):
                 new_indices.extend(top_indices)
                 new_indptr.append(new_indptr[-1] + self.k)
                 
-        self.item_similarity_matrix = sp.csr_matrix(
-            (new_data, new_indices, new_indptr),
-            shape=self.item_similarity_matrix.shape
-        )
-            
-        self._log("Fitted.")
+        # Convert to Torch Sparse and register as buffers
+        self.item_similarity_matrix = self.item_similarity_matrix.tocoo()
+        self.register_buffer('sim_indices', torch.LongTensor([self.item_similarity_matrix.row, self.item_similarity_matrix.col]))
+        self.register_buffer('sim_values', torch.FloatTensor(self.item_similarity_matrix.data))
+        
+        ui_coo = self.user_item_matrix.tocoo()
+        self.register_buffer('ui_indices', torch.LongTensor([ui_coo.row, ui_coo.col]))
+        self.register_buffer('ui_values', torch.FloatTensor(ui_coo.data))
+        
+        self._log("Fitted and stored as Torch Sparse buffers.")
 
     def _scipy_sparse_to_torch_sparse(self, sparse_mx):
         """Scipy 희소 행렬을 PyTorch 희소 텐서로 변환합니다."""
@@ -163,34 +173,37 @@ class ItemKNN(BaseModel):
 
     def forward(self, users):
         """
-        주어진 사용자들에 대한 모든 아이템의 점수를 예측합니다.
-        score(u, i) = sum_{j in I(u)} sim(i, j)
+        [Optimization] GPU-accelerated Sparse ItemKNN Score Calculation
+        score = X @ S (where X is user history multi-hot, S is item-item similarity)
         """
-        scores = []
-        user_ids = users.cpu().numpy()
-
-        # 사용자별로 상호작용 기록을 가져와 점수 계산
-        for user_id in user_ids:
-            # 사용자가 상호작용한 아이템들의 인덱스
-            interacted_items = self.user_item_matrix[user_id].indices
+        # Build user history batch (Dense for small batches, or Sparse if huge)
+        batch_size = users.size(0)
+        user_input = torch.zeros(batch_size, self.n_items, device=self.device)
+        
+        # User history is stored in buffers
+        # We need a way to efficiently get batch user history on GPU
+        # If we use sparse tensors: batch_users = self.user_item_matrix[users]
+        # Torch sparse indexing isn't great. Let's use the loader's history if needed or dense batch.
+        
+        users_np = users.cpu().numpy()
+        for i, u_id in enumerate(users_np):
+            hist = list(self.data_loader.train_user_history.get(int(u_id), []))
+            if hist:
+                user_input[i, hist] = 1.0
+        
+        # S = similarity matrix (Sparse)
+        S = torch.sparse_coo_tensor(self.sim_indices, self.sim_values, self.sim_shape, device=self.device)
+        
+        # Score = X @ S
+        # torch.sparse.mm(sparse_A, dense_B) -> we need X @ S which is dense @ sparse
+        # We can use (S^T @ X^T)^T
+        try:
+            scores = torch.sparse.mm(S.t(), user_input.t()).t()
+        except (RuntimeError, NotImplementedError):
+            # Fallback for MPS or large matrices
+            scores = torch.mm(user_input, S.to_dense()) # Still better than loop
             
-            if len(interacted_items) == 0:
-                # 상호작용이 없는 경우 0점
-                user_scores = torch.zeros(self.n_items)
-            else:
-                # 사용자가 상호작용한 아이템들과 다른 모든 아이템들 간의 유사도 합
-                # item_similarity_matrix: [n_items, n_items]
-                # interacted_items: [num_interacted]
-                # user_sims: [num_interacted, n_items]
-                user_scores = self.item_similarity_matrix[interacted_items, :].sum(axis=0)
-                
-                # Scipy 결과(matrix)를 numpy array로 변환
-                if isinstance(user_scores, np.matrix):
-                    user_scores = user_scores.A1
-            
-            scores.append(torch.FloatTensor(user_scores))
-            
-        return torch.stack(scores).to(self.device)
+        return scores
 
     def predict_for_pairs(self, user_ids, item_ids):
         """
@@ -215,17 +228,17 @@ class ItemKNN(BaseModel):
         return torch.FloatTensor(scores).to(self.device)
 
     def get_final_item_embeddings(self):
-        """
-        ItemKNN 모델은 임베딩이 없으므로, 유사도 행렬을 아이템 표현으로 반환합니다.
-        가급적 밀집 행렬(Dense)로 변환하여 반환합니다.
-        """
-        if self.item_similarity_matrix is None:
+        """Item-Item similarity is used as item 'embeddings'."""
+        if self.sim_values.numel() == 0:
             return torch.eye(self.n_items, device=self.device)
         
-        if sp.issparse(self.item_similarity_matrix):
-            return torch.from_numpy(self.item_similarity_matrix.toarray()).float().to(self.device)
+        # Only toarray if items are small
+        if self.n_items < 10000:
+            S = torch.sparse_coo_tensor(self.sim_indices, self.sim_values, self.sim_shape, device=self.device)
+            return S.to_dense()
         else:
-            return torch.from_numpy(self.item_similarity_matrix).float().to(self.device)
+            self._log(f"Warning: n_items={self.n_items} too large for dense embeddings. Returning None.")
+            return None
 
     def calc_loss(self, batch_data):
         """

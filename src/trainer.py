@@ -58,6 +58,7 @@ class Trainer:
 
         self.best_metric_value = -float('inf')
         self.best_val_metrics = {}
+        self.best_epoch = -1 # Best achieved epoch (1-indexed for training, -1 for non-trainable)
 
         with open(os.path.join(self.output_path, 'config.yaml'), 'w') as f:
             config_to_save = copy.deepcopy(self.config)
@@ -144,7 +145,8 @@ class Trainer:
             return self._train_loop()
         else:
             print("Non-trainable model. Proceeding directly to evaluation...")
-            return self.evaluate(is_final_evaluation=True)
+            # 비학습 모델도 hpo_mode이면 test 생략
+            return self.evaluate(is_final_evaluation=not self.config.get('hpo_mode', False))
 
     def _train_loop(self):
         """SGD 학습 루프 (내부용)"""
@@ -229,7 +231,7 @@ class Trainer:
             main_metric_value = current_metrics.get(main_metric_name, 0.0)
             print(f"Epoch {epoch+1}/{self.epochs} - Loss: {avg_total_loss:.4f} (Main: {avg_main_loss:.4f}) - Val {main_metric_name}: {main_metric_value:.4f}")
 
-            if self._check_early_stopping(current_metrics):
+            if self._check_early_stopping(current_metrics, epoch + 1):
                 break
         
         print("Training finished. Loading best model for final evaluation...")
@@ -240,6 +242,11 @@ class Trainer:
         else:
             print("[Warning] Best model checkpoint not found. Using last epoch model.")
         
+        # [수정] HPO 중이면 TEST 평가 생략하고 베스트 검증 지표 반환
+        if self.config.get('hpo_mode', False):
+            print("[HPO-Mode] Skipping TEST evaluation. Using best validation metrics.")
+            return self.evaluate(is_final_evaluation=False, update_best_snapshot=True)
+            
         current_metrics = self.evaluate(is_final_evaluation=True)
         
         self._visualize_results()
@@ -283,7 +290,10 @@ class Trainer:
             m_val = current_metrics.get(m_name, 0.0)
             if m_val >= self.best_metric_value:
                 self.best_metric_value = m_val
+                # non-trainable 모델은 epoch 0으로 기록
+                self.best_epoch = 0 
                 self.best_val_metrics = copy.deepcopy(current_metrics)
+                self._save_val_metrics(current_metrics)
 
         if is_final_evaluation:
             # [추가] 만약 검증이 한 번도 수행되지 않았다면 수행 (EASE 등 비학습 모델 대응)
@@ -303,16 +313,27 @@ class Trainer:
             with open(metrics_path, 'w') as f:
                 json.dump(dumpable_metrics, f, indent=4)
             print(f"Final metrics saved to {metrics_path}")
-        else:
-            # 학습 중 검증 결과도 별도 저장 (디버깅 용도)
-            val_metrics_path = os.path.join(self.output_path, 'val_metrics.json')
-            dumpable_val = _convert_numpy_types_to_python_types(current_metrics)
-            with open(val_metrics_path, 'w') as f:
-                json.dump(dumpable_val, f, indent=4)
-
+        elif self.config.get('hpo_mode', False):
+            # [수정] HPO 모드에서는 검증 결과를 final_metrics.json에도 기록하여 Optuna가 읽게 함
+            # (원래는 TEST 결과가 들어가는 자리지만 HPO 시에는 VALIDATION 결과를 반환)
+            metrics_path = os.path.join(self.output_path, 'final_metrics.json')
+            dumpable_metrics = _convert_numpy_types_to_python_types(current_metrics)
+            with open(metrics_path, 'w') as f:
+                json.dump(dumpable_metrics, f, indent=4)
+            # print(f"[HPO-Mode] Best validation metrics saved as trial result to {metrics_path}")
+        
         return current_metrics
 
-    def _check_early_stopping(self, current_metrics):
+    def _save_val_metrics(self, metrics):
+        """[수정] 최고 검증 성과와 epoch 번호를 val_metrics.json에 기록"""
+        val_metrics_path = os.path.join(self.output_path, 'val_metrics.json')
+        dumpable_val = _convert_numpy_types_to_python_types(metrics)
+        # best_epoch 정보 추가
+        dumpable_val['best_epoch'] = self.best_epoch
+        with open(val_metrics_path, 'w') as f:
+            json.dump(dumpable_val, f, indent=4)
+
+    def _check_early_stopping(self, current_metrics, epoch):
         eval_config = self.config.get('evaluation', {})
         main_metric = eval_config.get('main_metric', 'NDCG')
         main_metric_k = eval_config.get('main_metric_k', 10)
@@ -325,8 +346,10 @@ class Trainer:
 
         if current_main_metric > self.best_metric_value:
             self.best_metric_value = current_main_metric
+            self.best_epoch = epoch
             self.best_val_metrics = copy.deepcopy(current_metrics) # 전체 지표 스냅샷 저장
             self.patience_counter = 0
+            self._save_val_metrics(current_metrics) # [수정] 최고 기록 시점에만 파일 업데이트
             self._save_checkpoint()
         else:
             self.patience_counter += 1

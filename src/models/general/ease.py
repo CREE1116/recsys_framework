@@ -16,8 +16,10 @@ class EASE(BaseModel):
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
         
-        # B matrix를 저장할 버퍼 등록 (학습되지 않는 파라미터)
-        self.register_buffer('weight_matrix', torch.zeros(self.n_items, self.n_items))
+        # [MEMORY FIX] Do NOT allocate large dense zero matrix on CPU at init.
+        # This prevents the "DefaultCPUAllocator: not enough memory" error for large datasets.
+        self.register_buffer('weight_matrix', torch.empty(0, 0))
+        self.is_sparse = False 
         
         # 학습에 사용된 희소 행렬을 저장 (Inference 시 사용)
         self.train_matrix_csr = None
@@ -32,46 +34,56 @@ class EASE(BaseModel):
         X = sp.csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items), dtype=np.float32)
         self.train_matrix_csr = X
         
-        # GPU-accelerated Cholesky solve
+        # 1. Solve (X^T X + λI)^-1 via GPU Cholesky/Eigen
+        # Now returns a PyTorch tensor directly on the target device
         from src.utils.gpu_accel import gpu_gram_solve
-        P = gpu_gram_solve(X, self.reg_lambda)
+        P = gpu_gram_solve(X, self.reg_lambda, device=self.device, return_tensor=True)
         
-        # B = -P / diag(P), with zero diagonal
-        diag = np.diag(P).copy()
-        B = -P / diag[None, :]
+        # 2. Post-process B = -P / diag(P) on GPU
+        # shape P: (M, M)
+        diag = torch.diagonal(P).clone() # shape (M,)
+        
+        # B = -P / diag_j
+        # Broadcase diag to (1, M) for division
+        B = -P / diag.view(1, -1)
         del P
-        np.fill_diagonal(B, 0)
         
-        self.weight_matrix.copy_(torch.from_numpy(B).float())
-        del B
+        # Set diagonal to ZERO
+        B.fill_diagonal_(0)
         
-        self._log(f"Fitted. B: {self.n_items}x{self.n_items}")
+        # 3. Sparsification if requested (still on GPU)
+        threshold = self.config['model'].get('threshold', 0.0)
+        if threshold > 0:
+            mask = torch.abs(B) >= threshold
+            B = B * mask 
+            self.is_sparse = True
+            self.weight_matrix = B.to_sparse().coalesce()
+            del mask, B
+        else:
+            self.weight_matrix = B
+        
+        self._log(f"Fitted on {self.device}. B: {self.n_items}x{self.n_items} (Sparse={self.is_sparse})")
 
     def forward(self, user_ids, item_ids=None):
-        """
-        user_ids: (batch_size) - List of user IDs to predict for
-        """
         if self.train_matrix_csr is None:
              raise RuntimeError("EASE model has not been fitted yet. Call fit() first.")
 
-        # 1. Get user Interaction Vectors from Train Matrix (using sparse slicing)
-        # user_ids is likely a Tensor, convert to numpy for slicing
         if isinstance(user_ids, torch.Tensor):
             u_ids_np = user_ids.cpu().numpy()
         else:
             u_ids_np = user_ids
             
-        # Efficiently slice CSR matrix for the batch of users
-        # shape: (batch_size, n_items)
         user_input_sparse = self.train_matrix_csr[u_ids_np]
-        
-        # Convert to Dense Tensor for multiplication
-        # shape: (batch_size, n_items)
         user_input = torch.from_numpy(user_input_sparse.toarray()).float().to(self.device)
         
-        # 2. Compute Scores: S = X @ B
-        # (batch_size, n_items) @ (n_items, n_items) -> (batch_size, n_items)
-        scores = user_input @ self.weight_matrix
+        if self.is_sparse:
+            # [CUDA OPT] Sparse-Dense Multiplication
+            # user_input: (B, I), weight_matrix: Sparse(I, I)
+            # torch.sparse.mm only supports Sparse @ Dense or Sparse @ Sparse.
+            # So we use (W @ X^T)^T
+            scores = torch.sparse.mm(self.weight_matrix, user_input.t()).t()
+        else:
+            scores = user_input @ self.weight_matrix
         
         return scores
 

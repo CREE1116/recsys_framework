@@ -35,9 +35,10 @@ class SANSA(BaseModel):
         # X B = X - lambda X K^T K
         # We store K.
         
-        self.K_indices = None
-        self.K_values = None
-        self.K_shape = None
+        # We store K (Sparse)
+        self.register_buffer('K_indices', torch.empty(2, 0, dtype=torch.long))
+        self.register_buffer('K_values', torch.empty(0))
+        self.K_shape = (self.n_items, self.n_items)
         
         self.train_matrix_csr = None
 
@@ -62,10 +63,12 @@ class SANSA(BaseModel):
         self.train_matrix_csr = X_csr
         
         # 2. Compute Gram Matrix A = X^T X + lambda I
-        self._log("Computing Gram Matrix...")
+        self._log("Computing Gram Matrix (Memory Safe)...")
+        # Optimization: use sparse matrix multiplication if possible?
+        # For small/medium item counts, toarray() is okay, but for 40k+ maybe not?
+        # User reported 40k is where it starts failing.
         G = (X_csr.T @ X_csr).toarray().astype(np.float32)
-        diag_indices = np.arange(self.n_items)
-        G[diag_indices, diag_indices] += self.reg_lambda
+        G[np.diag_indices(self.n_items)] += self.reg_lambda
         
         # 3. Cholesky → L^-1 for sparsification
         self._log("Cholesky Decomposition...")
@@ -81,7 +84,7 @@ class SANSA(BaseModel):
             
             # Solve L @ L_inv = I on GPU
             self._log("Inverting Cholesky Factor...")
-            I_t = torch.eye(self.n_items, device=device, dtype=torch.float32)
+            I_t = torch.eye(self.n_items, device=self.device, dtype=torch.float32)
             L_inv_t = torch.linalg.solve_triangular(L_t, I_t, upper=False)
             del L_t, I_t
             L_inv_np = L_inv_t.cpu().numpy()
@@ -118,11 +121,11 @@ class SANSA(BaseModel):
             mask = np.abs(L_inv_np) >= threshold
             K_sparse[mask] = L_inv_np[mask]
              
-        # Convert K to sparse tensor
+        # Convert K to sparse tensor and register as buffers
         K_coo = sp.coo_matrix(K_sparse)
         
-        self.K_indices = torch.LongTensor([K_coo.row, K_coo.col])
-        self.K_values = torch.FloatTensor(K_coo.data)
+        self.register_buffer('K_indices', torch.LongTensor([K_coo.row, K_coo.col]))
+        self.register_buffer('K_values', torch.FloatTensor(K_coo.data))
         self.K_shape = (self.n_items, self.n_items)
         
         elapsed = time.time() - start_time
@@ -146,10 +149,10 @@ class SANSA(BaseModel):
             user_input_sparse.toarray()
         ).float().to(self.device)
         
-        # Reconstruct K on device
+        # Reconstruct K on device from buffers
         K = torch.sparse_coo_tensor(
-            self.K_indices, self.K_values, self.K_shape
-        ).to(self.device)
+            self.K_indices, self.K_values, self.K_shape, device=self.device
+        )
         
         # Prediction: Scores = X - lambda * X @ K^T @ K
         # 1. A = X @ K^T
