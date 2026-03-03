@@ -227,6 +227,10 @@ class BayesianOptimizer:
             # 이전 BEST 폴더는 건드리지 않음
             if "/BEST_" in path or "\\BEST_" in path:
                 continue
+            # 현재 HPO에서 가장 성적이 좋았던 디렉토리도 건드리지 않음 (재사용 위함)
+            if self.best_global_dir and os.path.abspath(path) == os.path.abspath(self.best_global_dir):
+                print(f"Skipping deletion of the best trial directory: {path}")
+                continue
             try:
                 shutil.rmtree(path)
                 deleted_count += 1
@@ -273,10 +277,21 @@ class BayesianOptimizer:
             shutil.rmtree(best_dir)
         os.makedirs(best_dir, exist_ok=True)
 
+        # [최적화] 이미 학습된 best_model.pt가 있다면 재학습 없이 복사해서 TEST만 수행
+        reused = False
+        if self.best_global_dir and os.path.exists(self.best_global_dir):
+            source_best_model = os.path.join(self.best_global_dir, "best_model.pt")
+            if os.path.exists(source_best_model):
+                print(f"[HPO] Found existing best model at {source_best_model}. Reusing for TEST.")
+                shutil.copy(source_best_model, os.path.join(best_dir, "best_model.pt"))
+                # config에 'train' 블록이 있어도 epoch 0으로 만들어 학습 건너뛰게 함
+                if 'train' in config:
+                    config['train']['epochs'] = 0
+                reused = True
+
         config['output_path_override'] = best_dir
         self.best_global_dir = best_dir
 
-        print(f"[HPO] Output → {best_dir}")
         try:
             run_single_experiment(config)
             print(f"[HPO] Test evaluation saved to {best_dir}")
