@@ -18,6 +18,7 @@ trained_model/
 data_cache/
 output/
 analysis_results/
+analysis/
 
 # Data (raw datasets - not tracked)
 data/
