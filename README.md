@@ -1,25 +1,26 @@
 # RecSys Framework 🚀
 
-최신 **협업 필터링(Collaborative Filtering)** 및 **딥러닝 기반 추천 모델**들의 성능을 일관된 환경에서 비교, 평가, 그리고 최적화하기 위해 구축된 통합 프레임워크입니다.
+Recommender System 연구자들을 위해 설계된 **경량 & 고속 프로토타이핑 프레임워크**입니다.
+복잡한 엔지니어링 뎁스를 최소화하여 새로운 수식이나 모델을 즉시 구현하고 테스트할 수 있는 연구 환경을 제공합니다.
 
-특히 **선형 공분산 필터링(Linear Covariance Filtering)**, **스펙트럼 편향 보정(Spectral Bias Correction)** 등 최신의 스펙트럼 기반 모델 라인업(CSAR, LIRA 계열)을 심층적으로 다루며, 전통적 베이스라인(MF, ItemKNN, EASE, LightGCN 등)과의 정확한 비교를 지원합니다.
+특히 최신 **Apple Silicon (MPS)**을 적극 지원하여 로컬 환경에서 대용량 SVD 및 행렬 연산을 원활하게 수행할 수 있도록 최적화되었습니다.
 
 ---
 
-## ✨ 핵심 기능
+## ✨ 핵심 철학 및 기능
 
-- **일관된 평가 프로토콜 (Unified Evaluation Protocol)**:
-  - 엄격한 Leave-One-Out (시간순) 및 다양한 데이터 분할(Ratio, Random) 지원
-  - 정교한 Negative Sampling 기법 내장 (RecBole 호환성 확보)
-  - 정확도(NDCG, HitRate) 뿐만 아니라, 다양성(Coverage, ILD), 공정성(GiniIndex), **LongTail 제어 지표**까지 종합적으로 평가
-- **효율적인 일괄 하이퍼파라미터 최적화 (Batch HPO)**:
-  - Optuna 기반의 베이지안 최적화 내장
-  - 다중 데이터셋 × 다중 모델 × 다중 시드(Multi-seed) 탐색을 YAML 설정 하나로 완벽 제어
-- **모듈화된 아키텍처**:
-  - 데이터 로딩, 손실 함수(Loss), 평가(Metrics), 모델 구조가 철저히 분리
-  - 새로운 모델 추가가 매우 용이함 ([개발자 가이드](docs/DEVELOPER_GUIDE.md) 참조)
-- **Closed-form 모델 네이티브 지원**:
-  - 학습(SGD)이 필요 없는 선형 모델(EASE, LIRA 등)을 위한 전용 파이프라인 탑재
+- **Mac(MPS) 친화적 GPU 가속**:
+  - `gpu_accel.py`를 통해 MPS(Metal Performance Shaders)와 CUDA를 완벽히 지원.
+  - 대규모 행렬 분해(SVD), Cholesky Solver 등 병목이 되는 선형 대수 연산을 GPU 기반 텐서 연산으로 이관하여 속도 극대화.
+- **연구를 위한 극강의 개발 편의성**:
+  - **Auto-Logging**: `trainer.py`가 에폭마다 메트릭을 자동 로깅하며 텐서보드 설정 불필요.
+  - **YAML-driven Architecture**: 하드코딩 없이 세팅 파일만으로 모든 파이프라인 통제.
+  - **Easy Model Extension**: `BaseModel` 클래스의 `calc_loss()` 4줄만 수정하면 새로운 추천 모델 즉시 완성.
+- **스마트 글로벌 캐시 매니저 (Global Cache Manager)**:
+  - 수십 분이 걸리는 대용량 SVD나 고유값 분해(Eigen Decomposition), 전처리된 데이터셋 등을 `CacheManager`가 글로벌하게 캐싱.
+  - 동일한 데이터나 파라미터 조합 재실행 시 계산을 100% 생략하여 **"0-초" 로딩** 실현.
+- **일괄 하이퍼파라미터 최적화 (Batch HPO)**:
+  - 다중 데이터셋 × 다중 베이스라인 모델을 Optuna 기반 베이지안 서치로 며칠에 걸쳐 한 번에 탐색하고 종합 리포트를 남기는 매크로 스크립트 보유.
 
 ---
 
@@ -27,43 +28,20 @@
 
 ```text
 recsys_framework/
-├── configs/            # YAML 기반 통합 설정 관리 (Evaluation, Dataset, Model)
-├── data/               # Raw 데이터셋 저장소 (ml-100k, ml-1m, gowalla, yelp 등)
-├── data_cache/         # 전처리 완료된 데이터 객체 캐싱 (빠른 재로딩)
-├── docs/               # 세부 문서 모음 (아키텍처, 손실 함수, 평가 프로토콜 등)
-├── output/             # 베이지안 최적화 및 일괄 실험 결과, 모델별 리포트 저장소
-├── scripts/            # 실험 실행, HPO 탐색, 데이터 전처리 매니저 스크립트 모음
-├── src/                # 프레임워크 핵심 코어
-│   ├── losses/         # BPR, InfoNCE, Pointwise Loss 등 다양한 손실함수
-│   ├── models/         # 추천 모델 구현체 모음 (General, CSAR)
-│   ├── trainer.py      # 학습(Train), 검증(Valid), 평가(Test) 루프 오케스트레이션
-│   └── evaluation.py   # Top-K 랭킹 및 10가지 이상의 상세 메트릭 계산
+├── configs/            # YAML 기반 설정 (Evaluation, Dataset, Model, Search)
+├── data/               # Raw 데이터셋 저장소
+├── data_cache/         # SVD 결과, 그래프 구성 등 리소스 집중 연산의 자동 캐싱
+├── docs/               # 개발자 가이드, 구조 요약 문서 (하단 링크 참조)
+├── output/             # 베이지안 최적화 및 평가 결과 JSON / 로그
+├── scripts/            # 실험 실행(main.py) 및 HPO 탐색 매니저
+├── src/
+│   ├── utils/
+│   │   ├── gpu_accel.py       # MPS/CUDA 가속 선형 대수 라이브러리 (SVD, Cholesky)
+│   │   └── cache_manager.py   # 전역 메모리/디스크 캐시 관리자
+│   ├── data_loader.py         # 자동 데이터 전처리 및 Split (LOO, Random 등)
+│   ├── evaluation.py          # Top-K 랭킹 및 다양성/롱테일 메트릭 동시 계산
+│   └── trainer.py             # 오케스트레이션 및 자동 저장 루프
 ```
-
----
-
-## 📦 구현된 모델 라인업
-
-### 1. CSAR & 스펙트럼 모델 계열 (Ours)
-
-본 프레임워크의 핵심 연구 대상 모델들입니다. ([CSAR 모델 요약 문서](docs/csar_models_summary.md))
-
-- **ASPIRE**: MNAR 편향의 스펙트럼 서명을 측정하고(SWLS), 이를 Closed-form 영역에서 수정하는 스펙트럼 보정 필터링 모델 (SVD 기반).
-- **ChebyASPIRE**: 거대한 데이터셋 동작을 위해 SVD 대신 쳬비쇼프(Chebyshev) 다항식 근사를 사용한 ASPIRE의 선형-시간(Linear-time) 스케일링 버전.
-- **AspireBPR**: ASPIRE의 스펙트럼 페널티 보정 원리를 SGD 기반의 사용자-아이템 행렬 분해(BPR 학습)에 이식한 신경망 모델.
-- **LIRA (Linear Representation Alignment)**: 타겟 임베딩과 유사도 행렬의 주파수 대역을 맞추는 선형 보정 필터.
-- **CSAR (Co-Support Attention RecSys)**: 관심사(Latent Topics) 기반의 에너지 점수를 사용하는 해석 가능한 추천 모델.
-
-### 2. General Baselines
-
-최신 논문 비교를 위한 최고 수준의 최적화가 적용된 베이스라인들입니다. ([General 모델 요약 문서](docs/general_models_summary.md))
-
-- **EASE (Embarrassingly Shallow Autoencoders)**: 희소 데이터에 매우 강력한 Non-SGD Closed-form 선형 베이스라인 모델.
-- **LightGCN**: 최신의 Graph Convolutional Network (GCN) 기반 추천시스템 SOTA 베이스라인.
-- **MF / NeuMF**: 행렬 분해 기반 기본 모델과 다층 퍼셉트론 혼합 모델.
-- **MultVAE**: Multinomial Likelihood를 최적화하는 생성형 오토인코더 베이스라인.
-- **ProtoMF / ACF**: 앵커/프로토타입을 통해 임베딩을 구성하여 다양성을 모색하는 모델.
-- **GF-CF, RLAE, SANSA** 등 최신 스펙트럼 및 선형 CF 비교 기술들.
 
 ---
 
@@ -71,16 +49,15 @@ recsys_framework/
 
 ### 1. 환경 설정
 
-본 프로젝트는 의존성 관리자로 `uv`의 사용을 적극 권장합니다.
-Python 3.12 이상의 환경에서 실행하세요.
+`uv` 패키지 매니저 사용을 권장합니다. (Python 3.12+ 지원)
 
 ```bash
 uv pip install -r docs/requirements.txt
 ```
 
-### 2. 단일 모델 학습 및 평가
+### 2. 단일 프로토타입 즉시 실행
 
-특정 데이터셋(예: ml-100k)과 특정 모델(예: LightGCN)을 즉시 학습하고 평가합니다.
+YAML 옵션을 결합해 즉각적인 검증을 돌립니다. (MPS 가속 기본 적용)
 
 ```bash
 uv run python scripts/main.py \
@@ -88,9 +65,9 @@ uv run python scripts/main.py \
   --model_config configs/model/general/lightgcn.yaml
 ```
 
-### 3. 일괄 하이퍼파라미터 탐색 (Batch HPO)
+### 3. 무인 HPO 탐색 (Batch Search)
 
-여러 데이터셋과 모델에 대해 Optuna 베이지안 최적화를 한 번에 실행합니다. 검색 공간은 YAML 파일로 완벽하게 통제됩니다.
+여러 모델과 데이터셋을 YAML 하나에 정의해두고 베이지안 최적화를 넘깁니다.
 
 ```bash
 uv run python scripts/run_all_smart_searches.py \
@@ -100,15 +77,22 @@ uv run python scripts/run_all_smart_searches.py \
 
 ---
 
-## 📚 상세 문서
+## 📚 기술 문서 가이드 (Docs)
 
-프레임워크의 내부 구조나 추가 세부 사항을 파악하려면 `docs/` 디렉토리의 문서들을 참고하세요:
+디자인 패턴과 구현에 대한 자세한 내용은 아래 문서를 읽어보세요. 연구용으로 커스텀이 필요할 때 가장 먼저 읽어야 할 자료들입니다.
 
-1. [Configuration Guide (`CONFIG.md`)](docs/CONFIG.md): 3단계 병합 시스템과 YAML 파라미터 구조 안내
-2. [Evaluation Protocol (`EVALUATION_PROTOCOL.md`)](docs/EVALUATION_PROTOCOL.md): LOO 기반 정밀 평가, 마스킹 전략 및 메트릭 해설
-3. [Developer Guide (`DEVELOPER_GUIDE.md`)](docs/DEVELOPER_GUIDE.md): 새로운 모델 추가, Loss 정의, 데이터 파이프라인 아키텍처 가이드
-4. [Loss Functions (`loss_functions_summary.md`)](docs/loss_functions_summary.md): BPR, MSE, InfoNCE(Sampled Softmax) 등 프레임워크 내장 Loss 수식
+1. **[Developer Guide (`docs/DEVELOPER_GUIDE.md`)](docs/DEVELOPER_GUIDE.md)**
+   - "나만의 새 모델 만드는 법"
+   - `BaseModel` 인터페이스, Loss 등록, Trainer 작동 원리가 요약되어 있습니다.
+2. **[Configuration Guide (`docs/CONFIG.md`)](docs/CONFIG.md)**
+   - evaluation → dataset → model 순으로 덮어써지는 3-Tier YAML 파라미터 구조 안내.
+3. **[Evaluation Protocol (`docs/EVALUATION_PROTOCOL.md`)](docs/EVALUATION_PROTOCOL.md)**
+   - LOO 분할 규칙, Negative Sampling(InfoNCE 포함), 그리고 NDCG부터 LongTailCoverage까지 지원되는 메트릭의 정의.
+4. **[Loss & Metrics Summary (`docs/loss_functions_summary.md`)](docs/loss_functions_summary.md)**
+   - 구현된 손실함수 수식과 언제 어떤 Loss를 써야 유리한지 정리.
+5. **[Model Inventory](docs/)**
+   - 개발된 모델 라인업의 이론적 요약 ([`csar_models_summary.md`](docs/csar_models_summary.md), [`general_models_summary.md`](docs/general_models_summary.md))
 
 ---
 
-_Developed for research on advanced Recommender System methodologies._
+_Built for fast iteration, solid evaluation, and cutting-edge RecSys theory experiments on Apple Silicon._

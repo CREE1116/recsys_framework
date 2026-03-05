@@ -1,10 +1,35 @@
 # RecSys Framework 개발자 가이드
 
-새로운 모델을 추가하거나, 프레임워크의 내부 구조를 이해하려는 연구자를 위한 가이드입니다.
+새로운 모델을 추가하거나, 프레임워크의 내부(가속, 캐싱, 로깅) 구조를 이해하려는 연구자를 위한 가이드입니다. 본 프레임워크는 Apple Silicon(MPS) 및 CUDA 환경에서의 **빠른 프로토타이핑과 연산 가속**에 최적화되어 있습니다.
 
 ---
 
-## 1. 모델 구현 (BaseModel Interface)
+## 1. 프레임워크 코어 엔진
+
+### 1-1. GPU 가속 선형 대수 (`src/utils/gpu_accel.py`)
+
+Closed-form 모델(EASE, ASPIRE 등)을 위한 GPU 기반 수학 연산 모듈입니다.
+
+- `SVDCacheManager`: MPS 기반 Randomized SVD (`_mps_randomized_svd`) 지원 및 글로벌 캐싱
+- `gpu_cholesky_solve`: $O(N^3)$ 역행렬 연산을 GPU Cholesky 분해로 가속
+- `gpu_gram_solve`: $(X^TX + \lambda I)^{-1}$ 연산 최적화 (작은 차원은 Eigen, 큰 차원은 Cholesky 자동 분기)
+
+### 1-2. 글로벌 스마트 캐시 (`src/utils/cache_manager.py`)
+
+반복되는 연산을 0초로 단축시키는 프레임워크 전역 캐시 시스템입니다.
+
+- **Data Cache**: 전처리된 Interaction, Train/Test Split, Graph Dictionary를 조건별(threshold, split method 등) 해시로 저장
+- **SVD Cache**: 행렬 구조(nnz, shape. data checksum)를 비교하여 동일한 데이터의 분해 결과를 재사용 (`SVDCacheManager` 통합)
+- **Gram/Eigen Cache**: EASE 등에서 반복되는 Eigen Decomposition 결과를 글로벌 메모리/디스크 캐싱
+
+### 1-3. 자동 로깅 & 분석 파이프라인 (`src/trainer.py` & `logger.py`)
+
+- `.yaml` 설정에 따라 Tensorboard 구성 없이 훈련/검증 메트릭이 JSON 및 CSV로 자동 스냅샷.
+- 에포크 별 로스와 메트릭 추이를 `utils.plotting`을 통해 자동 시각화.
+
+---
+
+## 2. 모델 구현 (BaseModel Interface)
 
 모든 모델은 `src/models/base_model.py`의 `BaseModel`을 상속받고, **4개 필수 메서드**를 구현합니다.
 
