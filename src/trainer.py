@@ -256,6 +256,8 @@ class Trainer:
         # [수정] HPO 중이면 TEST 평가 생략하고 베스트 검증 지표 반환
         if self.config.get('hpo_mode', False):
             print("[HPO-Mode] Skipping TEST evaluation. Using best validation metrics.")
+            if self.best_val_metrics:
+                return self.best_val_metrics
             return self.evaluate(is_final_evaluation=False, update_best_snapshot=True)
             
         current_metrics = self.evaluate(is_final_evaluation=True)
@@ -301,8 +303,10 @@ class Trainer:
             m_val = current_metrics.get(m_name, 0.0)
             if m_val >= self.best_metric_value:
                 self.best_metric_value = m_val
-                # non-trainable 모델은 epoch 0으로 기록
-                self.best_epoch = 0 
+                # [수정] 학습 가능한 모델은 이미 _check_early_stopping에서 에포크가 기록됨. 
+                # 비학습 모델(EASE 등)이나 아직 기록이 없는 경우에만 0으로 설정.
+                if not self.is_trainable or self.best_epoch == -1:
+                    self.best_epoch = 0 
                 self.best_val_metrics = copy.deepcopy(current_metrics)
                 self._save_val_metrics(current_metrics)
                 self._save_checkpoint()  # [추가] 비학습 모델도 재사용을 위해 모델 상태 저장

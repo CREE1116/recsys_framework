@@ -1,14 +1,12 @@
 model:
   name: cheby_aspire
   alpha: 500.0
-  degree: 30
+  degree: 50
 
-  # Beta: Spectral Penalty Selection
-  # 'auto_bias': Theoretically derived beta = gamma / (1+gamma)
-  # 'auto_compromise': Theoretically derived beta = gamma / 2
-  # beta: "auto_bias"
-  beta: "auto_compromise"
+  # Beta: MCAR 기준선(a=0.5)으로부터의 스펙트럼 이탈량
+  # 'auto': β = max(0, 2a - 1), SWLS로 a 추정
+  beta: "auto"
 
   lambda_max_estimate: "auto"
-  visualize: true # Skip heavy visualizations for Bayesian searches
+  visualize: true
 device: auto

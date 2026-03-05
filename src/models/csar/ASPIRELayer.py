@@ -78,21 +78,77 @@ class MNARGammaCacheManager(GlobalCacheManager):
 _MNARGammaCache = MNARGammaCacheManager
 
 
-def estimate_alignment_slope(X_sparse=None, singular_values=None, dataset_name=None):
+class GramMatrixCacheManager(GlobalCacheManager):
     """
-    [이론적 근거 완벽 반영]: log(n_i) = a * log(λ_i) + C 를 통해 슬로프 a 도출
-    - a = (2γ + 1) / (2γ + 2)
-    - β = (2a - 1) / (3 - 2a)  [Log-MSE Balance]
+    Persistent cache for Gram Matrix (X^T X), keyed by dataset_name.
+    Stored in 'data_cache/gram_{dataset_name}.pt'.
     """
-    if dataset_name:
+    _mem_cache = {}
+    _cache_dir = 'data_cache'
+
+    @classmethod
+    def _get_path(cls, dataset_name):
+        if not dataset_name: return None
+        os.makedirs(cls._cache_dir, exist_ok=True)
+        return os.path.join(cls._cache_dir, f"gram_{dataset_name}.pt")
+
+    @classmethod
+    def get(cls, dataset_name, device='cpu'):
+        if not dataset_name: return None
+        if dataset_name in cls._mem_cache:
+            return cls._mem_cache[dataset_name].to(device)
+        
+        path = cls._get_path(dataset_name)
+        if path and os.path.exists(path):
+            try:
+                val = torch.load(path, map_location=device)
+                cls._mem_cache[dataset_name] = val.cpu() # Store in CPU mem
+                return val
+            except Exception:
+                return None
+        return None
+
+    @classmethod
+    def put(cls, dataset_name, val):
+        if not dataset_name: return
+        cls._mem_cache[dataset_name] = val.cpu()
+        path = cls._get_path(dataset_name)
+        if path:
+            try:
+                torch.save(val.cpu(), path)
+            except Exception as e:
+                print(f"[GramCache] Failed to save: {e}")
+
+_GramCache = GramMatrixCacheManager
+
+
+def estimate_alignment_slope(X_sparse=None, singular_values=None, item_popularity=None, dataset_name=None, alpha=None):
+    """
+    SWLS (Sensitivity-Weighted Least Squares) 기반 alignment slope 추정.
+    
+    log(n_i) = a * log(λ_i) + C 를 통해 슬로프 a 도출.
+    가중치: w_i = h_i(1 - h_i), h_i = λ_i / (λ_i + α)  [Wiener 필터 민감도]
+    
+    [통계적 근거]
+    - h(1-h)는 Wiener 필터의 β에 대한 Fisher Information에 비례
+    - 필터가 "불확실한" 전이대(σ² ≈ α)에서 slope를 추정
+    - 극단(σ 극대/극소)은 이미 결정(pass/reject)되어 추정에 기여하지 않음
+    
+    alpha 미지정 시 OLS fallback.
+    """
+    # alpha-dependent SWLS는 캐시하지 않음 (alpha가 trial마다 변경됨)
+    if dataset_name and alpha is None:
         cached_a = _MNARGammaCache.get(f"{dataset_name}_slope")
         if cached_a is not None: 
             return cached_a
     
     # 1. 고유값 기반 추정 (ASPIRE / SVD 모델) - 가장 정확함
-    if X_sparse is not None and singular_values is not None:
-        item_pops = np.array(X_sparse.sum(axis=0)).flatten()
-        n_i = np.sort(item_pops)[::-1]
+    if (X_sparse is not None or item_popularity is not None) and singular_values is not None:
+        if item_popularity is not None:
+            n_i = np.sort(item_popularity)[::-1]
+        else:
+            item_pops = np.array(X_sparse.sum(axis=0)).flatten()
+            n_i = np.sort(item_pops)[::-1]
         
         k = len(singular_values)
         n_i_trunc = n_i[:k]
@@ -105,14 +161,33 @@ def estimate_alignment_slope(X_sparse=None, singular_values=None, dataset_name=N
         if len(n_i_valid) >= 10:
             x = np.log(lam_i_valid)
             y = np.log(n_i_valid)
-            slope, _ = np.polyfit(x, y, 1)
-            slope = float(max(0.5, slope)) # a >= 0.5 (MCAR)
             
-            if dataset_name:
+            if alpha is not None and alpha > 0:
+                # SWLS: 필터 민감도 가중 회귀
+                # h = λ/(λ+α), w = h(1-h) = λα/(λ+α)²
+                h = lam_i_valid / (lam_i_valid + alpha)
+                w = h * (1.0 - h)
+                w = np.maximum(w, 1e-12)
+                w /= w.sum()
+                
+                # Weighted OLS (closed-form)
+                mean_x = np.sum(w * x)
+                mean_y = np.sum(w * y)
+                numer = np.sum(w * (x - mean_x) * (y - mean_y))
+                denom = np.sum(w * (x - mean_x)**2)
+                slope = float(numer / (denom + 1e-9))
+            else:
+                # Standard OLS fallback
+                slope, _ = np.polyfit(x, y, 1)
+                slope = float(slope)
+            
+            slope = max(0.5, slope) # a >= 0.5 (MCAR)
+            
+            if dataset_name and alpha is None:
                 _MNARGammaCache.put(f"{dataset_name}_slope", slope)
             return slope
 
-    # 2. 인기도 순위 기반 추정 (fallback)
+    # 2. 인기도 순위 기반 추정 (fallback, SVD 없이)
     if X_sparse is not None:
         item_pops = np.array(X_sparse.sum(axis=0)).flatten()
         item_pops = np.sort(item_pops)[::-1]
@@ -166,23 +241,13 @@ class ASPIRELayer(nn.Module):
         self.register_buffer('singular_values', s.to(dev))
         self.register_buffer('V_raw', v.to(dev))
         
-        # Auto Beta Determination
+        # Auto Beta: β = max(0, 2a - 1) — MCAR 기준선(a=0.5)으로부터의 이탈량
         if isinstance(self.beta_config, str):
-            a = estimate_alignment_slope(X_sparse=X_sparse, singular_values=self.singular_values, dataset_name=dataset_name)
+            a = estimate_alignment_slope(X_sparse=X_sparse, singular_values=self.singular_values, dataset_name=dataset_name, alpha=self.alpha)
             self.alignment_slope = a
-            # γ = (2a - 1) / (2(1 - a))
-            self.gamma = (2.0 * a - 1.0) / (2.0 * (1.0 - a) + 1e-9)
-            
-            if self.beta_config == 'auto_bias':
-                # Original zero-bias beta = γ / (1 + γ)
-                self.beta = self.gamma / (1.0 + self.gamma + 1e-9)
-            elif self.beta_config == 'auto_compromise':
-                # New Direct Formula (Log-MSE Balance): β = (2a-1) / (3-2a)
-                # equal to γ / (2 + γ)
-                self.beta = (2.0 * a - 1.0) / (3.0 - 2.0 * a + 1e-9)
-            else:
-                self.beta = 0.5 # Default
-            print(f"[{self.__class__.__name__}] Slope a={a:.3f} -> gamma={self.gamma:.3f} -> beta={self.beta:.3f} ({self.beta_config})")
+            self.beta = max(0.0, 2.0 * a - 1.0)
+            self.gamma = (2.0 * a - 1.0) / (2.0 * (1.0 - a) + 1e-9)  # logging only
+            print(f"[{self.__class__.__name__}] SWLS a={a:.3f} -> β={self.beta:.3f} (γ={self.gamma:.3f})")
         else:
             self.beta = float(self.beta_config)
             self.gamma = 0.0
@@ -228,6 +293,7 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer('cheby_coeffs', torch.empty(0))
         self.register_buffer('t_mid', torch.tensor(0.0))
         self.register_buffer('t_half', torch.tensor(0.0))
+        self.register_buffer('item_weights', torch.empty(0)) # Precomputed W matrix
         self.gamma = 0.0 # Store estimated gamma
         self.alignment_slope = 0.5 # Store observed slope 'a'
         
@@ -301,20 +367,13 @@ class ChebyASPIRELayer(nn.Module):
             
         lambda_min = 0.0
         
-        # Auto Beta Determination
+        # Auto Beta: β = max(0, 2a - 1) — MCAR 기준선(a=0.5)으로부터의 이탈량
         if isinstance(self.beta_config, str):
-            a = estimate_alignment_slope(X_sparse=X_sparse, dataset_name=dataset_name)
+            a = estimate_alignment_slope(X_sparse=X_sparse, dataset_name=dataset_name, alpha=self.alpha)
             self.alignment_slope = a
-            # γ = (2a - 1) / (2(1 - a))
-            self.gamma = (2.0 * a - 1.0) / (2.0 * (1.0 - a) + 1e-9)
-            
-            if self.beta_config == 'auto_bias':
-                self.beta = self.gamma / (1.0 + self.gamma + 1e-9)
-            elif self.beta_config == 'auto_compromise':
-                self.beta = (2.0 * a - 1.0) / (3.0 - 2.0 * a + 1e-9) # Log-MSE Balance
-            else:
-                self.beta = 0.5
-            print(f"[{self.__class__.__name__}] Slope a={a:.3f} -> gamma={self.gamma:.3f} -> beta={self.beta:.3f} ({self.beta_config})")
+            self.beta = max(0.0, 2.0 * a - 1.0)
+            self.gamma = (2.0 * a - 1.0) / (2.0 * (1.0 - a) + 1e-9)  # logging only
+            print(f"[{self.__class__.__name__}] SWLS a={a:.3f} -> β={self.beta:.3f} (γ={self.gamma:.3f})")
         else:
             self.beta = float(self.beta_config)
             self.gamma = 0.0
@@ -325,6 +384,49 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer('t_mid', torch.tensor((lambda_max + lambda_min) / 2.0, device=device))
         self.register_buffer('t_half', torch.tensor((lambda_max - lambda_min) / 2.0, device=device))
         
+        # [SUPER OPTIMIZATION] 
+        # 1. Compute/Get Gram Matrix (L = X^T X) - Dataset-dependent, Params-independent
+        num_items = X_sparse.shape[1]
+        L = _GramCache.get(dataset_name, device=device)
+        
+        if L is None:
+            if num_items <= 15000:
+                print(f"[{self.__class__.__name__}] Computing Gram Matrix (X^T X) for the first time...")
+                # Compute using Sparse MM once
+                X_csr = self.X_torch_csr.to(self.sparse_device)
+                Xt_csr = self.Xt_torch_csr.to(self.sparse_device)
+                
+                # To Dense for fast future recurrence
+                L = torch.sparse.mm(Xt_csr, X_csr.to_dense())
+                if dataset_name:
+                    _GramCache.put(dataset_name, L)
+                L = L.to(device)
+            else:
+                L = None # Too large
+
+        # 2. Compute Filter Weight Matrix W using Dense Recurrence
+        # This part depends on alpha/beta, so it runs every trial, but it's 100% Dense GPU/MPS!
+        if L is not None:
+            print(f"[{self.__class__.__name__}] Precomputing W using Dense Recurrence on {device}...")
+            # Recurrence: T_next = 2 * (L @ T_curr - t_mid * T_curr) / t_half - T_prev
+            # Initial states
+            T_prev = torch.eye(num_items, device=device)
+            T_curr = (L - self.t_mid * T_prev) / self.t_half
+            
+            W = float(coeffs[0]) * T_prev + float(coeffs[1]) * T_curr
+            
+            for k in range(2, self.degree + 1):
+                T_next = 2.0 * (torch.mm(L, T_curr) - self.t_mid * T_curr) / self.t_half - T_prev
+                W.add_(T_next, alpha=float(coeffs[k]))
+                T_prev = T_curr
+                T_curr = T_next
+            
+            self.item_weights = W
+            print(f"[{self.__class__.__name__}] Weight Matrix W ready on {device}. Inference will be lightning fast.")
+        else:
+            self.item_weights = torch.empty(0)
+            print(f"[{self.__class__.__name__}] Item count {num_items} too large for Dense optimization.")
+        
         print(f"[{self.__class__.__name__}] Build complete. coefficients computed.")
 
     @torch.no_grad()
@@ -333,6 +435,12 @@ class ChebyASPIRELayer(nn.Module):
             raise RuntimeError("build() first")
 
         batch_device = X_batch.device
+
+        # [ULTRA OPTIMIZATION] If precomputed matrix exists, use DENSE-DENSE MM
+        # Efficient and runs natively on any device (GPU/MPS/CPU)
+        if self.item_weights.numel() > 0:
+            return torch.mm(X_batch, self.item_weights).to(batch_device)
+
         sparse_dev = self.sparse_device
         
         # [OPTIMIZATION] 필요한 파라미터 미리 추출 및 Device 이동 최소화

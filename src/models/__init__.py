@@ -54,6 +54,7 @@ from .csar.TaylorLIRA import TaylorLIRA
 from .csar.CGLIRA import CGLIRA
 from .csar.ASPIRE import ASPIRE
 from .csar.ChebyASPIRE import ChebyASPIRE
+from .csar.AspireBPR import AspireBPR
 
 MODEL_REGISTRY = {
     # General Models
@@ -113,6 +114,7 @@ MODEL_REGISTRY = {
     'spectral_tikhonov_lira': ASPIRE,
     'aspire': ASPIRE,
     'cheby_aspire': ChebyASPIRE,
+    'aspire_bpr': AspireBPR,
 }
 
 def get_model(model_name, config, data_loader):

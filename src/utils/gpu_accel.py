@@ -279,17 +279,25 @@ class SVDCacheManager(GlobalCacheManager):
             folder = model_name
         return os.path.join('trained_model', dataset_name, folder, 'analysis')
 
-    def get_svd(self, X_sparse, k=None, target_energy=None, dataset_name=None, force_recompute=False):
+    def get_svd(self, X_sparse=None, k=None, target_energy=None, dataset_name=None, force_recompute=False):
         """
         캐시에서 SVD 로드 또는 새로 계산 (최적화 버전).
         - 행렬 해시를 기반으로 모델 간 캐시를 공유합니다.
+        - X_sparse가 None일 경우 dataset_name을 기반으로 최신 캐시를 찾습니다.
         - 요청된 k보다 큰 캐시가 있다면 잘라서 재사용(Truncate)합니다.
         """
-        M, N = X_sparse.shape
-        if M == 0 or N == 0:
-            return torch.empty(M, 0), torch.empty(0), torch.empty(N, 0), 0.0
+        if X_sparse is None and dataset_name is None:
+             raise ValueError("Either X_sparse or dataset_name must be provided to get_svd")
 
-        matrix_id = self._generate_matrix_id(X_sparse)
+        if X_sparse is not None:
+            M, N = X_sparse.shape
+            if M == 0 or N == 0:
+                return torch.empty(M, 0), torch.empty(0), torch.empty(N, 0), 0.0
+            matrix_id = self._generate_matrix_id(X_sparse)
+        else:
+            matrix_id = "*" # Wildcard for glob
+            print(f"[SVD-Manager] X_sparse is None. Searching for best cache for dataset: {dataset_name}")
+        
         dataset_name = dataset_name or "unknown"
         
         # 1. Cache Search and Reuse Logic
@@ -326,7 +334,11 @@ class SVDCacheManager(GlobalCacheManager):
                     print(f"[SVD-Manager] Cache hit: {dataset_name} (Loaded k{f_k} for req: k{k or 'energy'})")
                     cp = torch.load(f_path, map_location='cpu')
                     u, s, v = cp['u'], cp['s'], cp['v']
-                    total_energy = cp.get('total_energy', float(np.sum(X_sparse.data ** 2)))
+                    
+                    if X_sparse is not None:
+                        total_energy = cp.get('total_energy', float(np.sum(X_sparse.data ** 2)))
+                    else:
+                        total_energy = cp.get('total_energy', 1.0) # Fallback if missing
                     
                     # Truncate if k is specified
                     if k is not None and len(s) > k:
@@ -352,6 +364,9 @@ class SVDCacheManager(GlobalCacheManager):
                     return u, s, v, total_energy
                 
         # 2. Computation needed (with Energy Target Loop)
+        if X_sparse is None:
+            raise RuntimeError(f"SVD Cache NOT found for {dataset_name} and X_sparse is None. Cannot compute.")
+
         compute_k = k or (min(M, N) // 10 if target_energy else 128)
         compute_k = min(compute_k, min(M, N) - 1)
         total_energy = float(np.sum(X_sparse.data ** 2))
