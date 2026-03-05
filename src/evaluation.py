@@ -271,8 +271,8 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
     2. Groups interactions by user for correct user-wise metrics.
     3. Implements Item-wise classification for Head/Tail metrics.
     """
-    # 1. Collect all test pairs (vectorized for speed)
-    print("[Evaluation] Collecting all test pairs...")
+    # 1. Collect all interaction pairs (vectorized for speed)
+    print("[Evaluation] Collecting interaction pairs...")
     all_users_np = []
     all_items_np = []
     for user_batch, target_item_batch in test_loader:

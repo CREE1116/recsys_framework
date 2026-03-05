@@ -4,7 +4,8 @@ import numpy as np
 import os
 from scipy.sparse import csr_matrix
 from src.models.base_model import BaseModel
-from src.models.csar.LIRALayer import ASPIRELayer
+from src.models.csar.ASPIRELayer import ASPIRELayer, MNARGammaCacheManager
+from src.utils.gpu_accel import SVDCacheManager
 
 class ASPIRE(BaseModel):
     """
@@ -41,6 +42,10 @@ class ASPIRE(BaseModel):
         dataset_name = config.get('dataset_name', 'unknown')
         self.lira_layer.build(self.train_matrix_csr, dataset_name=dataset_name)
         self.lira_layer.to(self.device)
+
+        # Cache managers 등록 (Trainer가 자동 관리)
+        self.register_cache_manager('svd', SVDCacheManager(device=self.device.type))
+        self.register_cache_manager('mnar_gamma', MNARGammaCacheManager())
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df

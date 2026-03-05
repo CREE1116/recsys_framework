@@ -43,7 +43,6 @@ from .csar.CSAR import CSAR
 from .csar.CSAR_BPR import CSAR_BPR
 from .csar.MinimalCSAR import MinimalCSAR
 from .csar.CSAR_Pure import CSAR_Pure
-from .csar.ClosedCSAR import ClosedCSAR
 
 # LIRA Models
 from .csar.LIRA import LIRA
@@ -53,7 +52,6 @@ from .csar.LightPowerLIRA import LightPowerLIRA
 from .csar.SpectralPowerLIRA import SpectralPowerLIRA
 from .csar.TaylorLIRA import TaylorLIRA
 from .csar.CGLIRA import CGLIRA
-from .csar.ChebyshevLIRA import ChebyshevLIRA
 from .csar.ASPIRE import ASPIRE
 from .csar.ChebyASPIRE import ChebyASPIRE
 
@@ -103,7 +101,6 @@ MODEL_REGISTRY = {
     'csar': CSAR,
     'csar_pure': CSAR_Pure,
     'minimal_csar': MinimalCSAR,
-    'closed_csar': ClosedCSAR,
 
     # LIRA Models
     'lira': LIRA,
@@ -113,7 +110,6 @@ MODEL_REGISTRY = {
     'spectral_power_lira': SpectralPowerLIRA,
     'taylor_lira': TaylorLIRA,
     'cg_lira': CGLIRA,
-    'chebyshev_lira': ChebyshevLIRA,
     'spectral_tikhonov_lira': ASPIRE,
     'aspire': ASPIRE,
     'cheby_aspire': ChebyASPIRE,

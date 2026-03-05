@@ -28,6 +28,9 @@ class PureSVD(BaseModel):
         
         self._log(f"Initialized (embedding_dim={self.embedding_dim})")
 
+        # Cache manager 등록
+        self.register_cache_manager('svd', self.svd_manager)
+
     def fit(self, data_loader):
         """Perform SVD on the user-item interaction matrix via SVDCacheManager."""
         self._log("Building interaction matrix...")

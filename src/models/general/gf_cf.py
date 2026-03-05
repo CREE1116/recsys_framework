@@ -44,6 +44,9 @@ class GF_CF(BaseModel):
         
         self._log(f"Initialized (k={self.k}, filter={self.filter_type}, α={self.alpha}, w={self.norm_weight})")
 
+        # Cache manager 등록
+        self.register_cache_manager('svd', self.svd_manager)
+
     def _normalize_matrix(self, R, weight):
         """Generalized Symmetric Normalization: D_u^-w * R * D_i^-w"""
         if weight == 0:

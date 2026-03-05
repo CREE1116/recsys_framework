@@ -124,7 +124,7 @@ class LIRAVisualizer:
         print(f"[LIRAVisualizer] SVD Visualizations saved to {save_dir}")
 
     @staticmethod
-    def visualize_spectral_tikhonov(singular_values, filter_diag, alpha, beta, X_sparse=None, save_dir=None, file_prefix='spectral_tikhonov'):
+    def visualize_spectral_tikhonov(singular_values, filter_diag, alpha, beta, gamma=0.0, a=0.5, X_sparse=None, save_dir=None, file_prefix='spectral_tikhonov'):
         if not save_dir:
             return
             
@@ -147,7 +147,10 @@ class LIRAVisualizer:
             "mean": float(filter_w.mean()),
             "std": float(filter_w.std()),
             "max": float(filter_w.max()),
-            "min": float(filter_w.min())
+            "min": float(filter_w.min()),
+            "alignment_slope": float(a),
+            "gamma": float(gamma),
+            "beta": float(beta)
         }
         
         metrics['Filter_Wiener_Reference'] = {
@@ -171,32 +174,33 @@ class LIRAVisualizer:
         with open(os.path.join(save_dir, f'{file_prefix}_metrics.json'), 'w') as f:
             json.dump(metrics, f, indent=4)
 
-        plt.figure(figsize=(20, 5))
+        plt.figure(figsize=(18, 5))
         
-        plt.subplot(1, 4, 1)
+        # 1. Spectrum (Log Scale)
+        plt.subplot(1, 3, 1)
         plt.plot(s_vals, label=r'$\sigma_k$')
         plt.yscale('log')
         plt.title("Spectrum (Log Scale)")
         plt.grid(True, alpha=0.3)
         
-        plt.subplot(1, 4, 2)
-        plt.plot(cum_energy_ratio, color='green')
-        plt.title(f"Cumulative Energy: {cum_energy_ratio[-1]*100:.1f}%")
-        plt.grid(True, alpha=0.3)
-        
-        plt.subplot(1, 4, 3)
-        # Plot against rank index for more intuitive scale
         ranks = np.arange(len(s_vals))
-        plt.plot(ranks, wiener_filter, color='blue', linestyle='--', label=r'Wiener ($\beta=0$)')
-        plt.plot(ranks, filter_w, color='orange', label=fr'Tikhonov ($\beta={beta:.2f}$)')
-        plt.title(fr"Filter $h(k)$ vs Rank $k$ ($\alpha={alpha:.1f}$)")
-        plt.xlabel("Component Rank k")
-        plt.ylabel(r"Filter Value $h(\sigma_k)$")
+
+        # 2. Filter Magnitude (Log Scale) - Value based X-axis (Consistent with Cheby)
+        plt.subplot(1, 3, 2)
+        # Reverse X-axis to show Dominant on the left
+        plt.plot(s_vals, wiener_filter + 1e-12, color='blue', linestyle='--', label='Wiener')
+        plt.plot(s_vals, filter_w + 1e-12, color='orange', label='ASPIRE')
+        plt.yscale('log')
+        plt.gca().invert_xaxis() # Large Sigma on Left
+        plt.title(fr"Filter Magnitude ($a={a:.3f}, \gamma={gamma:.2f}, \beta={beta:.3f}$)")
+        plt.xlabel(r"Singular Value $\sigma$ (Head $\rightarrow$ Tail)")
+        plt.ylabel(r"$h(\sigma)$")
+        plt.grid(True, which="both", ls="-", alpha=0.2)
         plt.legend()
-        plt.grid(True, alpha=0.3)
         
-        plt.subplot(1, 4, 4)
-        plt.plot(s_vals, filter_w - wiener_filter, color='red', label='Difference (Tikhonov - Wiener)')
+        # 3. Filter Impact (Difference from Wiener)
+        plt.subplot(1, 3, 3)
+        plt.plot(s_vals, filter_w - wiener_filter, color='red', label='Impact (ASPIRE - Wiener)')
         plt.title(r"Filter Impact vs $\sigma$")
         plt.xlabel(r"Singular Value $\sigma$")
         plt.ylabel(r"$\Delta h(\sigma)$")

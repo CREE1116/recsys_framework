@@ -39,6 +39,9 @@ class PowerLIRA(BaseModel):
         self.lira_layer.build(self.train_matrix_csr)
         self.lira_layer.to(self.device)
 
+        # Cache manager 등록
+        self.register_cache_manager('svd', SVDCacheManager(device=self.device.type))
+
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df
         rows = train_df['user_id'].values

@@ -6,7 +6,8 @@ model:
   # 'auto_bias': Theoretically derived beta = gamma / (1+gamma)
   # 'auto_compromise': Theoretically derived beta = gamma / 2
   beta: "auto_compromise"
+  # beta: "auto_bias"
 
-  target_energy: 0.99
+  target_energy: 0.95
   visualize: true # Skip heavy visualizations for Bayesian searches
 # Adaptive Spectral Popularity-aware Intrinsic REgularization

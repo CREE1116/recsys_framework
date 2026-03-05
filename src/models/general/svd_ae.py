@@ -29,6 +29,8 @@ class SVD_AE(BaseModel):
 
         # User defined hyperparameter: ratio of min(|U|, |I|) to use for SVD rank
         self.gamma = config['model'].get('gamma', 0.04)
+        if isinstance(self.gamma, list):
+            self.gamma = self.gamma[0]
 
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
@@ -48,6 +50,9 @@ class SVD_AE(BaseModel):
         self.register_buffer('P_k', torch.empty(0))  # k x M
 
         self._log(f"Initialized (gamma={self.gamma} -> k={self.k})")
+
+        # Cache manager 등록
+        self.register_cache_manager('svd', self.svd_manager)
 
     def fit(self, data_loader):
         self._log(f"Fitting (k={self.k})...")
@@ -82,16 +87,13 @@ class SVD_AE(BaseModel):
         R_tilde = D_U_inv_sqrt.dot(R).dot(D_I_inv_sqrt)
 
         # 3. Truncated SVD via SVDCacheManager (caching + MPS acceleration)
-        # Note: cache key = dataset_name + "_svdae_gamma{gamma}"
-        # - rank k is derived from gamma, so same gamma = same SVD for same dataset
-        dataset_name = self.config.get('dataset_name', 'unknown_svdae')
-        cache_key = f"{dataset_name}_svdae_g{self.gamma:.4f}"
+        dataset_name = self.config.get('dataset_name', 'unknown')
 
         self._log(f"Performing Truncated SVD via SVDCacheManager (k={self.k})...")
         # SVDCacheManager.get_svd(matrix, k, dataset_name) returns (U, S, V, energy)
         # U: (n_users, k), S: (k,), V: (n_items, k)
         Q_k_t, Sigma_k_t, V_k_t, energy = self.svd_manager.get_svd(
-            R_tilde, k=self.k, dataset_name=cache_key
+            R_tilde, k=self.k, dataset_name=dataset_name
         )
         # SVDCacheManager returns: u:(N,k), s:(k,), v:(M,k)
         Q_k = Q_k_t.to(self.device).float()     # N x k
@@ -116,6 +118,8 @@ class SVD_AE(BaseModel):
 
         del Q_k_np, Q_k_proj_np, Q_k_proj, Sigma_k_inv
 
+        energy_sq = energy
+        energy_linear = float(Sigma_k.sum().item())
         elapsed = time.time() - start_time
         self._log(f"SVD-AE fitted. Energy captured (σ² sum): {energy_sq:.4f}, Energy captured (σ sum): {energy_linear:.4f}")
         print(f"         V_k: {self.V_k.shape}, P_k: {self.P_k.shape}")

@@ -12,8 +12,8 @@ from config_utils import merge_all_configs
 
 # Add project root to sys.path to import src modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from src.utils.gpu_accel import SVDCacheManager, _GramEigenCache, _TruncatedSVDCache
-from src.models.general.slim import _SLIMMatrixCache
+from src.utils.gpu_accel import SVDCacheManager, GramEigenCacheManager
+from src.models.general.slim import SLIMMatrixCacheManager
 
 class Args:
     """Helper class to convert dictionary to object with attributes"""
@@ -242,9 +242,8 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
             # To prevent OOM and disk bloat across different models/datasets
             try:
                 print("\n[Resource Cleanup] Clearing GPU/Eigen memory and SVD disk caches...")
-                _GramEigenCache.clear()
-                _TruncatedSVDCache.clear()
-                _SLIMMatrixCache.clear()
+                GramEigenCacheManager.clear()
+                SLIMMatrixCacheManager.clear()
                 # SVDCacheManager clears the default 'data_cache' directory svd_*.pt files
                 SVDCacheManager().clear_cache(dataset_name=dataset_name)
             except Exception as clean_e:

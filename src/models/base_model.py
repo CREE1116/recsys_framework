@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
+from ..utils.cache_manager import CacheRegistry
 
 class BaseModel(nn.Module, ABC):
     """
@@ -50,9 +51,21 @@ class BaseModel(nn.Module, ABC):
         # 모델 이름 (로깅용)
         self._model_name = self.__class__.__name__
 
+        # 캐시 매니저 레지스트리
+        self._cache_registry = CacheRegistry()
+
     def _log(self, msg):
         """통일된 로깅: [ModelName] message"""
         print(f"[{self._model_name}] {msg}")
+
+    def register_cache_manager(self, name, manager):
+        """캐시 매니저를 이름으로 등록. Trainer가 자동 관리."""
+        self._cache_registry.register(name, manager)
+
+    @property
+    def cache_registry(self):
+        """등록된 CacheRegistry 반환. Trainer가 사용."""
+        return self._cache_registry
 
     def get_l2_reg_loss(self, *tensors):
         """

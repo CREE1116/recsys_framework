@@ -5,6 +5,7 @@ import os
 from scipy.sparse import csr_matrix
 from src.models.base_model import BaseModel
 from src.models.csar.LIRALayer import LightLIRALayer
+from src.utils.gpu_accel import SVDCacheManager
 
 class LightLIRA(BaseModel):
     """
@@ -39,6 +40,9 @@ class LightLIRA(BaseModel):
         dataset_name = config.get('dataset_name', 'unknown')
         self.lira_layer.build(self.train_matrix_csr, dataset_name=dataset_name)
         self.lira_layer.to(self.device)
+
+        # Cache manager 등록
+        self.register_cache_manager('svd', SVDCacheManager(device=self.device.type))
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df

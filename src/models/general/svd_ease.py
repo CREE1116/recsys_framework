@@ -24,6 +24,9 @@ class SVDEASE(EASE):
         
         self._log(f"Initialized (k={self.k}, λ={self.reg_lambda})")
 
+        # Cache manager 등록
+        self.register_cache_manager('svd', self.svd_manager)
+
     def fit(self, data_loader):
         self._log(f"Fitting (k={self.k}, λ={self.reg_lambda})...")
         

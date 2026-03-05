@@ -4,7 +4,7 @@ import numpy as np
 import time
 from scipy.sparse import csr_matrix
 from ..base_model import BaseModel
-from .LIRALayer import ChebyASPIRELayer
+from .ASPIRELayer import ChebyASPIRELayer, MNARGammaCacheManager
 
 class ChebyASPIRE(BaseModel):
     """
@@ -23,6 +23,7 @@ class ChebyASPIRE(BaseModel):
         self.beta = model_config.get('beta', 0.5)
         self.lambda_max_estimate = model_config.get('lambda_max_estimate', 'auto')
         self.threshold = model_config.get('threshold', 1e-4)
+        self.visualize = model_config.get('visualize', True)
         
         # ChebyASPIRE Layer
         self.lira_layer = ChebyASPIRELayer(
@@ -38,6 +39,9 @@ class ChebyASPIRE(BaseModel):
         self.train_matrix_csr = None
         
         self._log(f"Initialized (degree={self.degree}, alpha={self.alpha}, beta={self.beta}, threshold={self.threshold})")
+
+        # Cache manager 등록
+        self.register_cache_manager('mnar_gamma', MNARGammaCacheManager())
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df
@@ -63,8 +67,25 @@ class ChebyASPIRE(BaseModel):
         X_sparse = self.get_train_matrix(data_loader)
         
         # 2. Build Layer
-        self.lira_layer.build(X_sparse)
+        dataset_name = self.config.get('dataset_name', 'unknown')
+        self.lira_layer.build(X_sparse, dataset_name=dataset_name)
         self.lira_layer.to(self.device)
+        
+        self._log(f"Analyzing model (Visualize Heavyweight: {self.visualize})...")
+        try:
+            import os
+            analysis_dir = os.path.join(self.output_path, 'analysis')
+            os.makedirs(analysis_dir, exist_ok=True)
+            self._log(f"Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
+            if hasattr(self.lira_layer, 'visualize_matrices'):
+                self.lira_layer.visualize_matrices(
+                    X_sparse=self.train_matrix_csr, 
+                    save_dir=analysis_dir,
+                    lightweight=not self.visualize
+                )
+                self._log(f"Analysis results saved to {analysis_dir}")
+        except Exception as e:
+            self._log(f"Visualization skipped: {e}")
         
         elapsed = time.time() - start_time
         self._log(f"\n{'='*60}")

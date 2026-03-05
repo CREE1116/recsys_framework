@@ -13,6 +13,7 @@ import os
 import time
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import svds
+from .cache_manager import GlobalCacheManager
 
 
 # ============================================================
@@ -166,16 +167,15 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', return_tensor=
     return P
 
 
-class _GramEigenCache:
+class GramEigenCacheManager(GlobalCacheManager):
     """
-    Module-level cache for Gram matrix eigendecomposition.
+    Module-level cache for Gram matrix eigendecomposition. Global scope.
     Keyed by (shape, nnz, data_checksum) to identify the same dataset.
     """
     _cache = {}  # key -> (V, eigvals)
     
     @classmethod
     def _key(cls, X_sparse):
-        # Inclusion of indices and indptr ensures uniqueness across different data splits
         d = X_sparse.data
         idx = X_sparse.indices
         ptr = X_sparse.indptr
@@ -200,48 +200,71 @@ class _GramEigenCache:
     def clear(cls):
         cls._cache.clear()
 
+    # --- CacheManager Interface ---
+    def summary(self):
+        total_bytes = sum(v.nbytes + e.nbytes for v, e in self._cache.values()) if self._cache else 0
+        return {"type": "GramEigen", "entries": len(self._cache), "size_mb": round(total_bytes / 1e6, 1)}
+
+    def invalidate(self, key=None):
+        self._cache.clear()
+
+# Backward compat
+_GramEigenCache = GramEigenCacheManager
 
 
-class _TruncatedSVDCache:
-    """Cache truncated SVD of X for fast (G+λI)^{-1} approximation in HPO."""
-    _cache = {}
-    
-    @classmethod
-    def _key(cls, X_sparse):
-        d = X_sparse.data
-        idx = X_sparse.indices
-        ptr = X_sparse.indptr
-        return hash((X_sparse.shape, X_sparse.nnz,
-                    d[:10].tobytes() if len(d) >= 10 else d.tobytes(),
-                    idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
-                    ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
-    
-    @classmethod
-    def get(cls, X_sparse):
-        return cls._cache.get(cls._key(X_sparse))
-    
-    @classmethod
-    def put(cls, X_sparse, V, sigma2):
-        cls._cache[cls._key(X_sparse)] = (V, sigma2)
-        print(f"[gpu_accel] SVD approx cache stored (k={V.shape[1]}, {V.nbytes/1024**3:.1f}GB)")
-    
-    @classmethod
-    def clear(cls):
-        cls._cache.clear()
 
 
 # ============================================================
 # SVD Cache Manager
 # ============================================================
 
-class SVDCacheManager:
-    """SVD 결과를 캐싱하고 MPS 가속을 제공하는 관리자 클래스"""
+
+
+class SVDCacheManager(GlobalCacheManager):
+    """SVD 결과를 캐싱하고 MPS 가속을 제공하는 관리자 클래스 (Global Scope)"""
     
     def __init__(self, cache_dir='data_cache', device='auto'):
         self.cache_dir = cache_dir
         os.makedirs(self.cache_dir, exist_ok=True)
         self.device = get_device(device)
         print(f"[SVD-Manager] Device: {self.device}")
+
+    # --- CacheManager Interface ---
+    def summary(self):
+        import glob as _glob
+        files = _glob.glob(os.path.join(self.cache_dir, "svd_*.pt"))
+        total_size = sum(os.path.getsize(f) for f in files) if files else 0
+        return {"type": "SVD", "files": len(files), "size_mb": round(total_size / 1e6, 1)}
+
+    def invalidate(self, key=None):
+        import glob as _glob
+        if key:
+            pattern = os.path.join(self.cache_dir, f"{key}*.pt")
+        else:
+            pattern = os.path.join(self.cache_dir, "svd_*.pt")
+        for f in _glob.glob(pattern):
+            os.remove(f)
+            print(f"[SVD-Manager] Invalidated: {os.path.basename(f)}")
+
+
+    @staticmethod
+    def _generate_matrix_id(X_sparse):
+        """행렬의 구조와 데이터를 기반으로 고유한 ID(해시) 생성"""
+        if not hasattr(X_sparse, 'shape'): return "unknown"
+        
+        # Shape, nnz
+        meta = (X_sparse.shape, X_sparse.nnz)
+        
+        # Sample data for hashing (first 100 values to be fast yet robust)
+        d = X_sparse.data[:100].tobytes() if len(X_sparse.data) >= 100 else X_sparse.data.tobytes()
+        idx = X_sparse.indices[:100].tobytes() if len(X_sparse.indices) >= 100 else X_sparse.indices.tobytes()
+        
+        import hashlib
+        h = hashlib.md5()
+        h.update(str(meta).encode())
+        h.update(d)
+        h.update(idx)
+        return h.hexdigest()[:12]
 
     @staticmethod
     def get_analysis_dir(config):
@@ -258,73 +281,119 @@ class SVDCacheManager:
 
     def get_svd(self, X_sparse, k=None, target_energy=None, dataset_name=None, force_recompute=False):
         """
-        캐시에서 SVD 로드 또는 새로 계산.
-        k가 주어지면 k개 추출, target_energy가 주어지면 누적 에너지가 해당 비율(예: 0.95)이 될 때까지 k를 자동 선택.
-        
-        Returns: u, s, v, total_energy
+        캐시에서 SVD 로드 또는 새로 계산 (최적화 버전).
+        - 행렬 해시를 기반으로 모델 간 캐시를 공유합니다.
+        - 요청된 k보다 큰 캐시가 있다면 잘라서 재사용(Truncate)합니다.
         """
         M, N = X_sparse.shape
         if M == 0 or N == 0:
-            print("[SVD-Manager] Empty matrix detected. Returning empty tensors.")
             return torch.empty(M, 0), torch.empty(0), torch.empty(N, 0), 0.0
 
-        if k is not None and k >= min(M, N):
-            print(f"[SVD-Manager] k({k}) too large for {M}x{N}. Capping to {min(M,N)-1}")
-            k = max(min(M, N) - 1, 1)
+        matrix_id = self._generate_matrix_id(X_sparse)
+        dataset_name = dataset_name or "unknown"
+        
+        # 1. Cache Search and Reuse Logic
+        if not force_recompute:
+            import glob
+            # Pattern: svd_{dataset}_{matrix_id}_k*.pt
+            pattern = os.path.join(self.cache_dir, f"svd_{dataset_name}_{matrix_id}_k*.pt")
+            cache_files = glob.glob(pattern)
             
-        # Determine Cache key suffix
-        suffix = f"k{k}" if k is not None else f"e{target_energy}"
-        
-        # Cache check
-        if dataset_name and not force_recompute:
-            cache_path = os.path.join(self.cache_dir, f"svd_{dataset_name}_{suffix}.pt")
-            if os.path.exists(cache_path):
-                print(f"[SVD-Manager] Cache hit: {dataset_name} ({suffix})")
-                cp = torch.load(cache_path, map_location='cpu')
-                u, s, v = cp['u'], cp['s'], cp['v']
-                total_energy = cp.get('total_energy')
-                if total_energy is None:
-                    total_energy = float(np.sum(X_sparse.data ** 2))
-                return u, s, v, total_energy
+            if cache_files:
+                # Find best candidate: smallest k that is >= requested k
+                candidates = []
+                for f in cache_files:
+                    try:
+                        f_k = int(f.split("_k")[-1].replace(".pt", ""))
+                        candidates.append((f_k, f))
+                    except ValueError: continue
+                
+                candidates.sort() # Small k first
+                
+                best_file = None
+                if k is not None:
+                    for f_k, f_path in candidates:
+                        if f_k >= k:
+                            best_file = (f_k, f_path)
+                            break
+                elif target_energy is not None:
+                    # For target_energy, we need the largest available or any that satisfies it
+                    # Just pick the largest one to be safe
+                    best_file = candidates[-1]
 
-        print(f"[SVD-Manager] Computing SVD ({suffix}, shape={X_sparse.shape})...")
-        start = time.time()
-        
+                if best_file:
+                    f_k, f_path = best_file
+                    print(f"[SVD-Manager] Cache hit: {dataset_name} (Loaded k{f_k} for req: k{k or 'energy'})")
+                    cp = torch.load(f_path, map_location='cpu')
+                    u, s, v = cp['u'], cp['s'], cp['v']
+                    total_energy = cp.get('total_energy', float(np.sum(X_sparse.data ** 2)))
+                    
+                    # Truncate if k is specified
+                    if k is not None and len(s) > k:
+                        print(f"[SVD-Manager] Truncating cache: k{len(s)} -> k{k}")
+                        u, s, v = u[:, :k], s[:k], v[:, :k]
+                    
+                    # Check energy if target_energy is specified
+                    if target_energy is not None:
+                        s2 = s ** 2
+                        cum_energy = torch.cumsum(s2, dim=0) / total_energy
+                        mask = (cum_energy >= target_energy).nonzero()
+                        if len(mask) > 0:
+                            final_k = mask[0].item() + 1
+                            print(f"[SVD-Manager] Precision hit: k{len(s)} enough for {target_energy*100}% energy (needs k{final_k})")
+                            return u[:, :final_k], s[:final_k], v[:, :final_k], total_energy
+                        else:
+                            if k is None:
+                                print(f"[SVD-Manager] Cache k{len(s)} insufficient for {target_energy*100}% energy. Recomputing...")
+                            else:
+                                return u, s, v, total_energy # Return what we have if k was also fixed
+                    
+                    # [Fixed] Always return if we found a best_file and it wasn't filtered out by energy check
+                    return u, s, v, total_energy
+                
+        # 2. Computation needed (with Energy Target Loop)
+        compute_k = k or (min(M, N) // 10 if target_energy else 128)
+        compute_k = min(compute_k, min(M, N) - 1)
         total_energy = float(np.sum(X_sparse.data ** 2))
         
-        # Calculate full SVD or large SVD if target_energy is requested
-        compute_k = k if k is not None else min(M, N) - 1
-        
-        min_dim = min(M, N)
-        if self.device == 'mps' and min_dim >= 5000:
-            u, s, v = self._mps_randomized_svd(X_sparse, compute_k)
-        else:
-            if self.device == 'mps':
-                print(f"[SVD-Manager] Matrix small ({min_dim}<5000), using CPU SVD")
-            u, s, v = self._cpu_svd(X_sparse, compute_k)
-            
-        print(f"[SVD-Manager] SVD done ({time.time()-start:.2f}s)")
-
-        # Truncate based on target_energy if requested
-        if target_energy is not None and k is None:
-            s2 = s ** 2
-            cum_energy = torch.cumsum(s2, dim=0) / total_energy
-            k_target = (cum_energy >= target_energy).nonzero()
-            
-            if len(k_target) > 0:
-                final_k = k_target[0].item() + 1
+        while True:
+            print(f"[SVD-Manager] Computing SVD (dataset={dataset_name}, matrix_id={matrix_id}, shape={X_sparse.shape}, k={compute_k})...")
+            start = time.time()
+            min_dim = min(M, N)
+            if self.device.type == 'mps' and min_dim >= 5000:
+                u, s, v = self._mps_randomized_svd(X_sparse, compute_k)
             else:
-                final_k = len(s)
-                
-            print(f"[SVD-Manager] Auto-selected k={final_k} to reach {target_energy*100:.1f}% energy.")
-            u = u[:, :final_k]
-            s = s[:final_k]
-            v = v[:, :final_k]
+                u, s, v = self._cpu_svd(X_sparse, compute_k)
+            print(f"[SVD-Manager] SVD done ({time.time()-start:.2f}s) for k={compute_k}")
+
+            # Check if energy target is met (only when target_energy is specified and k was not fixed)
+            if target_energy is not None and k is None:
+                s2 = s ** 2
+                cum_energy = torch.cumsum(s2, dim=0) / total_energy
+                # If we've reached the target or max possible rank, break and assign final_k
+                mask = (cum_energy >= target_energy).nonzero()
+                if len(mask) > 0:
+                    final_k = mask[0].item() + 1
+                    print(f"[SVD-Manager] Target {target_energy*100:.1f}% energy MET. Formatting to k={final_k}.")
+                    u, s, v = u[:, :final_k], s[:final_k], v[:, :final_k]
+                    break
+                elif compute_k >= min_dim - 1:
+                    print(f"[SVD-Manager] Reached max rank {compute_k} but energy is {cum_energy[-1].item()*100:.2f}%. Cannot extend further.")
+                    break
+                else:
+                    # Extend compute_k and retry
+                    new_k = min(min_dim - 1, compute_k * 2)
+                    print(f"[SVD-Manager] Target energy NOT met ({cum_energy[-1].item()*100:.2f}% < {target_energy*100:.1f}%). Expanding k: {compute_k} -> {new_k}")
+                    compute_k = new_k
+            else:
+                # Target energy not tracked or k is manually fixed
+                break
             
-        # Cache save
-        if dataset_name:
-            cache_path = os.path.join(self.cache_dir, f"svd_{dataset_name}_{suffix}.pt")
-            torch.save({'u': u, 's': s, 'v': v, 'total_energy': total_energy}, cache_path)
+            
+        # 3. Save Cache
+        save_k = len(s)
+        cache_path = os.path.join(self.cache_dir, f"svd_{dataset_name}_{matrix_id}_k{save_k}.pt")
+        torch.save({'u': u, 's': s, 'v': v, 'total_energy': total_energy}, cache_path)
             
         return u, s, v, total_energy
 

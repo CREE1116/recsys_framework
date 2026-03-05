@@ -4,11 +4,12 @@ import scipy.sparse as sp
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from ..base_model import BaseModel
+from ...utils.cache_manager import GlobalCacheManager
 import time
 
 
-class _SLIMMatrixCache:
-    """HPO trial 간 X_csc 재사용 캐시 (데이터셋이 같으면 X도 동일)."""
+class SLIMMatrixCacheManager(GlobalCacheManager):
+    """HPO trial 간 X_csc 재사용 캐시 (데이터셋이 같으면 X도 동일). Global scope."""
     _cache: dict = {}
 
     @classmethod
@@ -33,6 +34,17 @@ class _SLIMMatrixCache:
     @classmethod
     def clear(cls):
         cls._cache.clear()
+
+    # --- CacheManager Interface ---
+    def summary(self):
+        return {"type": "SLIM_Matrix", "entries": len(self._cache)}
+
+    def invalidate(self, key=None):
+        self._cache.clear()
+
+# Backward compat
+_SLIMMatrixCache = SLIMMatrixCacheManager
+
 
 
 
@@ -103,6 +115,9 @@ class SLIM(BaseModel):
 
         self._log(f"Initialized: alpha={self.alpha}, l1_ratio={self.l1_ratio}, "
               f"positive={self.positive}, max_iter={self.max_iter}, n_jobs={self.n_jobs}")
+
+        # Cache manager 등록
+        self.register_cache_manager('slim_matrix', SLIMMatrixCacheManager())
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df

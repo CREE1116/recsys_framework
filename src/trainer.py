@@ -40,6 +40,9 @@ class Trainer:
         self.device = model.device
         self.model.to(self.device)
 
+        # 캐시 레지스트리 참조
+        self._cache_registry = getattr(model, 'cache_registry', None)
+
         self.output_path = getattr(self.model, 'output_path', None)
         if self.output_path is None:
             # Fallback if model doesn't have it (should not happen with BaseModel)
@@ -135,10 +138,18 @@ class Trainer:
         - train 설정이 있으면 SGD 학습 루프 실행
         - 없으면 비학습 모델로 간주하고 바로 최종 평가
         """
-        # 1. fit() 호출 (모델이 지원하는 경우)
-        if hasattr(self.model, 'fit'):
+        # 1. fit() 호출 (모델이 지원하는 경우) 및 캐시된 모델 재사용
+        best_model_path = os.path.join(self.output_path, "best_model.pt")
+        if self.config.get('skip_fit', False) and os.path.exists(best_model_path):
+            print(f"Loading cached model from {best_model_path} and skipping fit/train.")
+            self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
+        elif hasattr(self.model, 'fit'):
             print(f"Model has 'fit' method. Calling fit()...")
             self.model.fit(self.data_loader)
+
+        # 캐시 상태 로깅
+        if self._cache_registry:
+            self._cache_registry.log_status()
 
         # 2. 학습 루프 또는 바로 평가
         if self.is_trainable:
@@ -294,6 +305,7 @@ class Trainer:
                 self.best_epoch = 0 
                 self.best_val_metrics = copy.deepcopy(current_metrics)
                 self._save_val_metrics(current_metrics)
+                self._save_checkpoint()  # [추가] 비학습 모델도 재사용을 위해 모델 상태 저장
 
         if is_final_evaluation:
             # [추가] 만약 검증이 한 번도 수행되지 않았다면 수행 (EASE 등 비학습 모델 대응)
@@ -417,3 +429,5 @@ class Trainer:
                 ylabel="Metric Score",
                 file_path=os.path.join(self.output_path, "metrics_plot.png")
             )
+
+

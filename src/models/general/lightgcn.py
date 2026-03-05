@@ -16,17 +16,17 @@ class LightGCN(BaseModel):
         self.n_users = self.data_loader.n_users
         self.n_items = self.data_loader.n_items
         
-        # 희소/밀집 행렬을 모델의 device로 이동
-        self.register_buffer('adj_matrix', self.data_loader.get_interaction_graph().to(self.device))
+        # 희소/밀집 행렬을 모델의 device로 이동 (state_dict 제외)
+        self.register_buffer('adj_matrix', self.data_loader.get_interaction_graph().to(self.device), persistent=False)
         
-        # [Optimization] 정규화된 인접 행렬 계산 및 Dense 변환 (GPU 가속 최적화)
-        self.register_buffer('norm_adj_matrix', self._get_normalized_adj_matrix())
+        # [Optimization] 정규화된 인접 행렬 계산 및 Dense 변환 (GPU 가속 최적화, state_dict 제외)
+        self.register_buffer('norm_adj_matrix', self._get_normalized_adj_matrix(), persistent=False)
         
         # [NEW] 노드 수가 일정 수준 이하이면 Dense로 변환하여 GPU 가속 극대화 (특히 MPS)
         total_nodes = self.n_users + self.n_items
         if total_nodes < 15000:
             self._log(f"Node count {total_nodes} < 15000. Converting to Dense for GPU acceleration.")
-            self.register_buffer('norm_adj_matrix', self.norm_adj_matrix.to_dense())
+            self.register_buffer('norm_adj_matrix', self.norm_adj_matrix.to_dense(), persistent=False)
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)

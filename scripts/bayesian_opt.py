@@ -218,19 +218,30 @@ class BayesianOptimizer:
         if os.path.exists(os.path.join(base_path, model_name)):
             stray_dirs.append(os.path.join(base_path, model_name))
 
-        all_to_check = set(stray_dirs) | set(self.all_experiment_dirs)
+        # Filter out None and Normalize paths
+        all_to_check = set()
+        for p in stray_dirs:
+            if p: all_to_check.add(os.path.abspath(os.path.normpath(p)))
+        for p in self.all_experiment_dirs:
+            if p: all_to_check.add(os.path.abspath(os.path.normpath(p)))
+
+        best_dir_abs = os.path.abspath(os.path.normpath(self.best_global_dir)) if self.best_global_dir else None
 
         deleted_count = 0
         for path in all_to_check:
             if not os.path.exists(path):
                 continue
-            # 이전 BEST 폴더는 건드리지 않음
-            if "/BEST_" in path or "\\BEST_" in path:
+            
+            basename = os.path.basename(path)
+            # BEST_ 폴더는 절대 삭제하지 않음 (이전 시드 결과물 등 보호)
+            if basename.startswith("BEST_"):
                 continue
-            # 현재 HPO에서 가장 성적이 좋았던 디렉토리도 건드리지 않음 (재사용 위함)
-            if self.best_global_dir and os.path.abspath(path) == os.path.abspath(self.best_global_dir):
-                print(f"Skipping deletion of the best trial directory: {path}")
+            
+            # 현재 HPO의 BEST trial 디렉토리는 보존 (rerun_best_with_test에서 재사용 위함)
+            if best_dir_abs and path == best_dir_abs:
+                print(f"Skipping deletion of the best trial directory (for reuse): {path}")
                 continue
+                
             try:
                 shutil.rmtree(path)
                 deleted_count += 1
@@ -287,14 +298,27 @@ class BayesianOptimizer:
                 # config에 'train' 블록이 있어도 epoch 0으로 만들어 학습 건너뛰게 함
                 if 'train' in config:
                     config['train']['epochs'] = 0
+                config['skip_fit'] = True  # non-trainable (fit 방식) 모델도 재생성 생략
                 reused = True
 
+        old_best_dir = self.best_global_dir
         config['output_path_override'] = best_dir
         self.best_global_dir = best_dir
 
         try:
             run_single_experiment(config)
             print(f"[HPO] Test evaluation saved to {best_dir}")
+            
+            # [최적화] BEST 폴더로 모델 복사 및 평가가 성공했다면, 원본 임시 trial 폴더는 이제 삭제해도 됨
+            # reused 여부와 상관없이, BEST_ 폴더로 모든 결과가 옮겨졌으므로 구 폴더는 삭제합니다.
+            if old_best_dir and os.path.exists(old_best_dir):
+                # old_best_dir이 BEST_ 폴더가 아닐 때만 삭제 (무한 루프 및 중복 삭제 방지)
+                if "BEST_" not in os.path.basename(old_best_dir):
+                    print(f"[HPO] Final evaluation complete. Deleting intermediate dir: {old_best_dir}")
+                    try:
+                        shutil.rmtree(old_best_dir)
+                    except Exception as e:
+                        print(f"Warning: Failed to delete intermediate dir {old_best_dir}: {e}")
         except Exception as e:
             print(f"[HPO] Test rerun failed: {e}")
             import traceback
