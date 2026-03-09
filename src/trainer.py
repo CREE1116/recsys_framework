@@ -91,9 +91,19 @@ class Trainer:
             self.validation_loader = self.data_loader.get_validation_loader(self.config['train']['batch_size'] * 2)
             print("Data loaders initialized.")
 
-            # [추가] AMP 가속 (cuda/mps 모두 GradScaler + autocast 지원, torch>=2.9)
-            self.use_amp = self.config['train'].get('use_amp', True) and self.device.type in ['cuda', 'mps']
-            self.scaler = torch.amp.GradScaler(self.device.type) if self.use_amp else None
+            # AMP 가속 (cuda/mps)
+            amp_enabled = self.config['train'].get('use_amp', True) and self.device.type in ('cuda', 'mps')
+            if amp_enabled:
+                try:
+                    self.scaler = torch.amp.GradScaler(self.device.type)
+                    self.use_amp = True
+                except Exception:
+                    print(f"[Trainer] GradScaler not supported on {self.device.type}, disabling AMP")
+                    self.scaler = None
+                    self.use_amp = False
+            else:
+                self.scaler = None
+                self.use_amp = False
 
     def _get_optimizer(self, optimizer_name):
         # 이 메소드는 self.config['train']이 존재할 때만 호출됨
@@ -142,7 +152,7 @@ class Trainer:
         best_model_path = os.path.join(self.output_path, "best_model.pt")
         if self.config.get('skip_fit', False) and os.path.exists(best_model_path):
             print(f"Loading cached model from {best_model_path} and skipping fit/train.")
-            self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
+            self.model.load_state_dict(torch.load(best_model_path, map_location=self.device, weights_only=True))
         elif hasattr(self.model, 'fit'):
             print(f"Model has 'fit' method. Calling fit()...")
             self.model.fit(self.data_loader)
@@ -162,8 +172,7 @@ class Trainer:
     def _train_loop(self):
         """SGD 학습 루프 (내부용)"""
         print(f"Training started on device: {self.device}")
-        
-        
+
         for epoch in range(self.epochs):
             # Optional: Curriculum learning callback
             if hasattr(self.model, 'on_epoch_start'):
@@ -248,7 +257,7 @@ class Trainer:
         print("Training finished. Loading best model for final evaluation...")
         best_model_path = os.path.join(self.output_path, "best_model.pt")
         if os.path.exists(best_model_path):
-            self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
+            self.model.load_state_dict(torch.load(best_model_path, map_location=self.device, weights_only=True))
             print(f"Best model loaded from {best_model_path}")
         else:
             print("[Warning] Best model checkpoint not found. Using last epoch model.")

@@ -1,3 +1,4 @@
+import sys
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -282,8 +283,7 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
     all_items_np = np.concatenate(all_items_np)
 
     # 2. Aggregate ground truth items by user (vectorized via pandas groupby)
-    import pandas as _pd
-    _pairs_df = _pd.DataFrame({'u': all_users_np, 'i': all_items_np})
+    _pairs_df = pd.DataFrame({'u': all_users_np, 'i': all_items_np})
     user_test_ground_truth = _pairs_df.groupby('u')['i'].apply(list).to_dict()
             
     unique_test_users = sorted(list(user_test_ground_truth.keys()))
@@ -316,7 +316,6 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
     k_fetch = k_target_max + 500 if mask_after_topk else k_target_max
     k_fetch = min(k_fetch, model.n_items)
 
-    import sys
     with torch.no_grad():
         for i in tqdm(range(0, len(unique_test_users), batch_size), desc="Evaluating (user-wise)", leave=False, dynamic_ncols=True, file=sys.stdout):
             user_batch_ids = unique_test_users[i:i+batch_size]
@@ -407,8 +406,7 @@ def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
     # top_k_list가 비어있으면 평가할 필요 없음
     if not top_k_list:
         return {}, []
-        
-    import sys
+
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating (uni99)", leave=False, dynamic_ncols=True, file=sys.stdout):
             
@@ -446,7 +444,7 @@ def _evaluate_uni99(model, test_loader, top_k_list, metrics_list, device):
 
                 for i in range(batch_size):
                     pred_list_100 = pred_lists_100[i]
-                    target_item = target_items[i]
+                    target_item = [target_items[i]]
                     for k in top_k_list:
                         pred_list_k = pred_list_100[:k]
                         if 'HitRate' in metrics_list:
