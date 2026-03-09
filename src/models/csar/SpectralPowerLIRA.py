@@ -85,7 +85,7 @@ class SpectralPowerLIRA(BaseModel):
         return self.predict_full(user_ids, item_ids)
 
     def calc_loss(self, batch_data):
-        return (torch.tensor(0.0, device=self.device, requires_grad=True),), None
+        return (torch.tensor(0.0, device=self.device),), None
 
     def get_final_item_embeddings(self):
         """

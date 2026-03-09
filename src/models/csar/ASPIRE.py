@@ -113,4 +113,4 @@ class ASPIRE(BaseModel):
         return self.lira_layer.V_k
     
     def calc_loss(self, batch_data):
-        return (torch.tensor(0.0, device=self.device, requires_grad=True),), None
+        return (torch.tensor(0.0, device=self.device),), None
