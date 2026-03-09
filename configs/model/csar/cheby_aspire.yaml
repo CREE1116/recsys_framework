@@ -9,4 +9,5 @@ model:
 
   lambda_max_estimate: "auto"
   visualize: true
+  spp_pow: 0.5
 device: auto

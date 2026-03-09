@@ -1,22 +1,29 @@
-import torch
-import torch.nn as nn
-import numpy as np
+from __future__ import annotations
+
 import os
 import json
 import time
+import glob as _glob
+
+import numpy as np
+import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
+from sklearn.linear_model import HuberRegressor
+
 from src.utils.gpu_accel import SVDCacheManager
 from src.models.csar.lira_visualizer import LIRAVisualizer
 from src.utils.cache_manager import GlobalCacheManager
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 캐시 매니저
+# ══════════════════════════════════════════════════════════════════════════════
+
 class MNARGammaCacheManager(GlobalCacheManager):
-    """
-    Persistent cache for estimated MNAR gamma values, keyed by dataset_name.
-    Stored in 'data_cache/mnar_gamma_{dataset_name}.json'.
-    Global scope: shared across models for the same dataset.
-    """
-    _mem_cache = {}
-    _cache_dir = 'data_cache'
+    """β / a 영속 캐시. dataset_name 단위."""
+    _mem_cache: dict = {}
+    _cache_dir: str  = "data_cache"
 
     @classmethod
     def _get_path(cls, dataset_name):
@@ -27,19 +34,15 @@ class MNARGammaCacheManager(GlobalCacheManager):
     @classmethod
     def get(cls, dataset_name):
         if not dataset_name: return None
-        # 1. Memory check
         if dataset_name in cls._mem_cache:
             return cls._mem_cache[dataset_name]
-        
-        # 2. Disk check
         path = cls._get_path(dataset_name)
         if path and os.path.exists(path):
             try:
-                with open(path, 'r') as f:
+                with open(path) as f:
                     data = json.load(f)
-                    val = data.get('gamma')
-                    cls._mem_cache[dataset_name] = val
-                    return val
+                cls._mem_cache[dataset_name] = data
+                return data
             except Exception:
                 return None
         return None
@@ -51,40 +54,36 @@ class MNARGammaCacheManager(GlobalCacheManager):
         path = cls._get_path(dataset_name)
         if path:
             try:
-                with open(path, 'w') as f:
-                    json.dump({'gamma': val, 'timestamp': time.time()}, f)
+                payload = val if isinstance(val, dict) else {"value": val}
+                payload["timestamp"] = time.time()
+                with open(path, "w") as f:
+                    json.dump(payload, f)
             except Exception as e:
-                print(f"[MNARGammaCache] Failed to save cache: {e}")
+                print(f"[MNARGammaCache] save failed: {e}")
 
-    # --- CacheManager Interface ---
     def summary(self):
-        import glob as _glob
         files = _glob.glob(os.path.join(self._cache_dir, "mnar_gamma_*.json"))
-        return {"type": "MNAR_Gamma", "cached_datasets": list(self._mem_cache.keys()), "files": len(files)}
+        return {"type": "MNAR_Gamma",
+                "cached_datasets": list(self._mem_cache.keys()),
+                "files": len(files)}
 
     def invalidate(self, key=None):
         if key:
             self._mem_cache.pop(key, None)
             path = self._get_path(key)
-            if path and os.path.exists(path):
-                os.remove(path)
+            if path and os.path.exists(path): os.remove(path)
         else:
             self._mem_cache.clear()
-            import glob as _glob
             for f in _glob.glob(os.path.join(self._cache_dir, "mnar_gamma_*.json")):
                 os.remove(f)
 
-# Backward compatibility alias
 _MNARGammaCache = MNARGammaCacheManager
 
 
 class GramMatrixCacheManager(GlobalCacheManager):
-    """
-    Persistent cache for Gram Matrix (X^T X), keyed by dataset_name.
-    Stored in 'data_cache/gram_{dataset_name}.pt'.
-    """
-    _mem_cache = {}
-    _cache_dir = 'data_cache'
+    """Gram 행렬 (XᵀX) 영속 캐시."""
+    _mem_cache: dict = {}
+    _cache_dir: str  = "data_cache"
 
     @classmethod
     def _get_path(cls, dataset_name):
@@ -93,23 +92,22 @@ class GramMatrixCacheManager(GlobalCacheManager):
         return os.path.join(cls._cache_dir, f"gram_{dataset_name}.pt")
 
     @classmethod
-    def get(cls, dataset_name, device='cpu'):
+    def get(cls, dataset_name, device="cpu"):
         if not dataset_name: return None
         if dataset_name in cls._mem_cache:
             return cls._mem_cache[dataset_name].to(device)
-        
         path = cls._get_path(dataset_name)
         if path and os.path.exists(path):
             try:
                 val = torch.load(path, map_location=device)
-                cls._mem_cache[dataset_name] = val.cpu() # Store in CPU mem
+                cls._mem_cache[dataset_name] = val.cpu()
                 return val
             except Exception:
                 return None
         return None
 
     @classmethod
-    def put(cls, dataset_name, val):
+    def put(cls, dataset_name, val: torch.Tensor):
         if not dataset_name: return
         cls._mem_cache[dataset_name] = val.cpu()
         path = cls._get_path(dataset_name)
@@ -117,471 +115,676 @@ class GramMatrixCacheManager(GlobalCacheManager):
             try:
                 torch.save(val.cpu(), path)
             except Exception as e:
-                print(f"[GramCache] Failed to save: {e}")
+                print(f"[GramCache] save failed: {e}")
+
+    def summary(self):
+        files = _glob.glob(os.path.join(self._cache_dir, "gram_*.pt"))
+        return {"type": "Gram",
+                "cached_datasets": list(self._mem_cache.keys()),
+                "files": len(files)}
+
+    def invalidate(self, key=None):
+        if key:
+            self._mem_cache.pop(key, None)
+            path = self._get_path(key)
+            if path and os.path.exists(path): os.remove(path)
+        else:
+            self._mem_cache.clear()
+            for f in _glob.glob(os.path.join(self._cache_dir, "gram_*.pt")):
+                os.remove(f)
 
 _GramCache = GramMatrixCacheManager
 
 
-def estimate_alignment_slope(X_sparse=None, singular_values=None, item_popularity=None, dataset_name=None, alpha=None):
+# ══════════════════════════════════════════════════════════════════════════════
+# AspireEngine
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AspireEngine:
     """
-    SWLS (Sensitivity-Weighted Least Squares) 기반 alignment slope 추정.
-    
-    log(n_i) = a * log(λ_i) + C 를 통해 슬로프 a 도출.
-    가중치: w_i = h_i(1 - h_i), h_i = λ_i / (λ_i + α)  [Wiener 필터 민감도]
-    
-    [통계적 근거]
-    - h(1-h)는 Wiener 필터의 β에 대한 Fisher Information에 비례
-    - 필터가 "불확실한" 전이대(σ² ≈ α)에서 slope를 추정
-    - 극단(σ 극대/극소)은 이미 결정(pass/reject)되어 추정에 기여하지 않음
-    
-    alpha 미지정 시 OLS fallback.
+    ASPIRE 파이프라인의 정적 유틸리티.
+
+    SPP → β → h(σ)
+
+    compute_spp : 방향 k의 인기도 오염 강도 p̃_k 측정
+    estimate_beta: p̃_k의 멱법칙 피팅으로 β 추출 (스무딩)
+    apply_filter : h(σ) = σ^{2-2β} / (σ^{2-2β} + α)
+
+    두 번째 경로 (V 없을 때 — ChebyASPIRE):
+    estimate_beta_from_slope: slope 비율로 β 추정
     """
-    # alpha-dependent SWLS는 캐시하지 않음 (alpha가 trial마다 변경됨)
-    if dataset_name and alpha is None:
-        cached_a = _MNARGammaCache.get(f"{dataset_name}_slope")
-        if cached_a is not None: 
-            return cached_a
-    
-    # 1. 고유값 기반 추정 (ASPIRE / SVD 모델) - 가장 정확함
-    if (X_sparse is not None or item_popularity is not None) and singular_values is not None:
-        if item_popularity is not None:
-            n_i = np.sort(item_popularity)[::-1]
+
+    @staticmethod
+    def _to_numpy(x) -> np.ndarray:
+        if torch.is_tensor(x):
+            return x.detach().cpu().numpy().astype(float)
+        return np.asarray(x, dtype=float)
+
+    # ── 1. SPP ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def compute_spp(
+        V,
+        item_frequencies,
+        spp_pow: float = 0.5,
+    ) -> np.ndarray:
+        """
+        Spectral Propensity Projection.
+
+          p_i  = (n_i / n_max)^spp_pow   # 인기도 정규화 (Power scaling 적용)
+          p̃_k = Σ_i V_{ki}² · p_i   # 방향 k의 오염 강도
+
+        p̃_k는 인기도 편향 + 신호 + 노이즈를 전부 흡수한 raw 측정값.
+        이를 그대로 쓰지 않고 멱법칙으로 스무딩하여 β를 추출한다.
+
+        Parameters
+        ----------
+        V               : (n, k) 우측 특이벡터
+        item_frequencies: (n,) 아이템별 상호작용 수
+        spp_pow         : float, 인기도 propensity에 적용할 전력 지수
+
+        Returns
+        -------
+        p_tilde : (k,) 방향별 오염 강도
+        """
+        V_np    = AspireEngine._to_numpy(V)
+        n_i     = AspireEngine._to_numpy(item_frequencies).flatten()
+        p_i     = np.power(n_i / (n_i.max() + 1e-9), spp_pow)
+        p_tilde = (V_np ** 2).T @ p_i
+        return p_tilde
+
+    # ── 2. β 추정 (SPP 기반) ──────────────────────────────────────────────────
+
+    @staticmethod
+    def estimate_beta(
+        singular_values,
+        p_tilde,
+        trim: float = 0.05,
+        verbose: bool = True,
+        dataset_name: str = "",
+    ) -> tuple[float, float]:
+        """
+        p̃_k의 멱법칙 피팅으로 β 추출.
+
+          log p̃_k = 2β · log σ_k + C
+          → β = coef / 2
+
+        p̃_k의 per-k 노이즈를 β 하나로 스무딩.
+        β는 "MNAR 스펙트럴 왜곡의 전역적 강도 요약"이다.
+
+        R²: 멱법칙 가정의 성립 정도.
+            높을수록 β가 신뢰 가능, 낮으면 데이터셋 MNAR 구조가 복잡함.
+
+        Returns
+        -------
+        (beta, r_squared)
+        """
+        s  = np.sort(np.abs(AspireEngine._to_numpy(singular_values)))[::-1]
+        pt = np.asarray(p_tilde, dtype=float)
+
+        k   = len(s)
+        lo  = max(1, int(k * trim))
+        hi  = max(lo + 4, int(k * (1 - trim)))
+        s_  = s[lo:hi]
+        pt_ = pt[lo:hi]
+
+        mask = (s_ > 1e-9) & (pt_ > 1e-9)
+        if mask.sum() < 4:
+            if verbose:
+                print(f"[ASPIRE] {dataset_name}: 유효 포인트 부족 → β=0.5 fallback")
+            return 0.5, 0.0
+
+        log_s  = np.log(s_[mask]).reshape(-1, 1)
+        log_pt = np.log(pt_[mask])
+
+        hub = HuberRegressor(epsilon=1.35, max_iter=300, fit_intercept=True)
+        hub.fit(log_s, log_pt)
+
+        beta = float(np.clip(hub.coef_[0] / 2.0, 0.0, 0.999))
+        r2   = float(hub.score(log_s, log_pt))
+
+        if verbose:
+            print(
+                f"[ASPIRE] {dataset_name}: "
+                f"β={beta:.4f}  R²={r2:.4f}"
+                + ("  (R²<0.5: MNAR 구조 비선형)" if r2 < 0.5 else "")
+            )
+        return beta, r2
+
+    # ── 3. β 추정 (slope 비율 — V 없을 때 fallback) ───────────────────────────
+
+    @staticmethod
+    def estimate_beta_from_slope(
+        singular_values,
+        item_frequencies,
+        X_sparse=None,
+        svd_k: int = 200,
+        spp_pow: float = 0.5,
+        verbose: bool = True,
+        dataset_name: str = "",
+        save_dir: str = None,
+    ) -> tuple[float, float]:
+        """
+        slope 비율로 β 추정 — SVD-free ChebyASPIRE 전용.
+
+          a = slope_n / slope_σ
+          β = a / 2             (p̃_k ~ σ_k^a → p̃_k ~ σ_k^{2β} → β=a/2)
+
+        V가 없는 초거대 행렬에서 사용. SPP보다 정보량이 적음.
+        slope_n 계산 시 n_i 대신 (n_i / n_max)^spp_pow 의 분포를 사용함.
+
+        Returns
+        -------
+        (beta, a)
+        """
+        tag = dataset_name or "?"
+
+        if singular_values is not None:
+            s = np.sort(np.abs(AspireEngine._to_numpy(singular_values)))[::-1]
+        elif X_sparse is not None:
+            from scipy.sparse.linalg import svds as _svds
+            k = min(svd_k, min(X_sparse.shape) - 1)
+            _, _s, _ = _svds(X_sparse.astype(float), k=k)
+            s = np.sort(np.abs(_s))[::-1]
         else:
-            item_pops = np.array(X_sparse.sum(axis=0)).flatten()
-            n_i = np.sort(item_pops)[::-1]
-        
-        k = len(singular_values)
-        n_i_trunc = n_i[:k]
-        lam_i = singular_values.pow(2).cpu().numpy()
-        
-        valid_mask = (n_i_trunc > 0) & (lam_i > 1e-10)
-        n_i_valid = n_i_trunc[valid_mask]
-        lam_i_valid = lam_i[valid_mask]
-        
-        if len(n_i_valid) >= 10:
-            x = np.log(lam_i_valid)
-            y = np.log(n_i_valid)
-            
-            if alpha is not None and alpha > 0:
-                # SWLS: 필터 민감도 가중 회귀
-                # h = λ/(λ+α), w = h(1-h) = λα/(λ+α)²
-                h = lam_i_valid / (lam_i_valid + alpha)
-                w = h * (1.0 - h)
-                w = np.maximum(w, 1e-12)
-                w /= w.sum()
-                
-                # Weighted OLS (closed-form)
-                mean_x = np.sum(w * x)
-                mean_y = np.sum(w * y)
-                numer = np.sum(w * (x - mean_x) * (y - mean_y))
-                denom = np.sum(w * (x - mean_x)**2)
-                slope = float(numer / (denom + 1e-9))
-            else:
-                # Standard OLS fallback
-                slope, _ = np.polyfit(x, y, 1)
-                slope = float(slope)
-            
-            slope = max(0.5, slope) # a >= 0.5 (MCAR)
-            
-            if dataset_name and alpha is None:
-                _MNARGammaCache.put(f"{dataset_name}_slope", slope)
-            return slope
+            raise ValueError("singular_values 또는 X_sparse 필요")
 
-    # 2. 인기도 순위 기반 추정 (fallback, SVD 없이)
-    if X_sparse is not None:
-        item_pops = np.array(X_sparse.sum(axis=0)).flatten()
-        item_pops = np.sort(item_pops)[::-1]
-        item_pops = item_pops[item_pops > 0]
-        if len(item_pops) < 10: return 0.5
-        
-        y = np.log(item_pops)
-        x = np.log(np.arange(1, len(item_pops) + 1))
-        z_slope, _ = np.polyfit(x, y, 1)
-        # γ = -z_slope
-        # a = (2γ + 1) / (2γ + 2)
-        gamma = max(1e-5, float(-z_slope))
-        slope = (2.0 * gamma + 1.0) / (2.0 * gamma + 2.0)
-        
-        if dataset_name:
-            _MNARGammaCache.put(f"{dataset_name}_slope", slope)
-        return slope
+        if item_frequencies is not None:
+            n_raw = np.abs(AspireEngine._to_numpy(item_frequencies)).flatten()
+        elif X_sparse is not None:
+            n_raw = np.asarray(X_sparse.sum(axis=0)).flatten()
+        else:
+            raise ValueError("item_frequencies 또는 X_sparse 필요")
+            
+        # [NEW] spp_pow 적용된 인기도 분포
+        # slope_n을 구할 때 n_i의 멱함수 변환 분포를 기반으로 함
+        p_i = np.power(n_raw / (n_raw.max() + 1e-9), spp_pow)
+        p_all_sorted = np.sort(p_i)[::-1]
 
-    return 0.5 # MCAR fallback
+        hub = HuberRegressor(epsilon=1.35, max_iter=300, fit_intercept=True)
 
-# Backward compatibility wrapper
-def estimate_mnar_gamma(X_sparse=None, singular_values=None, dataset_name=None):
-    a = estimate_alignment_slope(X_sparse, singular_values, dataset_name)
-    # γ = (2a - 1) / (2(1 - a))
-    gamma = (2.0 * a - 1.0) / (2.0 * (1.0 - a) + 1e-9)
-    return max(0.0, gamma)
+        def _slope(vals: np.ndarray) -> float:
+            L  = len(vals)
+            lo = max(1, int(L * 0.05))
+            hi = max(lo + 4, int(L * 0.95))
+            r  = np.arange(lo + 1, hi + 1, dtype=float)
+            lv = np.log(np.clip(vals[lo:hi], 1e-12, None))
+            w  = np.sqrt(r)   # tail-weighted
+            hub.fit(np.log(r).reshape(-1, 1), lv, sample_weight=w)
+            # 멱법칙 특성상 slope는 음수지만, 우리는 그 '강도'(절댓값)를 원함
+            return abs(float(hub.coef_[0]))
+
+        sl_s = _slope(s)
+        sl_n = _slope(p_all_sorted)
+
+        if sl_s < 1e-6:
+            if verbose:
+                print(f"[ASPIRE-slope] {tag}: slope_σ≈0 → MCAR β=0")
+            return 0.0, 0.0
+
+        a    = sl_n / sl_s
+        beta = float(np.clip(a / 2.0, 0.0, 0.999))
+
+        if verbose:
+            print(
+                f"[ASPIRE-slope] {tag} (spp_pow={spp_pow}): "
+                f"slope_σ={sl_s:.3f}  slope_n={sl_n:.3f}  "
+                f"a={a:.3f}  β=a/2={beta:.4f}"
+            )
+
+        if save_dir:
+            try:
+                AspireEngine._save_slope_plot(
+                    s, p_all_sorted, sl_s, sl_n, a, beta, save_dir, tag
+                )
+            except Exception:
+                pass
+
+        return beta, a
+
+    # ── 4. 필터 ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def apply_filter(s, alpha: float, beta: float):
+        """
+        ASPIRE Spectral Scaling Filter.
+
+          h(σ) = σ^{2-2β} / (σ^{2-2β} + α)
+
+        β=0: h = σ²/(σ²+α)  — 표준 Tikhonov (MCAR)
+        β→1: h → 1/(1+α)    — 모든 방향 동일 감쇠 (극단 MNAR)
+        """
+        exponent = float(np.clip(2.0 - 2.0 * beta, 0.01, 2.0))
+        if torch.is_tensor(s):
+            sp = torch.pow(torch.clamp(s, min=1e-9), exponent)
+            return sp / (sp + alpha)
+        else:
+            sp = np.power(np.clip(AspireEngine._to_numpy(s), 1e-9, None), exponent)
+            return sp / (sp + alpha)
+
+    # ── 시각화 헬퍼 ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _save_slope_plot(s, n, sl_s, sl_n, a, beta, save_dir, tag):
+        os.makedirs(save_dir, exist_ok=True)
+        K     = len(s)
+        ranks = np.arange(1, K + 1)
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+        for ax, vals, slope, label in zip(
+            axes, [s, n[:K]], [sl_s, sl_n],
+            ["Singular Values σ_k", "Propensity Values p_i"],
+        ):
+            ax.scatter(np.log(ranks), np.log(np.clip(vals, 1e-12, None)),
+                       s=3, alpha=0.4)
+            x_fit = np.linspace(np.log(ranks[0]), np.log(ranks[-1]), 100)
+            ic = np.mean(np.log(np.clip(vals, 1e-12, None))) \
+               + slope * np.mean(np.log(ranks))
+            ax.plot(x_fit, -slope * x_fit + ic, "r--", label=f"slope={slope:.3f}")
+            ax.set_xlabel("log rank"); ax.set_ylabel(f"log"); ax.set_title(label)
+            ax.legend()
+        fig.suptitle(f"{tag}: a={a:.3f}  β={beta:.3f}")
+        fig.tight_layout()
+        fig.savefig(os.path.join(save_dir, f"aspire_slope_{tag}.png"))
+        plt.close(fig)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ASPIRELayer
+# ══════════════════════════════════════════════════════════════════════════════
 
 class ASPIRELayer(nn.Module):
-    def __init__(self, k=200, alpha=500.0, beta=1.0, target_energy=0.99):
-        super(ASPIRELayer, self).__init__()
-        self.k = int(k[0] if isinstance(k, (list, np.ndarray)) else k)
-        self.alpha = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
-        self.beta_config = beta[0] if isinstance(beta, (list, np.ndarray)) else beta
-        self.beta = 1.0 # Placeholder, will be set in build()
-        self.target_energy = float(target_energy[0] if isinstance(target_energy, (list, np.ndarray)) else target_energy)
-        self.register_buffer('singular_values', torch.empty(0)) 
-        self.register_buffer('filter_diag', torch.empty(0))
-        self.register_buffer('V_raw', torch.empty(0, 0))
-        self.gamma = 0.0 # Store estimated gamma
-        self.alignment_slope = 0.5 # Store observed slope 'a'
-        
+    """
+    ASPIRE Layer (SVD 기반).
+
+    파이프라인:
+      1. SVD:  X = UΣVᵀ
+      2. SPP:  p̃_k = Σ_i V_{ki}² · (n_i/n_max)^spp_pow
+      3. β:    log p̃_k = 2β·log σ_k + C  →  β = coef/2  (Huber)
+      4. h:    h(σ) = σ^{2-2β} / (σ^{2-2β} + α)
+      5. 추론: r̂_u = (x_u @ V) ⊙ h · Vᵀ
+
+    속성:
+      beta        : MNAR 강도 요약 스칼라
+      r_squared   : 멱법칙 가정 성립 정도 (진단용)
+    """
+
+    def __init__(
+        self,
+        k: int | list           = 200,
+        alpha: float | list     = 500.0,
+        beta: float | str | list = "auto",
+        target_energy: float | list = 0.95,
+        spp_pow: float | list = 0.5,
+    ):
+        super().__init__()
+        self.k             = int(k[0] if isinstance(k, (list, np.ndarray)) else k)
+        self.alpha         = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
+        self.beta_config   = beta[0] if isinstance(beta, (list, np.ndarray)) else beta
+        self.target_energy = float(
+            target_energy[0] if isinstance(target_energy, (list, np.ndarray))
+            else target_energy
+        )
+        self.spp_pow       = float(spp_pow[0] if isinstance(spp_pow, (list, np.ndarray)) else spp_pow)
+
+        self.beta          = 0.5
+        self.r_squared     = 0.0
+        self.alignment_slope = 0.0  # 하위 호환
+
+        self.register_buffer("singular_values", torch.empty(0))
+        self.register_buffer("V_raw",           torch.empty(0, 0))
+        self.register_buffer("filter_diag",     torch.empty(0))
+
     @property
-    def V_k(self): return self.V_raw
+    def V_k(self) -> torch.Tensor:
+        return self.V_raw
 
     @torch.no_grad()
-    def build(self, X_sparse, dataset_name=None):
-        dev = self.singular_values.device
+    def build(self, X_sparse, dataset_name: str | None = None):
+        """SVD → SPP → β → h."""
+        dev     = next((p.device for p in self.parameters()), torch.device("cpu"))
         manager = SVDCacheManager(device=dev)
-        u, s, v, total_energy = manager.get_svd(X_sparse, k=None, target_energy=self.target_energy, dataset_name=dataset_name)
-        self.k = len(s)
-        self.register_buffer('singular_values', s.to(dev))
-        self.register_buffer('V_raw', v.to(dev))
-        
-        # Auto Beta: β = max(0, 2a - 1) — MCAR 기준선(a=0.5)으로부터의 이탈량
-        if isinstance(self.beta_config, str):
-            a = estimate_alignment_slope(X_sparse=X_sparse, singular_values=self.singular_values, dataset_name=dataset_name, alpha=self.alpha)
-            self.alignment_slope = a
-            self.beta = max(0.0, 2.0 * a - 1.0)
-            self.gamma = (2.0 * a - 1.0) / (2.0 * (1.0 - a) + 1e-9)  # logging only
-            print(f"[{self.__class__.__name__}] SWLS a={a:.3f} -> β={self.beta:.3f} (γ={self.gamma:.3f})")
-        else:
-            self.beta = float(self.beta_config)
-            self.gamma = 0.0
-            self.alignment_slope = 0.5
 
-        # As derived, penalty is α * |Γ W|_F^2 where Γ_kk = σ_k^β
-        # This leads to h_k = σ_k^2 / (σ_k^2 + α * σ_k^{2β}) = σ_k^{2(1-β)} / (σ_k^{2(1-β)} + α)
-        s_pow = torch.pow(self.singular_values, 2.0 * (1.0 - self.beta))
-        self.register_buffer('filter_diag', s_pow / (s_pow + self.alpha))
-        print(f"[{self.__class__.__name__}] ASPIRE build complete (k={self.k}). Device: {dev}")
+        # ── 1. SVD ───────────────────────────────────────────────────────────
+        _, s, v, _ = manager.get_svd(
+            X_sparse, k=None,
+            target_energy=self.target_energy,
+            dataset_name=dataset_name,
+        )
+        self.k = len(s)
+        self.register_buffer("singular_values", s.to(dev))
+        self.register_buffer("V_raw", v.to(dev))
+
+        item_pops = np.array(X_sparse.sum(axis=0)).flatten().astype(float)
+        V_np      = self.V_raw.cpu().numpy()
+        s_np      = self.singular_values.cpu().numpy()
+
+        # ── 2. β 결정 ─────────────────────────────────────────────────────────
+        # spp_pow가 달라지면 β도 달라지므로 캐시 키에 포함
+        cache_key = f"{dataset_name}_aspire_v13_p{self.spp_pow}" if dataset_name else None
+        cached    = _MNARGammaCache.get(cache_key) if cache_key else None
+
+        if isinstance(self.beta_config, str):  # "auto"
+            if cached is not None:
+                self.beta        = float(cached["beta"])
+                self.r_squared   = float(cached.get("r2", 0.0))
+            else:
+                # SPP → β (spp_pow 반영)
+                p_tilde          = AspireEngine.compute_spp(V_np, item_pops, spp_pow=self.spp_pow)
+                self.beta, self.r_squared = AspireEngine.estimate_beta(
+                    s_np, p_tilde,
+                    verbose=True, dataset_name=dataset_name or "?",
+                )
+                self.alignment_slope = self.beta * 2.0
+                if cache_key:
+                    _MNARGammaCache.put(cache_key, {
+                        "beta": self.beta,
+                        "r2":   self.r_squared,
+                    })
+        else:
+            # 수동 지정 (HPO)
+            self.beta = float(self.beta_config)
+
+        # ── 3. 필터 ───────────────────────────────────────────────────────────
+        h = AspireEngine.apply_filter(self.singular_values, self.alpha, self.beta)
+        self.register_buffer("filter_diag", h)
+
+        print(
+            f"[ASPIRELayer] build complete | "
+            f"k={self.k}  β={self.beta:.4f}  R²={self.r_squared:.4f}  "
+            f"spp_pow={self.spp_pow}  device={dev}"
+        )
 
     @torch.no_grad()
-    def forward(self, X_batch, user_ids=None):
-        if self.singular_values.numel() == 0: raise RuntimeError("build() first")
+    def forward(self, X_batch: torch.Tensor, user_ids=None) -> torch.Tensor:
+        if self.singular_values.numel() == 0:
+            raise RuntimeError("ASPIRELayer.build()를 먼저 호출하세요.")
         XV = torch.mm(X_batch, self.V_raw)
-        XV_filtered = XV * self.filter_diag
-        return torch.mm(XV_filtered, self.V_raw.t())
+        return torch.mm(XV * self.filter_diag, self.V_raw.t())
 
     @torch.no_grad()
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
         LIRAVisualizer.visualize_spectral_tikhonov(
-            self.singular_values, 
-            self.filter_diag, 
-            self.alpha, 
-            self.beta, 
-            gamma=self.gamma,
-            a=self.alignment_slope, # Pass alignment slope
-            X_sparse=X_sparse, 
-            save_dir=save_dir, 
-            file_prefix='aspire'
+            self.singular_values, self.filter_diag, self.alpha,
+            beta=self.beta, a=self.alignment_slope,
+            X_sparse=X_sparse, save_dir=save_dir, file_prefix="aspire",
         )
 
-class ChebyASPIRELayer(nn.Module):
-    def __init__(self, alpha=500.0, degree=20, beta=0.5, lambda_max_estimate='auto', threshold=1e-4):
-        super().__init__()
-        self.alpha = float(alpha)
-        self.degree = int(degree)
-        self.beta_config = beta
-        self.beta = 0.5 # Placeholder
-        self.lambda_max_estimate = lambda_max_estimate
-        self.threshold = float(threshold)
-        
-        self.register_buffer('cheby_coeffs', torch.empty(0))
-        self.register_buffer('t_mid', torch.tensor(0.0))
-        self.register_buffer('t_half', torch.tensor(0.0))
-        self.register_buffer('item_weights', torch.empty(0)) # Precomputed W matrix
-        self.gamma = 0.0 # Store estimated gamma
-        self.alignment_slope = 0.5 # Store observed slope 'a'
-        
-        # [OPTIMIZATION] 희소 행렬 자체를 클래스 변수로 캐싱 (상태 저장 불필요)
-        self.X_torch_csr = None
-        self.Xt_torch_csr = None
-        self.sparse_device = None
 
-    def _aspire_filter(self, lam):
-        # 수학적 증명: lambda는 X^TX의 고유값(σ^2).
-        # h(σ) = σ^{2(1-β)} / (σ^{2(1-β)} + α) 이므로,
-        # λ를 기준으로 하면 exponent는 1 - β 가 됩니다!
-        exponent = 1.0 - self.beta 
-        lam_pow = np.power(np.maximum(lam, 0.0), exponent)
+# ══════════════════════════════════════════════════════════════════════════════
+# ChebyASPIRELayer
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ChebyASPIRELayer(nn.Module):
+    """
+    ChebyASPIRE Layer (SVD-free, O(L·E) 복잡도).
+
+    파이프라인:
+      1. β:  slope 비율로 추정 (V 없음 → SPP 불가)
+      2. h:  h(σ) = σ^{2-2β}/(σ^{2-2β}+α)  →  h(λ) = λ^{1-β}/(λ^{1-β}+α)
+      3. W:  Chebyshev 다항식으로 h(XᵀX) 근사
+      4. 추론: r̂_u = x_u @ W
+
+    SVD가 불가능한 초거대 행렬을 위한 확장.
+    β 추정이 slope 기반으로 SPP보다 정보량이 적다.
+    SVD가 가능하면 ASPIRELayer를 쓸 것.
+    """
+
+    def __init__(
+        self,
+        alpha: float | list          = 500.0,
+        degree: int | list           = 20,
+        beta: float | str | list     = "auto",
+        lambda_max_estimate: float | str = "auto",
+        threshold: float             = 1e-4,
+        spp_pow: float | list        = 0.5,
+    ):
+        super().__init__()
+        self.alpha               = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
+        self.degree              = int(degree[0]  if isinstance(degree, (list, np.ndarray)) else degree)
+        self.beta_config         = beta[0] if isinstance(beta, (list, np.ndarray)) else beta
+        self.lambda_max_estimate = lambda_max_estimate
+        self.threshold           = float(threshold)
+        self.spp_pow             = float(spp_pow[0] if isinstance(spp_pow, (list, np.ndarray)) else spp_pow)
+
+        self.beta            = 0.5
+        self.alignment_slope = 0.0
+        self.gamma           = 0.0  # 하위 호환
+
+        self.register_buffer("cheby_coeffs", torch.empty(0))
+        self.register_buffer("t_mid",        torch.tensor(0.0))
+        self.register_buffer("t_half",       torch.tensor(0.0))
+        self.register_buffer("item_weights", torch.empty(0))
+
+        self.X_torch_csr  = None
+        self.Xt_torch_csr = None
+        self.sparse_device: torch.device | None = None
+
+    def _aspire_filter(self, lam: np.ndarray) -> np.ndarray:
+        """h(λ) = λ^{1-β} / (λ^{1-β} + α),  λ = σ²."""
+        exp     = float(np.clip(1.0 - self.beta, 0.005, 1.0))
+        lam_pow = np.power(np.maximum(lam, 0.0), exp)
         return lam_pow / (lam_pow + self.alpha)
 
     @torch.no_grad()
-    def _estimate_lambda_max(self, X_csr, Xt_csr):
+    def _estimate_lambda_max(self, X_csr, Xt_csr) -> float:
         v = torch.randn(X_csr.shape[1], 1, device=X_csr.device)
         v = v / v.norm()
         for _ in range(30):
-            # CSR 포맷 사용으로 속도 대폭 향상
-            v = torch.sparse.mm(Xt_csr, torch.sparse.mm(X_csr, v))
+            v          = torch.sparse.mm(Xt_csr, torch.sparse.mm(X_csr, v))
             lambda_est = v.norm().item()
-            v = v / lambda_est
+            v          = v / (lambda_est + 1e-12)
         return lambda_est
 
-    def _compute_chebyshev_coeffs(self, lambda_min, lambda_max, K):
-        j = np.arange(K + 1)
-        theta = np.pi * (j + 0.5) / (K + 1)
-        t_nodes = np.cos(theta)
-        
-        mid, half = (lambda_max + lambda_min) / 2.0, (lambda_max - lambda_min) / 2.0
-        lambda_nodes = mid + half * t_nodes
-        f_nodes = self._aspire_filter(lambda_nodes)
-        
-        coeffs = np.zeros(K + 1)
+    def _compute_chebyshev_coeffs(self, lam_min, lam_max, K) -> np.ndarray:
+        j         = np.arange(K + 1)
+        theta     = np.pi * (j + 0.5) / (K + 1)
+        mid, half = (lam_max + lam_min) / 2.0, (lam_max - lam_min) / 2.0
+        lam_nodes = mid + half * np.cos(theta)
+        f_nodes   = self._aspire_filter(lam_nodes)
+        coeffs    = np.zeros(K + 1)
         for k in range(K + 1):
-            T_k = np.cos(k * theta) 
-            coeffs[k] = (2.0 / (K + 1)) * np.sum(f_nodes * T_k)
+            coeffs[k] = (2.0 / (K + 1)) * np.sum(f_nodes * np.cos(k * theta))
         coeffs[0] /= 2.0
         return coeffs
 
     @torch.no_grad()
-    def build(self, X_sparse, dataset_name=None):
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        if torch.backends.mps.is_available(): device = 'mps'
-        
-        # [OPTIMIZATION] Mac(MPS)의 경우 희소 행렬 연산은 CPU 강제 (안정성 및 속도)
-        self.sparse_device = torch.device('cpu' if 'mps' in str(device).lower() else device)
-        
-        # COO에서 바로 PyTorch CSR로 변환 (메모리 연속성 확보 및 연산 속도 극대화)
-        X_coo = X_sparse.tocoo()
-        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
-        values = torch.from_numpy(X_coo.data).float()
-        
-        # 희소 행렬을 build 타임에 한 번만 생성하여 메모리에 상주
-        X_coo_torch = torch.sparse_coo_tensor(indices, values, X_coo.shape, device=self.sparse_device).coalesce()
-        Xt_coo_torch = torch.sparse_coo_tensor(
-            torch.stack([indices[1], indices[0]]), values, (X_coo.shape[1], X_coo.shape[0]), device=self.sparse_device
-        ).coalesce()
-        
-        # PyTorch 1.10+ 지원 CSR 포맷으로 변환 (sparse.mm 속도 향상)
-        self.X_torch_csr = X_coo_torch.to_sparse_csr()
-        self.Xt_torch_csr = Xt_coo_torch.to_sparse_csr()
+    def build(self, X_sparse, dataset_name: str | None = None):
+        """β → Chebyshev 계수 → (소규모) W 사전 계산."""
+        if torch.cuda.is_available():       device = "cuda"
+        elif torch.backends.mps.is_available(): device = "mps"
+        else:                               device = "cpu"
+        self.sparse_device = torch.device("cpu" if "mps" in device else device)
 
-        if self.lambda_max_estimate == 'auto':
-            lambda_max = self._estimate_lambda_max(self.X_torch_csr, self.Xt_torch_csr)
+        # ── 희소 행렬 변환 ────────────────────────────────────────────────────
+        X_coo   = X_sparse.tocoo()
+        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
+        values  = torch.from_numpy(X_coo.data).float()
+        shape   = X_coo.shape
+
+        X_t  = torch.sparse_coo_tensor(
+            indices, values, shape, device=self.sparse_device
+        ).coalesce()
+        Xt_t = torch.sparse_coo_tensor(
+            torch.stack([indices[1], indices[0]]), values,
+            (shape[1], shape[0]), device=self.sparse_device
+        ).coalesce()
+        self.X_torch_csr  = X_t.to_sparse_csr()
+        self.Xt_torch_csr = Xt_t.to_sparse_csr()
+
+        # ── λ_max ─────────────────────────────────────────────────────────────
+        if self.lambda_max_estimate == "auto":
+            lambda_max = self._estimate_lambda_max(
+                self.X_torch_csr, self.Xt_torch_csr
+            )
         else:
             lambda_max = float(self.lambda_max_estimate)
-            
-        lambda_min = 0.0
-        
-        # Auto Beta: β = max(0, 2a - 1) — MCAR 기준선(a=0.5)으로부터의 이탈량
-        if isinstance(self.beta_config, str):
-            a = estimate_alignment_slope(X_sparse=X_sparse, dataset_name=dataset_name, alpha=self.alpha)
-            self.alignment_slope = a
-            self.beta = max(0.0, 2.0 * a - 1.0)
-            self.gamma = (2.0 * a - 1.0) / (2.0 * (1.0 - a) + 1e-9)  # logging only
-            print(f"[{self.__class__.__name__}] SWLS a={a:.3f} -> β={self.beta:.3f} (γ={self.gamma:.3f})")
+
+        # ── β 결정 ────────────────────────────────────────────────────────────
+        cache_key = f"{dataset_name}_cheby_v13_p{self.spp_pow}" if dataset_name else None
+        cached    = _MNARGammaCache.get(cache_key) if cache_key else None
+
+        if isinstance(self.beta_config, str):  # "auto"
+            if cached is not None:
+                self.beta            = float(cached["beta"])
+                self.alignment_slope = float(cached.get("a", 0.0))
+            else:
+                item_pops = np.array(X_sparse.sum(axis=0)).flatten()
+                self.beta, a = AspireEngine.estimate_beta_from_slope(
+                    singular_values=None,
+                    item_frequencies=item_pops,
+                    X_sparse=X_sparse,
+                    spp_pow=self.spp_pow,
+                    verbose=True,
+                    dataset_name=dataset_name or "?",
+                )
+                self.alignment_slope = a
+                if cache_key:
+                    _MNARGammaCache.put(cache_key, {"beta": self.beta, "a": a})
         else:
             self.beta = float(self.beta_config)
-            self.gamma = 0.0
-            self.alignment_slope = 0.5
 
-        coeffs = self._compute_chebyshev_coeffs(lambda_min, lambda_max, self.degree)
-        self.register_buffer('cheby_coeffs', torch.from_numpy(coeffs).float().to(device))
-        self.register_buffer('t_mid', torch.tensor((lambda_max + lambda_min) / 2.0, device=device))
-        self.register_buffer('t_half', torch.tensor((lambda_max - lambda_min) / 2.0, device=device))
-        
-        # [SUPER OPTIMIZATION] 
-        # 1. Compute/Get Gram Matrix (L = X^T X) - Dataset-dependent, Params-independent
-        num_items = X_sparse.shape[1]
+        print(f"[ChebyASPIRELayer] β={self.beta:.4f}  λ_max={lambda_max:.2f}  spp_pow={self.spp_pow}")
+
+        # ── Chebyshev 계수 ────────────────────────────────────────────────────
+        coeffs = self._compute_chebyshev_coeffs(0.0, lambda_max, self.degree)
+        self.register_buffer("cheby_coeffs",
+                             torch.from_numpy(coeffs).float().to(device))
+        self.register_buffer("t_mid",
+                             torch.tensor((lambda_max) / 2.0, device=device))
+        self.register_buffer("t_half",
+                             torch.tensor((lambda_max) / 2.0, device=device))
+
+        # ── W 사전 계산 (n ≤ 15000) ───────────────────────────────────────────
+        n = X_sparse.shape[1]
         L = _GramCache.get(dataset_name, device=device)
-        
-        if L is None:
-            if num_items <= 15000:
-                print(f"[{self.__class__.__name__}] Computing Gram Matrix (X^T X) for the first time...")
-                # Compute using Sparse MM once
-                X_csr = self.X_torch_csr.to(self.sparse_device)
-                Xt_csr = self.Xt_torch_csr.to(self.sparse_device)
-                
-                # To Dense for fast future recurrence
-                L = torch.sparse.mm(Xt_csr, X_csr.to_dense())
-                if dataset_name:
-                    _GramCache.put(dataset_name, L)
-                L = L.to(device)
-            else:
-                L = None # Too large
+        if L is None and n <= 15000:
+            print(f"[ChebyASPIRELayer] Gram 행렬 계산 중 (n={n})...")
+            L = torch.sparse.mm(
+                self.Xt_torch_csr.to(self.sparse_device),
+                self.X_torch_csr.to_dense().to(self.sparse_device),
+            ).to(device)
+            if dataset_name:
+                _GramCache.put(dataset_name, L)
 
-        # 2. Compute Filter Weight Matrix W using Dense Recurrence
-        # This part depends on alpha/beta, so it runs every trial, but it's 100% Dense GPU/MPS!
         if L is not None:
-            print(f"[{self.__class__.__name__}] Precomputing W using Dense Recurrence on {device}...")
-            # Recurrence: T_next = 2 * (L @ T_curr - t_mid * T_curr) / t_half - T_prev
-            # Initial states
-            T_prev = torch.eye(num_items, device=device)
-            T_curr = (L - self.t_mid * T_prev) / self.t_half
-            
-            W = float(coeffs[0]) * T_prev + float(coeffs[1]) * T_curr
-            
-            for k in range(2, self.degree + 1):
-                T_next = 2.0 * (torch.mm(L, T_curr) - self.t_mid * T_curr) / self.t_half - T_prev
-                W.add_(T_next, alpha=float(coeffs[k]))
-                T_prev = T_curr
-                T_curr = T_next
-            
-            self.item_weights = W
-            print(f"[{self.__class__.__name__}] Weight Matrix W ready on {device}. Inference will be lightning fast.")
+            print(f"[ChebyASPIRELayer] Dense recurrence로 W 계산 중 ({device})...")
+            self.item_weights = self._dense_chebyshev(L, coeffs, n, device)
+            print(f"[ChebyASPIRELayer] W 완료.")
         else:
             self.item_weights = torch.empty(0)
-            print(f"[{self.__class__.__name__}] Item count {num_items} too large for Dense optimization.")
-        
-        print(f"[{self.__class__.__name__}] Build complete. coefficients computed.")
+            print(f"[ChebyASPIRELayer] n={n}>15000, SpMV 모드.")
+
+        print(f"[ChebyASPIRELayer] build 완료.")
+
+    def _dense_chebyshev(self, L, coeffs, n, device) -> torch.Tensor:
+        T_prev = torch.eye(n, device=device)
+        T_curr = (L - self.t_mid * T_prev) / self.t_half
+        W      = float(coeffs[0]) * T_prev + float(coeffs[1]) * T_curr
+        for k in range(2, self.degree + 1):
+            T_next = (
+                2.0 * (torch.mm(L, T_curr) - self.t_mid * T_curr) / self.t_half
+                - T_prev
+            )
+            W.add_(T_next, alpha=float(coeffs[k]))
+            T_prev = T_curr
+            T_curr = T_next
+        return W
 
     @torch.no_grad()
-    def forward(self, X_batch, user_ids=None):
-        if getattr(self, 'X_torch_csr', None) is None:
-            raise RuntimeError("build() first")
-
-        batch_device = X_batch.device
-
-        # [ULTRA OPTIMIZATION] If precomputed matrix exists, use DENSE-DENSE MM
-        # Efficient and runs natively on any device (GPU/MPS/CPU)
+    def forward(self, X_batch: torch.Tensor, user_ids=None) -> torch.Tensor:
+        if self.X_torch_csr is None:
+            raise RuntimeError("ChebyASPIRELayer.build()를 먼저 호출하세요.")
         if self.item_weights.numel() > 0:
-            return torch.mm(X_batch, self.item_weights).to(batch_device)
+            return torch.mm(X_batch, self.item_weights.to(X_batch.device))
+        return self._sparsemv_forward(X_batch)
 
-        sparse_dev = self.sparse_device
-        
-        # [OPTIMIZATION] 필요한 파라미터 미리 추출 및 Device 이동 최소화
-        X_t = X_batch.t().to(sparse_dev) # (Items, Batch)
-        coeffs = self.cheby_coeffs.cpu().numpy() # Scalar 연산은 CPU numpy가 안정적
-        t_mid_val = self.t_mid.item()
+    @torch.no_grad()
+    def _sparsemv_forward(self, X_batch: torch.Tensor) -> torch.Tensor:
+        dev        = X_batch.device
+        coeffs     = self.cheby_coeffs.cpu().numpy()
+        t_mid_val  = self.t_mid.item()
         t_half_val = self.t_half.item()
+        X_t        = X_batch.t().to(self.sparse_device)
 
-        # --- Chebyshev Recurrence (Memory Optimized) ---
-        # T_prev = T_0(S) * X_t = X_t
         T_prev = X_t
-        
-        # T_curr = T_1(S) * X_t = S(X_t)
-        # S(v) = (Xt @ (X @ v) - t_mid * v) / t_half
-        inner = torch.sparse.mm(self.X_torch_csr, T_prev)
+        inner  = torch.sparse.mm(self.X_torch_csr, T_prev)
         T_curr = torch.sparse.mm(self.Xt_torch_csr, inner)
         T_curr.add_(T_prev, alpha=-t_mid_val)
         T_curr.div_(t_half_val)
-        
-        # out = c_0 * T_0 + c_1 * T_1
-        out = T_prev.clone()
-        out.mul_(float(coeffs[0]))
+
+        out = T_prev.clone().mul_(float(coeffs[0]))
         out.add_(T_curr, alpha=float(coeffs[1]))
 
-        # T_next = 2 * S(T_curr) - T_prev
         for k in range(2, self.degree + 1):
-            # 1. S(T_curr) 계산
-            inner = torch.sparse.mm(self.X_torch_csr, T_curr)
+            inner  = torch.sparse.mm(self.X_torch_csr, T_curr)
             T_next = torch.sparse.mm(self.Xt_torch_csr, inner)
             T_next.add_(T_curr, alpha=-t_mid_val)
             T_next.div_(t_half_val)
-            
-            # 2. T_k 재귀 공식 적용: T_k = 2 * S * T_{k-1} - T_{k-2}
             T_next.mul_(2.0)
             T_next.sub_(T_prev)
-            
-            # 3. 누적합 업데이트
             out.add_(T_next, alpha=float(coeffs[k]))
-            
-            # 4. 핑퐁 업데이트
             T_prev = T_curr
             T_curr = T_next
 
-        # 최종 연산 결과물만 원래 디바이스(batch_device)로 복귀
-        return out.t().to(batch_device)
+        return out.t().to(dev)
 
     @torch.no_grad()
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
-        # ChebyASPIRE visualization: Plot coefficients and the filter shape
         if not save_dir: return
         os.makedirs(save_dir, exist_ok=True)
-        
-        coeffs = self.cheby_coeffs.cpu().numpy()
-        plt.figure(figsize=(18, 5))
-        
-        # 1. Coefficients Plot
-        plt.subplot(1, 3, 1)
-        plt.bar(range(len(coeffs)), coeffs)
-        plt.title(f"Chebyshev Coefficients (degree={self.degree})")
-        plt.xlabel("k")
-        plt.ylabel("c_k")
-        
-        # --- 시각화 데이터 계산 로직 복구 ---
-        # 1. 시그마 범위 설정 (ASPIRE와 방향 일치: Dominant -> Noise)
-        lambda_max = (self.t_mid + self.t_half).detach().cpu().item()
-        max_sigma = np.sqrt(lambda_max)
-        sigmas = np.linspace(0, max_sigma, 200)
-        sigmas_plot = sigmas[::-1] # Large to Small (Dominant -> Noise)
-        lams = sigmas_plot**2
-        
-        # 2. 이론적 타겟 (Standard ASPIRE)
+
+        coeffs     = self.cheby_coeffs.cpu().numpy()
+        lambda_max = (self.t_mid + self.t_half).item()
+        sigmas     = np.linspace(0, np.sqrt(max(lambda_max, 1e-9)), 200)[::-1]
+        lams       = sigmas ** 2
+
         f_target = self._aspire_filter(lams)
-        
-        # 3. 실제 Chebyshev 근사값 계산 (recurrence)
         t_scaled = (lams - self.t_mid.item()) / self.t_half.item()
-        f_approx = np.zeros_like(lams)
-        T_prev = np.ones_like(t_scaled)
-        T_curr = t_scaled
-        
+        T_prev   = np.ones_like(t_scaled)
+        T_curr   = t_scaled.copy()
         f_approx = coeffs[0] * T_prev + coeffs[1] * T_curr
         for k in range(2, self.degree + 1):
-            T_next = 2 * t_scaled * T_curr - T_prev
+            T_next    = 2 * t_scaled * T_curr - T_prev
             f_approx += coeffs[k] * T_next
             T_prev = T_curr
             T_curr = T_next
-        # -------------------------------
-        
-        # --- 지표 계산 및 JSON 저장 ---
-        fit_error = f_approx - f_target
-        metrics = {
-            "model": "ChebyASPIRE",
-            "params": {
-                "alpha": self.alpha,
-                "alignment_slope": self.alignment_slope,
-                "gamma": self.gamma, 
-                "beta": self.beta,
-                "degree": self.degree,
-                "lambda_max": lambda_max
-            },
-            "coefficients": {
-                "mean": float(coeffs.mean()),
-                "std": float(coeffs.std()),
-                "max": float(coeffs.max()),
-                "abs_sum": float(np.abs(coeffs).sum())
-            },
-            "fit_quality": {
-                "mean_error": float(np.mean(fit_error)),
-                "mae": float(np.mean(np.abs(fit_error))),
-                "rmse": float(np.sqrt(np.mean(fit_error**2))),
-                "max_error": float(np.max(np.abs(fit_error)))
-            }
-        }
-        with open(os.path.join(save_dir, "cheby_aspire_metrics.json"), 'w') as f:
-            json.dump(metrics, f, indent=4)
-        # ----------------------------
-        
-        # 2. Filter Plot (Log Scale) 
-        plt.subplot(1, 3, 2)
-        plt.plot(sigmas_plot, f_target + 1e-12, 'k--', alpha=0.3, label='Target (ASPIRE)')
-        plt.plot(sigmas_plot, f_approx + 1e-12, color='orange', linewidth=2, label='Cheby Fit')
-        
-        plt.yscale('log')
-        plt.gca().invert_xaxis() # Large Sigma on Left (Consistent with ASPIRE)
-        plt.title(fr"Filter Magnitude ($a={self.alignment_slope:.3f}, \gamma={self.gamma:.2f}, \beta={self.beta:.3f}$)")
-        plt.xlabel(r"Singular Value $\sigma$ (Head $\rightarrow$ Tail)")
-        plt.ylabel(r"Filter Value")
-        plt.grid(True, which="both", ls="-", alpha=0.2)
-        plt.legend()
 
-        # 3. Fit Error (Theoretical - Approx)
-        plt.subplot(1, 3, 3)
-        plt.plot(sigmas_plot, f_approx - f_target, color='red', label='Fit Error (Fit - Target)')
-        plt.gca().invert_xaxis() # Large Sigma on Left
-        plt.title(r"Fit Approximation Error")
-        plt.xlabel(r"Singular Value $\sigma$")
-        plt.ylabel(r"$\Delta h(\sigma)$")
-        plt.axhline(0, color='black', linewidth=1, linestyle='--')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(save_dir, "cheby_aspire_analysis.png"))
-        plt.close()
-        print(f"[{self.__class__.__name__}] Analysis saved to {save_dir}")
+        fit_err = f_approx - f_target
+        metrics = {
+            "model":  "ChebyASPIRE",
+            "params": {"alpha": self.alpha, "beta": self.beta,
+                       "degree": self.degree, "lambda_max": float(lambda_max),
+                       "spp_pow": self.spp_pow},
+            "fit_quality": {
+                "mae":  float(np.mean(np.abs(fit_err))),
+                "rmse": float(np.sqrt(np.mean(fit_err ** 2))),
+                "max":  float(np.max(np.abs(fit_err))),
+            },
+        }
+        with open(os.path.join(save_dir, "cheby_aspire_metrics.json"), "w") as f:
+            json.dump(metrics, f, indent=4)
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        axes[0].bar(range(len(coeffs)), coeffs)
+        axes[0].set_title(f"Chebyshev Coefficients (L={self.degree})")
+        axes[0].set_xlabel("k"); axes[0].set_ylabel("c_k")
+
+        axes[1].plot(sigmas, f_target + 1e-12, "k--", alpha=0.4,
+                     label="ASPIRE target")
+        axes[1].plot(sigmas, f_approx + 1e-12, color="orange",
+                     lw=2, label="Cheby fit")
+        axes[1].set_yscale("log"); axes[1].invert_xaxis()
+        axes[1].set_title(rf"Filter  ($\beta={self.beta:.3f}$)")
+        axes[1].set_xlabel(r"$\sigma$ (head→tail)")
+        axes[1].set_ylabel("h(σ)"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
+
+        axes[2].plot(sigmas, fit_err, color="red", label="fit error")
+        axes[2].axhline(0, color="black", lw=1, ls="--")
+        axes[2].invert_xaxis()
+        axes[2].set_title("Fit Error"); axes[2].set_xlabel(r"$\sigma$")
+        axes[2].legend(); axes[2].grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(os.path.join(save_dir, "cheby_aspire_analysis.png"))
+        plt.close(fig)
+        print(f"[ChebyASPIRELayer] 시각화 저장: {save_dir}")
