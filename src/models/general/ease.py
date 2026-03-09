@@ -77,12 +77,11 @@ class EASE(BaseModel):
         user_input = torch.from_numpy(user_input_sparse.toarray()).float().to(self.device)
         
         if self.is_sparse:
-            # Sparse-Dense Multiplication: (W @ X^T)^T
-            # MPS does not support torch.sparse.mm, so fall back to dense matmul
-            if self.device.type == 'mps':
-                scores = user_input @ self.weight_matrix.to_dense()
-            else:
-                scores = torch.sparse.mm(self.weight_matrix, user_input.t()).t()
+            # [CUDA OPT] Sparse-Dense Multiplication
+            # user_input: (B, I), weight_matrix: Sparse(I, I)
+            # torch.sparse.mm only supports Sparse @ Dense or Sparse @ Sparse.
+            # So we use (W @ X^T)^T
+            scores = torch.sparse.mm(self.weight_matrix, user_input.t()).t()
         else:
             scores = user_input @ self.weight_matrix
         

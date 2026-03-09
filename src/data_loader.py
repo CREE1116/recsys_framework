@@ -13,7 +13,6 @@ from .data_processing import (
     remap_ids, split_leave_one_out, split_temporal_ratio, split_random,
     build_history_dicts,
 )
-from .utils.gpu_accel import get_device
 
 
 # ============================================================
@@ -437,8 +436,8 @@ class DataLoader:
     # ----------------------------------------------------------
 
     def get_interaction_graph(self, add_self_loops=False):
-        device = get_device(self.config.get('device', 'auto'))
-        use_sparse = device.type != 'mps'
+        device = self.config.get('device', 'cpu')
+        use_sparse = device not in ('mps',)
 
         num_nodes = self.n_users + self.n_items
         if num_nodes == 0:
@@ -476,12 +475,19 @@ class DataLoader:
     # ----------------------------------------------------------
 
     def _get_loader_kwargs(self):
-        device = get_device(self.config.get('device', 'auto'))
+        device = self.config.get('device', 'cpu')
+        if device == 'auto':
+            if torch.backends.mps.is_available():
+                device = 'mps'
+            elif torch.cuda.is_available():
+                device = 'cuda'
+            else:
+                device = 'cpu'
         num_workers = self.config.get('num_workers', 4)
         if sys.platform == 'darwin':
             num_workers = 0
         prefetch_factor = self.config.get('prefetch_factor', 2)
-        pin_memory = device.type not in ('cpu', 'mps')
+        pin_memory = device not in ('cpu', 'mps')
         return num_workers, prefetch_factor, pin_memory
 
     def get_train_loader(self, batch_size):

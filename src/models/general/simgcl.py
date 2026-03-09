@@ -27,12 +27,13 @@ class SimGCL(LightGCN):
 
         for _ in range(self.n_layers):
             # 1. Graph Aggregation
+            # 1. Graph Aggregation
             if self.norm_adj_matrix.is_sparse:
-                if self.device.type == 'mps':
-                    # MPS does not support torch.sparse.mm; fall back to dense matmul
-                    all_embeddings = torch.mm(self.norm_adj_matrix.to_dense(), all_embeddings)
-                else:
+                try:
                     all_embeddings = torch.sparse.mm(self.norm_adj_matrix, all_embeddings)
+                except (RuntimeError, NotImplementedError):
+                    # Fallback for MPS
+                    all_embeddings = torch.sparse.mm(self.norm_adj_matrix.cpu(), all_embeddings.cpu()).to(self.device)
             else:
                 all_embeddings = torch.matmul(self.norm_adj_matrix, all_embeddings)
             

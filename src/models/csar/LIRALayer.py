@@ -15,6 +15,9 @@ from src.models.csar.lira_visualizer import LIRAVisualizer
 
 
 
+
+
+
 class LIRALayer(nn.Module):
     """
     LIRA - Linear Interest covariance Ridge Analysis (Dual Ridge Regression)
@@ -27,15 +30,16 @@ class LIRALayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse):
-        from src.utils.gpu_accel import get_device
-        device = get_device('auto')
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.backends.mps.is_available(): device = 'mps'
         
         # [MEMORY FIX] Do NOT use X_sparse.toarray() on CPU.
         # Compute Gram matrix G = X^T X directly to VRAM
         
         dev = device
-        # MPS: linalg.solve can be unstable — compute on CPU
-        calc_dev = torch.device('cpu') if dev.type == 'mps' else dev
+        # [MPS FIX] Perform build on CPU for stability on Mac. 
+        # Large matrix operations like linalg.solve often fail or are unstable on currently released MPS.
+        calc_dev = 'cpu' if 'mps' in str(dev).lower() else dev
         
         # Convert to dense CPU for robust training build (ML-1M scale is fine for CPU memory)
         X_dense = torch.from_numpy(X_sparse.toarray()).float().to(calc_dev)
@@ -84,8 +88,8 @@ class LightLIRALayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None):
-        from src.utils.gpu_accel import get_device
-        device = get_device('auto')
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.backends.mps.is_available(): device = 'mps'
         manager = SVDCacheManager(device=self.singular_values.device)
         # manager.get_svd returns tensors on CPU/Device depending on cache. 
         # Move them to target device immediately.
@@ -111,6 +115,8 @@ class LightLIRALayer(nn.Module):
 
 
 
+
+
 class PowerLIRALayer(nn.Module):
     def __init__(self, reg_lambda=500.0, power=2.0, threshold=1e-6):
         super(PowerLIRALayer, self).__init__()
@@ -121,8 +127,8 @@ class PowerLIRALayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse):
-        from src.utils.gpu_accel import get_device
-        device = get_device('auto')
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.backends.mps.is_available(): device = 'mps'
         from src.utils.gpu_accel import gpu_gram_solve
         P_np = gpu_gram_solve(X_sparse, self.reg_lambda)
         S_np = -self.reg_lambda * P_np
@@ -153,13 +159,13 @@ class LightPowerLIRALayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None):
-        from src.utils.gpu_accel import get_device
-        device = get_device('auto')
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.backends.mps.is_available(): device = 'mps'
         manager = SVDCacheManager(device=device)
         u, s, v, total_energy = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
         s, v = s.to(device), v.to(device)
         filter_diag = s.pow(2) / (s.pow(2) + self.reg_lambda)
-        if v.device.type == 'mps':
+        if 'mps' in str(v.device).lower():
             v_cpu, f_cpu = v.cpu(), filter_diag.cpu()
             S_approx = torch.mm(v_cpu * f_cpu, v_cpu.t())
         else:
@@ -189,8 +195,8 @@ class SpectralPowerLIRALayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None):
-        from src.utils.gpu_accel import get_device
-        device = get_device('auto')
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.backends.mps.is_available(): device = 'mps'
         manager = SVDCacheManager(device=device)
         u, s, v, total_energy = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
         self.register_buffer('singular_values', s.pow(self.power).to(device))
@@ -216,9 +222,9 @@ class TaylorLIRALayer(nn.Module):
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None):
         import scipy.sparse as sp
-        from src.utils.gpu_accel import get_device
-        device = get_device('auto')
-        calc_device = torch.device('cpu') if device.type == 'mps' else device
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.backends.mps.is_available(): device = 'mps'
+        calc_device = 'cpu' if 'mps' in str(device).lower() else device
         X_sp = X_sparse.tocsr()
         item_degrees = np.array(X_sp.sum(axis=0)).flatten()
         d_inv_sqrt = np.power(item_degrees, -0.5, where=item_degrees>0)
@@ -270,17 +276,11 @@ class CGLIRALayer(nn.Module):
         self.tol = tol
 
     def build(self, X_sparse, dataset_name=None):
-        from src.utils.gpu_accel import get_device
-        device = get_device('auto')
-        # MPS does not support torch.sparse.mm — keep sparse ops on CPU
-        target_device = 'cpu' if device.type == 'mps' else device
-        import scipy.sparse as sp
-        if not sp.issparse(X_sparse):
-            raise TypeError("X_sparse must be a scipy sparse matrix")
-        coo = sp.coo_matrix(X_sparse)
-        indices = torch.LongTensor(np.array([coo.row, coo.col]))
-        values = torch.FloatTensor(coo.data)
-        self.X_sparse = torch.sparse_coo_tensor(indices, values, coo.shape).coalesce().to(target_device)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.backends.mps.is_available(): device = 'mps'
+        target_device = 'cpu' if 'mps' in str(device).lower() else device
+        from src.utils.gpu_accel import to_sparse_tensor
+        self.X_sparse = to_sparse_tensor(X_sparse).to(target_device)
         self.X_sparse_t = self.X_sparse.t().coalesce()
 
     def matvec(self, V):
@@ -315,4 +315,7 @@ def cg_solve_batch(matvec_func, B, max_iter=50, tol=1e-6):
         P = R + P * beta.unsqueeze(0)
         Rs_old = Rs_new
     return X
+
+
+
 
