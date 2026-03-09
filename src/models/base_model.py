@@ -1,7 +1,9 @@
+import os
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
 from ..utils.cache_manager import CacheRegistry
+from ..utils.gpu_accel import get_device
 
 class BaseModel(nn.Module, ABC):
     """
@@ -18,20 +20,8 @@ class BaseModel(nn.Module, ABC):
         self.config = config
         self.data_loader = data_loader
 
-        # 디바이스 설정
-        device_str = config['device']
-        if device_str == 'auto':
-            if torch.cuda.is_available():
-                self.device = torch.device('cuda')
-            elif torch.backends.mps.is_available():
-                self.device = torch.device('mps')
-            else:
-                self.device = torch.device('cpu')
-        else:
-            self.device = torch.device(device_str)
-
-        # 공통 출력 경로 설정
-        import os
+        # 디바이스 설정 (중앙 집중)
+        self.device = get_device(config.get('device', 'auto'))
         model_name = config['model']['name']
         dataset_name = config.get('dataset_name', 'default')
         run_name = config.get('run_name')

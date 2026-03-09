@@ -63,14 +63,14 @@ def gpu_cholesky_solve(G_np, rhs_np=None, device='auto', return_tensor=False):
             del L, G_t
             
             if return_tensor:
-                print(f"[gpu_accel] {dev.upper()} Cholesky Solve ({M}x{M}) [Tensor]: {time.time()-t0:.2f}s")
+                print(f"[gpu_accel] {dev.type.upper()} Cholesky Solve ({M}x{M}) [Tensor]: {time.time()-t0:.2f}s")
                 return X_t
-                
+
             result = X_t.cpu().numpy()
-            print(f"[gpu_accel] {dev.upper()} Cholesky Solve ({M}x{M}) [NumPy]: {time.time()-t0:.2f}s")
+            print(f"[gpu_accel] {dev.type.upper()} Cholesky Solve ({M}x{M}) [NumPy]: {time.time()-t0:.2f}s")
             return result
         except RuntimeError as e:
-            print(f"[gpu_accel] {dev.upper()} cholesky OOM ({e}), CPU fallback...")
+            print(f"[gpu_accel] {dev.type.upper()} cholesky OOM ({e}), CPU fallback...")
     
     res_np = _cpu_cholesky(G_np, rhs_np)
     return torch.from_numpy(res_np).float().to(dev) if return_tensor else res_np
@@ -212,13 +212,9 @@ class GramEigenCacheManager(GlobalCacheManager):
 _GramEigenCache = GramEigenCacheManager
 
 
-
-
 # ============================================================
 # SVD Cache Manager
 # ============================================================
-
-
 
 class SVDCacheManager(GlobalCacheManager):
     """SVD 결과를 캐싱하고 MPS 가속을 제공하는 관리자 클래스 (Global Scope)"""
@@ -332,7 +328,7 @@ class SVDCacheManager(GlobalCacheManager):
                 if best_file:
                     f_k, f_path = best_file
                     print(f"[SVD-Manager] Cache hit: {dataset_name} (Loaded k{f_k} for req: k{k or 'energy'})")
-                    cp = torch.load(f_path, map_location='cpu')
+                    cp = torch.load(f_path, map_location='cpu', weights_only=True)
                     u, s, v = cp['u'], cp['s'], cp['v']
                     
                     if X_sparse is not None:
@@ -375,8 +371,8 @@ class SVDCacheManager(GlobalCacheManager):
             print(f"[SVD-Manager] Computing SVD (dataset={dataset_name}, matrix_id={matrix_id}, shape={X_sparse.shape}, k={compute_k})...")
             start = time.time()
             min_dim = min(M, N)
-            if self.device.type == 'mps' and min_dim >= 5000:
-                u, s, v = self._mps_randomized_svd(X_sparse, compute_k)
+            if self.device.type in ('mps', 'cuda') and min_dim >= 5000:
+                u, s, v = self._gpu_randomized_svd(X_sparse, compute_k)
             else:
                 u, s, v = self._cpu_svd(X_sparse, compute_k)
             print(f"[SVD-Manager] SVD done ({time.time()-start:.2f}s) for k={compute_k}")
@@ -448,14 +444,14 @@ class SVDCacheManager(GlobalCacheManager):
             return Y / Y.norm(dim=0, keepdim=True).clamp(min=1e-12)
 
     @torch.no_grad()
-    def _mps_randomized_svd(self, X_sparse, k, n_iter=2, oversampling=10, batch_size=2000):
-        """MPS-accelerated Randomized SVD (Halko et al., 2011)"""
-        device = torch.device("mps")
+    def _gpu_randomized_svd(self, X_sparse, k, n_iter=2, oversampling=10, batch_size=2000):
+        """GPU-accelerated Randomized SVD (Halko et al., 2011). Works on MPS and CUDA."""
+        device = self.device
         M, N = X_sparse.shape
         q = min(k + oversampling, M, N)
         if q < 1: q = 1
         
-        print(f"[MPS-SVD] k={k}, q={q}, n_iter={n_iter}, batch={batch_size}")
+        print(f"[GPU-SVD] k={k}, q={q}, n_iter={n_iter}, batch={batch_size}")
         
         # Phase 1: Sketching + Power Iteration
         G = torch.randn(N, q, device=device, dtype=torch.float32)
@@ -463,7 +459,7 @@ class SVDCacheManager(GlobalCacheManager):
         Q = self._orthonormalize(Y, device)
         
         for i in range(n_iter):
-            print(f"[MPS-SVD] Power iteration {i+1}/{n_iter}...")
+            print(f"[GPU-SVD] Power iteration {i+1}/{n_iter}...")
             Z = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device)
             Q_z = self._orthonormalize(Z, device)
             Y = self._sparse_mm_batched(X_sparse, Q_z, batch_size, device)
@@ -471,11 +467,11 @@ class SVDCacheManager(GlobalCacheManager):
             del Z, Q_z
         
         # Phase 2: Projection (B = Q^T @ A)
-        print(f"[MPS-SVD] Projection...")
+        print(f"[GPU-SVD] Projection...")
         B = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device).t()
         
         # Phase 3: Small SVD via eigen trick
-        print(f"[MPS-SVD] Small matrix SVD ({q}x{q})...")
+        print(f"[GPU-SVD] Small matrix SVD ({q}x{q})...")
         C = torch.mm(B, B.t())
         try:
             S2, U_hat = torch.linalg.eigh(C.cpu())
@@ -493,7 +489,7 @@ class SVDCacheManager(GlobalCacheManager):
         U = torch.mm(Q, U_hat)
         
         U, S_vals, V = U[:, :k].cpu(), S_vals[:k].cpu(), V[:, :k].cpu()
-        print(f"[MPS-SVD] Done! σ range: [{S_vals[-1]:.4f}, {S_vals[0]:.4f}]")
+        print(f"[GPU-SVD] Done! σ range: [{S_vals[-1]:.4f}, {S_vals[0]:.4f}]")
         return U, S_vals, V
 
     @staticmethod
@@ -502,7 +498,7 @@ class SVDCacheManager(GlobalCacheManager):
         M = X_sparse.shape[0]
         q = Y_dense.shape[1]
         result = torch.zeros(M, q, device=device)
-        if Y_dense.device.type != device:
+        if Y_dense.device != torch.device(device):
             Y_dense = Y_dense.to(device)
         for i in range(0, M, batch_size):
             end = min(i + batch_size, M)
@@ -517,7 +513,7 @@ class SVDCacheManager(GlobalCacheManager):
         M, N = X_sparse.shape
         q = Y_dense.shape[1]
         result = torch.zeros(N, q, device=device)
-        if Y_dense.device.type != device:
+        if Y_dense.device != torch.device(device):
             Y_dense = Y_dense.to(device)
         for i in range(0, M, batch_size):
             end = min(i + batch_size, M)

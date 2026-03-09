@@ -38,14 +38,9 @@ class CoOccurrence(BaseModel):
         self.train_matrix_csr = X_sp
         
         # 2. Compute Co-occurrence G = X^T X on GPU
-        # Optimization: use batching if n_items is very large, but for now we try full matrix
-        # Move to GPU first
-        from src.utils.gpu_accel import get_device
         dev = self.device
         
-        # To avoid OOM, we can convert to torch sparse and then matmul
-        # But torch sparse @ torch sparse.T -> dense is often efficient
-        indices = torch.from_numpy(np.vstack((X_sp.indices, X_sp.indices))).long() # Not correct, need COO
+        # Convert to torch sparse COO for GPU matmul
         X_coo = X_sp.tocoo()
         indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
         values = torch.from_numpy(X_coo.data).float()
@@ -53,7 +48,13 @@ class CoOccurrence(BaseModel):
         
         self._log(f"Computing Gram matrix G = X.T @ X on {dev}...")
         # G = X.T @ X
-        G = torch.sparse.mm(X_t.t(), X_t.to_dense()) # Returns dense
+        if dev.type == 'mps':
+            # MPS does not support torch.sparse.mm; fall back to dense matmul
+            X_dense = X_t.to_dense()
+            G = torch.mm(X_dense.t(), X_dense)
+            del X_dense
+        else:
+            G = torch.sparse.mm(X_t.t(), X_t.to_dense())  # Returns dense
         del X_t, X_coo
         
         # 3. Normalize on GPU

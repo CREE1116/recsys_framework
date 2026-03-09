@@ -46,8 +46,6 @@ class SLIMMatrixCacheManager(GlobalCacheManager):
 _SLIMMatrixCache = SLIMMatrixCacheManager
 
 
-
-
 def _solve_column(j, X_csc, X_csr, y_all, alpha, l1_ratio, positive, max_iter, tol):
     """
     sklearn ElasticNet으로 item j에 대한 column을 풀고 w_j를 반환.
@@ -207,7 +205,7 @@ class SLIM(BaseModel):
         return self.forward(user_ids, item_ids)
 
     def calc_loss(self, batch_data):
-        return (torch.tensor(0.0, requires_grad=True),), None
+        return (torch.tensor(0.0, device=self.device),), None
 
     def get_train_matrix(self, data_loader):
         if self.train_matrix_csr is None:

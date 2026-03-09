@@ -112,18 +112,16 @@ class ELSA(BaseModel):
         
         # 6. Statistics
         elapsed = time.time() - start_time
-        
-        # Reconstruction error
-        B_approx = B_lowrank + R_sparse
-        recon_error = np.linalg.norm(B_np - B_approx) / np.linalg.norm(B_np)
-        
+        R_coalesced = self.R.coalesce()
+        R_nnz = R_coalesced._nnz()
+
         self._log(f"\n{'='*60}")
         self._log("Training complete!")
         self._log(f"  - Time: {elapsed:.2f}s")
         self._log(f"  - Low-rank: {L.shape}")
-        self._log(f"  - Sparse nnz: {R_coo.nnz:,}")
-        self._log(f"  - Reconstruction error: {recon_error:.4f}")
-        self._log(f"  - Memory (approx): {(L.size + S.size + R_coo.nnz)*4/1e6:.1f} MB")
+        self._log(f"  - Sparse nnz: {R_nnz:,}")
+        mem_approx = (L.numel() + S.numel() + R_nnz) * 4 / 1e6
+        self._log(f"  - Memory (approx): {mem_approx:.1f} MB")
         self._log(f"{'='*60}\n")
 
     def forward(self, user_ids, item_ids=None):
@@ -150,11 +148,11 @@ class ELSA(BaseModel):
         
         # Sparse component: X @ R
         # Use coalesced R directly from buffer
-        try:
+        if self.device.type == 'mps':
+            # MPS does not support torch.sparse.mm; fall back to dense matmul
+            scores_sp = torch.mm(user_input, self.R.to_dense().t())
+        else:
             scores_sp = torch.sparse.mm(user_input, self.R.t())
-        except (RuntimeError, NotImplementedError):
-            # Fallback for MPS
-            scores_sp = torch.sparse.mm(user_input.cpu(), self.R.cpu().t()).to(self.device)
         
         # Combine
         scores = scores_lr + scores_sp

@@ -15,6 +15,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.data_loader import DataLoader
 from src.models import get_model
 from src.trainer import Trainer
+from src.utils.gpu_accel import get_device
 
 
 def set_seed(seed=42):
@@ -78,17 +79,10 @@ if __name__ == '__main__':
     from config_utils import merge_all_configs
     config = merge_all_configs(dataset_config, model_config, eval_config_path=args.eval_config)
 
-    # MPS 장치 사용 설정
-    if config.get('device', 'auto') == 'auto':
-        if torch.backends.mps.is_available():
-            print("MPS is available. Using MPS device.")
-            config['device'] = 'mps'
-        elif torch.cuda.is_available():
-            print("Using CUDA device.")
-            config['device'] = 'cuda'
-        else:
-            print("Using CPU device.")
-            config['device'] = 'cpu'
+    # 디바이스 설정 (중앙 집중)
+    resolved_device = get_device(config.get('device', 'auto'))
+    config['device'] = str(resolved_device)
+    print(f"Using device: {resolved_device}")
 
     print("="*20, "Configuration", "="*20)
     pprint.pprint(config)

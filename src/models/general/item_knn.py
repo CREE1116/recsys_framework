@@ -197,11 +197,11 @@ class ItemKNN(BaseModel):
         # Score = X @ S
         # torch.sparse.mm(sparse_A, dense_B) -> we need X @ S which is dense @ sparse
         # We can use (S^T @ X^T)^T
-        try:
+        if self.device.type == 'mps':
+            # MPS does not support torch.sparse.mm; fall back to dense matmul
+            scores = torch.mm(user_input, S.to_dense())
+        else:
             scores = torch.sparse.mm(S.t(), user_input.t()).t()
-        except (RuntimeError, NotImplementedError):
-            # Fallback for MPS or large matrices
-            scores = torch.mm(user_input, S.to_dense()) # Still better than loop
             
         return scores
 
