@@ -101,7 +101,7 @@ class GramMatrixCacheManager(GlobalCacheManager):
         path = cls._get_path(dataset_name)
         if path and os.path.exists(path):
             try:
-                val = torch.load(path, map_location=device, weights_only=True)
+                val = torch.load(path, map_location=device)
                 cls._mem_cache[dataset_name] = val.cpu() # Store in CPU mem
                 return val
             except Exception:
@@ -339,11 +339,11 @@ class ChebyASPIRELayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None):
-        from src.utils.gpu_accel import get_device
-        device = get_device('auto')
-
-        # MPS는 torch.sparse.mm 미지원 — 희소 연산은 CPU에서 수행
-        self.sparse_device = torch.device('cpu') if device.type == 'mps' else device
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.backends.mps.is_available(): device = 'mps'
+        
+        # [OPTIMIZATION] Mac(MPS)의 경우 희소 행렬 연산은 CPU 강제 (안정성 및 속도)
+        self.sparse_device = torch.device('cpu' if 'mps' in str(device).lower() else device)
         
         # COO에서 바로 PyTorch CSR로 변환 (메모리 연속성 확보 및 연산 속도 극대화)
         X_coo = X_sparse.tocoo()
