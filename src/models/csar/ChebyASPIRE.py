@@ -113,7 +113,7 @@ class ChebyASPIRE(BaseModel):
         return torch.eye(self.n_items, device=self.device)
     
     def calc_loss(self, batch_data):
-        return (torch.tensor(0.0, device=self.device, requires_grad=True),), None
+        return (torch.tensor(0.0, device=self.device),), None
 
     def __str__(self):
         return f"ChebyASPIRE(degree={self.degree}, alpha={self.alpha}, threshold={self.threshold})"

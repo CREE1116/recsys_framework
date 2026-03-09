@@ -110,7 +110,7 @@ class CoOccurrence(BaseModel):
         
     def calc_loss(self, batch_data):
         # CoOccurrence is count-based, no gradient training.
-        return (torch.tensor(0.0, device=self.device, requires_grad=True),), None
+        return (torch.tensor(0.0, device=self.device),), None
 
     def get_final_item_embeddings(self):
         return self.similarity_matrix
