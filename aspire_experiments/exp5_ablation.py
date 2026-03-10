@@ -1,14 +1,14 @@
 # Usage: uv run python aspire_experiments/exp5_ablation.py --dataset ml1m --energy 0.95
 #
-# §6.3 실험 C: β 추정 방법 Ablation (v5 - Efficiency & Alignment)
-# 프레임워크 로직과 NDCG 계산 방식을 엄격하게 준수하되, HPO 시 불필요한 데이터 수집 반복 제거.
+# §6.3 실험 C: β 추정 방법 Ablation (v6 - Bayesian HPO Integration)
+# 프레임워크의 Bayesian HPO (Optuna) 로직을 통합하여 Alpha와 Beta를 세밀하게 피팅.
 #
 # 비교 방법:
 #   (1) SPP + Huber (Proposed)
 #   (2) SPP + OLS
 #   (3) Slope ratio (ChebyASPIRE 방식)
 #   (4) β = 0.5 fixed
-#   (5) β = HPO (Joint)
+#   (5) β = HPO (Joint Bayesian)
 #   (6) SPP direct (β=1.0)
 #   (7) 0.5 damping (β = β_huber * 0.5)
 
@@ -21,13 +21,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 import pandas as pd
-from tqdm import tqdm
 from scipy.sparse import csr_matrix
 from sklearn.linear_model import LinearRegression
 
 sys.path.append(os.getcwd())
 
-from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
+from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir, AspireHPO
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.evaluation import evaluate_metrics
 
@@ -55,14 +54,9 @@ class ASPIREAblationModel(nn.Module):
         return scores
 
 
-# ── 효율적인 HPO용 NDCG 계산 (Framework Logic 동기화) ──────────────────────────
+# ── 효율적인 HPO용 NDCG 계산 ──────────────────────────
 
 def fast_evaluate_ndcg(scores, ground_truth, user_history, k_target=10):
-    """
-    scores: (batch_size, n_items) torch.Tensor
-    ground_truth: dict {u_id: [item_ids]}
-    user_history: dict {u_id: {item_ids}}
-    """
     batch_size, n_items = scores.shape
     u_ids = list(ground_truth.keys())
     
@@ -79,7 +73,6 @@ def fast_evaluate_ndcg(scores, ground_truth, user_history, k_target=10):
     top_indices = top_indices.cpu().numpy()
     
     all_ndcg = []
-    # 3. NDCG Calculation (same as src/evaluation.py)
     for idx, u_id in enumerate(u_ids):
         pred_list = top_indices[idx]
         gt = ground_truth[u_id]
@@ -99,6 +92,40 @@ def fast_evaluate_ndcg(scores, ground_truth, user_history, k_target=10):
     return np.mean(all_ndcg) if all_ndcg else 0.0
 
 
+# ── Bayesian HPO (AspireHPO) 통합 ───────────────────────────────────────────
+# AspireHPO는 scripts/bayesian_opt.py의 BayesianOptimizer 패턴을 따르는 경량 래퍼.
+# (TPESampler, EarlyStoppingCallback, save_results 포함)
+
+def find_best_params_bayesian(XV_val, S, V, val_gt, val_history, device,
+                              beta_val=None, n_trials=30, patience=10, seed=42,
+                              study_name="HPO", out_dir=None):
+    """
+    beta_val이 지정되면 alpha만 검색,
+    beta_val이 None이면 (alpha, beta) 공동 검색.
+    out_dir이 지정되면 시각화 및 CSV를 저장 (프레임워크 BayesianOptimizer와 동일).
+    """
+    XV_val = XV_val.to(device)
+    S = S.to(device)
+    V = V.to(device)
+
+    def objective_fn(params):
+        alpha = params['alpha']
+        beta  = params.get('beta', beta_val)
+        h = AspireEngine.apply_filter(S, alpha, beta).to(device)
+        scores = torch.mm(XV_val * h, V.t())
+        return fast_evaluate_ndcg(scores, val_gt, val_history, k_target=10)
+
+    # 프레임워크 bayesian_opt.py와 동일한 파라미터 스펙 포맷
+    params_spec = [
+        {'name': 'alpha', 'type': 'float', 'range': '0.1 1000000.0', 'log': True},
+    ]
+    if beta_val is None:
+        params_spec.append({'name': 'beta', 'type': 'float', 'range': '0.0 1.5'})
+
+    hpo = AspireHPO(params_spec, n_trials=n_trials, patience=patience, seed=seed)
+    return hpo.search(objective_fn, study_name=study_name, output_dir=out_dir)
+
+
 # ── β 추정 사이드 로직 ──────────────────────────────────────
 
 def estimate_beta_ols_trimmed(s, p_tilde, trim=0.05):
@@ -113,54 +140,43 @@ def estimate_beta_ols_trimmed(s, p_tilde, trim=0.05):
     return float(np.clip(lm.coef_[0] / 2.0, 0.0, 0.999))
 
 
-# ── 최적의 Alpha 찾기 ────────────────────────────────────────
-
-def find_best_alpha(XV, S, V, beta, alpha_grid, val_gt, val_history, device):
-    best_alpha, best_ndcg = 1.0, -1.0
-    val_users = torch.LongTensor(list(val_gt.keys())).to(device)
-    
-    # Pre-calculate XV_val once
-    XV_val = XV[val_users]
-    
-    for alpha in alpha_grid:
-        h = AspireEngine.apply_filter(S, alpha, beta).to(device)
-        # Fast score calculation
-        scores = torch.mm(XV_val * h, V.t())
-        score = fast_evaluate_ndcg(scores, val_gt, val_history, k_target=10)
-        
-        if score > best_ndcg:
-            best_ndcg, best_alpha = score, alpha
-            
-    return best_alpha
-
-
 # ── 메인 실험 ────────────────────────────────────────────────────────────────
 
 def run_ablation(dataset_name, target_energy=0.95):
-    print(f"\n{'='*60}\nRunning Ablation (v5: Optimized) on {dataset_name}\n{'='*60}")
-    
+    print(f"\n{'='*60}\nRunning Ablation (v6: Bayesian) on {dataset_name}\n{'='*60}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    
+
     # 1. Data & SVD
     loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
-    
+
+    # 출력 디렉토리를 먼저 정의 (HPO 결과 저장용)
+    dataset_label = config['dataset_name']
+    out_dir = ensure_dir(f"aspire_experiments/output/ablation/{dataset_label}")
+    hpo_dir  = ensure_dir(os.path.join(out_dir, "hpo"))
+
     R_train_tensor = torch.from_numpy(R.todense()).float().to(device)
     S_tensor = S.to(device)
     V_tensor = V.to(device)
-    
+
     print(f"[HPO] Pre-computing Latent Projections (XV)...")
     XV_tensor = torch.mm(R_train_tensor, V_tensor)
-    
-    # 2. Validation Ground Truth Collection (ONCE)
-    print(f"[HPO] Collecting Validation Data once...")
+
+    # 2. Validation Data Preparation (ONCE)
+    print(f"[HPO] Collecting Validation Data...")
     val_loader = loader.get_validation_loader(batch_size=2048)
     val_users, val_items = [], []
     for u_batch, i_batch in val_loader:
         val_users.append(u_batch.numpy()); val_items.append(i_batch.numpy())
-    val_users, val_items = np.concatenate(val_users), np.concatenate(val_items)
+    val_users = np.concatenate(val_users)
+    val_items = np.concatenate(val_items)
+
     val_df = pd.DataFrame({'u': val_users, 'i': val_items})
     val_gt = val_df.groupby('u')['i'].apply(list).to_dict()
-    val_history = loader.train_user_history # Validation시는 train만 마스킹
+    val_history = loader.train_user_history
+
+    val_users_tensor = torch.LongTensor(list(val_gt.keys())).to(device)
+    XV_val = XV_tensor[val_users_tensor]
 
     # 3. Beta Estimation
     s_np, V_np = S.cpu().numpy(), V.cpu().numpy()
@@ -172,61 +188,69 @@ def run_ablation(dataset_name, target_energy=0.95):
     beta_fixed, beta_direct = 0.5, 1.0
     beta_damped = float(beta_huber * 0.5)
 
-    # 4. HPO Sweep
-    print("\n[HPO] Joint Beta/Alpha Sweep for Upper Bound...")
-    beta_grid = np.linspace(0.0, 1.5, 16)
-    alpha_grid = np.logspace(-1, 6, 30)
-    
-    best_beta_hpo, best_alpha_hpo, max_val_ndcg = 0.5, 1000.0, -1.0
-    for b in tqdm(beta_grid, desc="Beta Sweep"):
-        a = find_best_alpha(XV_tensor, S_tensor, V_tensor, b, alpha_grid, val_gt, val_history, device)
-        # Re-check best score
-        h = AspireEngine.apply_filter(S_tensor, a, b).to(device)
-        score = fast_evaluate_ndcg(torch.mm(XV_tensor[torch.LongTensor(list(val_gt.keys())).to(device)] * h, V_tensor.t()), val_gt, val_history)
-        if score > max_val_ndcg:
-            max_val_ndcg, best_beta_hpo, best_alpha_hpo = score, b, a
+    # 4. Joint Bayesian Search (Optimal Upper Bound) — AspireHPO 사용
+    print("\n[HPO] Joint Bayesian Search (Alpha & Beta) for Upper Bound...")
+    joint_params, joint_val = find_best_params_bayesian(
+        XV_val, S_tensor, V_tensor, val_gt, val_history, device,
+        beta_val=None, n_trials=50, patience=15, seed=42,
+        study_name="Joint_HPO",
+        out_dir=os.path.join(hpo_dir, "Joint_HPO"),
+    )
+    best_beta_hpo  = joint_params['beta']
+    best_alpha_hpo = joint_params['alpha']
+    print(f"  -> Best Joint: Beta={best_beta_hpo:.4f}, Alpha={best_alpha_hpo:.2f} (Val NDCG: {joint_val:.4f})")
 
     betas = {
         "(1) SPP+Huber": beta_huber,
-        "(2) SPP+OLS": beta_ols,
+        "(2) SPP+OLS":   beta_ols,
         "(3) Slope ratio": beta_slope,
         "(4) β=0.5 fixed": beta_fixed,
         "(6) SPP direct": beta_direct,
         "(7) 0.5 damping": beta_damped,
-        "(5) β=HPO": best_beta_hpo
+        "(5) β=HPO":     best_beta_hpo,
     }
 
-    # 5. Final Evaluation (Framework Aligned)
+    # 5. Final Evaluation
     eval_config = loader.config.copy()
     eval_config['metrics'] = ['NDCG', 'HeadNDCG', 'LongTailNDCG', 'Coverage']
     eval_config['top_k'] = [10]
     eval_config['long_tail_percent'] = 0.8
-    
+
     test_loader = loader.get_full_test_loader(batch_size=2048)
     results_table = []
-    
-    print("\n[Evaluation] Running Final Test and Alpha HPO for each method...")
+
+    print("\n[Evaluation] Running Final Test and Bayesian Alpha Fitting for each method...")
     for name, beta in betas.items():
         if name == "(5) β=HPO":
             alpha = best_alpha_hpo
         else:
-            alpha = find_best_alpha(XV_tensor, S_tensor, V_tensor, beta, alpha_grid, val_gt, val_history, device)
-            
-        model = ASPIREAblationModel(V_tensor, AspireEngine.apply_filter(S_tensor, alpha, beta).to(device), XV=XV_tensor)
+            print(f"  Fitting Alpha for {name} (Beta={beta:.3f})...")
+            safe_name = name.replace(' ', '_').replace('(', '').replace(')', '').replace('+', '_')
+            alpha_params, _ = find_best_params_bayesian(
+                XV_val, S_tensor, V_tensor, val_gt, val_history, device,
+                beta_val=beta, n_trials=30, patience=10, seed=42,
+                study_name=f"Alpha_{safe_name}",
+                out_dir=os.path.join(hpo_dir, f"Alpha_{safe_name}"),
+            )
+            alpha = alpha_params['alpha']
+
+        h = AspireEngine.apply_filter(S_tensor, alpha, beta).to(device)
+        model = ASPIREAblationModel(V_tensor, h, XV=XV_tensor)
         res = evaluate_metrics(model, loader, eval_config, device, test_loader, is_final=True)
-        
+
         row = {
             "method": name, "beta": float(beta), "alpha": float(alpha),
-            "ndcg_all": res.get('NDCG@10', 0.0), "ndcg_head": res.get('HeadNDCG@10', 0.0),
-            "ndcg_tail": res.get('LongTailNDCG@10', 0.0), "coverage": res.get('Coverage@10', 0.0)
+            "ndcg_all":  res.get('NDCG@10', 0.0),
+            "ndcg_head": res.get('HeadNDCG@10', 0.0),
+            "ndcg_tail": res.get('LongTailNDCG@10', 0.0),
+            "coverage":  res.get('Coverage@10', 0.0),
         }
         results_table.append(row)
-        print(f"  {name:<15} | b={beta:.3f} a={alpha:.0f} | NDCG: {row['ndcg_all']:.4f} (H:{row['ndcg_head']:.4f}/T:{row['ndcg_tail']:.4f}) | Cov: {row['coverage']:.3f}")
+        print(f"  {name:<15} | b={beta:.3f} a={alpha:.2f} | NDCG: {row['ndcg_all']:.4f} "
+              f"(H:{row['ndcg_head']:.4f}/T:{row['ndcg_tail']:.4f}) | Cov: {row['coverage']:.3f}")
 
     # 6. Output & Visualization
-    dataset_label = config['dataset_name']
-    out_dir = ensure_dir(f"aspire_experiments/output/ablation/{dataset_label}")
-    with open(os.path.join(out_dir, "result_per_method.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result_per_method_bayesian.json"), 'w') as f:
         json.dump({"dataset": dataset_label, "methods": results_table, "k": int(V.shape[1])}, f, indent=4)
 
     plt.figure(figsize=(12, 6))
@@ -236,7 +260,7 @@ def run_ablation(dataset_name, target_energy=0.95):
     plt.bar(x, [r['ndcg_all'] for r in results_table], width, label='Overall NDCG', color='skyblue')
     plt.bar(x + width, [r['ndcg_tail'] for r in results_table], width, label='Tail NDCG', color='lightgreen')
     plt.xticks(x, m, rotation=15, ha='right'); plt.ylabel("NDCG@10"); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "ablation_breakdown.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(out_dir, "ablation_breakdown_bayesian.png"), dpi=150); plt.close()
 
     return results_table
 
