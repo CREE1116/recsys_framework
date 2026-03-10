@@ -46,7 +46,7 @@ class UltraGCN(BaseModel):
     def fit(self, data_loader):
         if self.ii_neighbor_mat is not None: return
         
-        self._log("[UltraGCN] Constructing Item-Item Similarity Graph for Constraint Loss...")
+        self._log("Constructing Item-Item Similarity Graph for Constraint Loss...")
         
         try:
             # 1. User-Item Graph
@@ -88,19 +88,13 @@ class UltraGCN(BaseModel):
             # If N_items is large, iterate.
             if self.n_items <= 10000:
                 G_dense = G.toarray().astype(np.float32)
-                # TopK
-                # efficient torch topk
-                G_tensor = torch.from_numpy(G_dense)
+                # Move to device first so topk runs on GPU/MPS
+                G_tensor = torch.from_numpy(G_dense).to(self.device)
                 vals, indices = torch.topk(G_tensor, self.ii_constraint_k, dim=1)
-                
-                # Normalize values?
-                # vals = vals / vals.sum(dim=1, keepdim=True)
-                
-                # Create coordinate format for standard usage
-                # But creating a full sparse tensor might be overkill.
-                # We essentially need: given item_id i, get neighbors k and weights w.
-                self.ii_neighbors = indices.to(self.device).long() # [N_items, K]
-                self.ii_weights = vals.to(self.device).float()      # [N_items, K]
+                del G_tensor
+
+                self.ii_neighbors = indices.long()   # [N_items, K], already on self.device
+                self.ii_weights = vals.float()        # [N_items, K], already on self.device
                 
             else:
                 # Large scale: Iterate rows of sparse matrix
@@ -108,7 +102,7 @@ class UltraGCN(BaseModel):
                 # Simplified: Just sample uniformly from co-occurring items?
                 # No, UltraGCN needs specific neighbors.
                 
-                self._log("[UltraGCN] Large item set detected. Computing Top-K row by row...")
+                self._log("Large item set detected. Computing Top-K row by row...")
                 neighbors = np.zeros((self.n_items, self.ii_constraint_k), dtype=np.int64)
                 weights = np.zeros((self.n_items, self.ii_constraint_k), dtype=np.float32)
                 
@@ -140,10 +134,10 @@ class UltraGCN(BaseModel):
             row_sum = self.ii_weights.sum(dim=1, keepdim=True) + 1e-9
             self.ii_weights /= row_sum
             
-            self._log("[UltraGCN] Graph construction complete.")
+            self._log("Graph construction complete.")
             
         except Exception as e:
-            self._log(f"[UltraGCN] Error building graph: {e}. Disabling Item-Item Constraint.")
+            self._log(f"Error building graph: {e}. Disabling Item-Item Constraint.")
             self.ii_neighbors = None
 
     def forward(self, user_ids, item_ids=None):
