@@ -64,6 +64,69 @@ class MyModel(BaseModel):
     def get_final_item_embeddings(self): ...
 ```
 
+---
+
+## 파라미터 자동 추적
+
+`calc_loss`의 두 번째 반환값으로 딕셔너리를 넘기면, Trainer가 해당 값들을 에폭마다 자동으로 추적하고 그래프와 JSON 파일로 저장합니다.
+
+**동작 방식:**
+
+1. `calc_loss`가 `(loss_tuple, dict | None)`을 반환합니다.
+2. Trainer는 매 스텝마다 딕셔너리 값을 수집하고, 에폭 단위로 평균 내어 `self.tracked_params`에 누적합니다.
+3. 학습 종료 후 `params_history.json`과 `params_plot.png`를 모델 체크포인트 디렉토리에 저장합니다.
+
+**예시: 손실 컴포넌트별 추적:**
+
+```python
+def calc_loss(self, batch_data):
+    # ... 손실 계산 ...
+    bpr_loss = ...
+    cl_loss  = ...
+    l2_loss  = self.get_l2_reg_loss(self.user_emb.weight, self.item_emb.weight)
+
+    params_to_log = {
+        'loss_bpr': bpr_loss.item(),
+        'loss_cl':  cl_loss.item(),
+        'loss_l2':  l2_loss.item(),
+    }
+    return (bpr_loss, cl_loss, l2_loss), params_to_log
+```
+
+**예시: 학습 가능한 scale 파라미터 추적 (CSAR 스타일):**
+
+```python
+params_to_log = {
+    'scale':      self.attention_layer.scale.item(),
+    'loss_main':  loss.item(),
+    'loss_orth':  orth_loss.item(),
+}
+return (loss, self.lamda * orth_loss), params_to_log
+```
+
+**예시: KL annealing 스케줄 추적 (MultiVAE 스타일):**
+
+```python
+anneal = min(self.anneal_cap, 1. * self.update_count / self.total_anneal_steps)
+params_to_log = {
+    'nll':    nll_loss.item(),
+    'kl':     kl_loss.item(),
+    'anneal': anneal,
+}
+return (nll_loss, anneal * kl_loss), params_to_log
+```
+
+**출력 파일 (`trained_model/{dataset}/{model}/` 디렉토리):**
+
+| 파일 | 내용 |
+|---|---|
+| `params_history.json` | `{key: [epoch_0_avg, epoch_1_avg, ...]}` 형식의 추적 값 이력 |
+| `params_plot.png` | 모든 추적 값의 에폭별 꺾은선 그래프 |
+| `loss_plot.png` | 손실 튜플의 컴포넌트별 (`loss_N`) 학습 곡선 |
+| `metrics_plot.png` | 에폭별 검증 메트릭 곡선 |
+
+`calc_loss`가 두 번째 반환값으로 `None`을 넘기면 파라미터 추적은 수행되지 않습니다.
+
 **Step 2 — 모델 레지스트리 등록:**
 
 ```python
