@@ -28,7 +28,7 @@ def load_eval_master_config(eval_config_path=None):
             eval_config_path = default_path
 
     if eval_config_path and os.path.exists(eval_config_path):
-        with open(eval_config_path, 'r') as f:
+        with open(eval_config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f) or {}
     return {}
 

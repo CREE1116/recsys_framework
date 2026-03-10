@@ -38,7 +38,7 @@ def analyze_results(base_path, dataset='ml-100k'):
         if not os.path.exists(metrics_file):
             continue
             
-        with open(metrics_file, 'r') as f:
+        with open(metrics_file, 'r', encoding='utf-8') as f:
             try:
                 data = json.load(f)
                 for m_name, m_val in data.items():

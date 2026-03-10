@@ -85,7 +85,7 @@ def create_sampled_subset(input_path, output_path, k, target_items, is_yelp=Fals
     
     import json
     stats_path = os.path.join(os.path.dirname(output_path), os.path.basename(output_path).replace('.txt', '_stats.json'))
-    with open(stats_path, 'w') as f:
+    with open(stats_path, 'w', encoding='utf-8') as f:
         json.dump(stats, f, indent=4)
     print(f"Saved stats to {stats_path}.\n")
 

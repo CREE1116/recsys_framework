@@ -22,7 +22,7 @@ class Args:
 
 def run_all_searches(config_path, output_dir_base, cli_args=None):
     print(f"Loading batch configuration from {config_path}...")
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         batch_config = yaml.safe_load(f)
 
     # Allow legacy config (no top-level datasets) for backward compatibility
@@ -155,7 +155,7 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                     # Try to load final_metrics.json from best_dir
                     final_metrics = {}
                     if best_dir and os.path.exists(os.path.join(best_dir, "final_metrics.json")):
-                        with open(os.path.join(best_dir, "final_metrics.json"), 'r') as f:
+                        with open(os.path.join(best_dir, "final_metrics.json"), 'r', encoding='utf-8') as f:
                             final_metrics = json.load(f)
                             
                     target_metric = getattr(args, 'metric', 'NDCG@10')
@@ -212,17 +212,17 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
 
                 # 파일 1: mean only
                 mean_file = os.path.join(search_output_dir, "summary_mean.json")
-                with open(mean_file, 'w') as f:
+                with open(mean_file, 'w', encoding='utf-8') as f:
                     json.dump(summary_mean, f, indent=4)
 
                 # 파일 2: mean ± std
                 avg_res_file = os.path.join(search_output_dir, "final_metric_average.json")
-                with open(avg_res_file, 'w') as f:
+                with open(avg_res_file, 'w', encoding='utf-8') as f:
                     json.dump(aggregated_metrics, f, indent=4)
 
                 # 파일 3: 전체 기록
                 model_res_file = os.path.join(search_output_dir, f"result_{dataset_name}_{model_name}.json")
-                with open(model_res_file, 'w') as f:
+                with open(model_res_file, 'w', encoding='utf-8') as f:
                     json.dump(result_entry, f, indent=4)
 
                 print(f"  [요약] {model_name} @ {dataset_name}")
@@ -264,7 +264,7 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                         for file in os.listdir(sub_dir_path):
                             if file.startswith(f"result_{dataset_name}_") and file.endswith(".json"):
                                 try:
-                                    with open(os.path.join(sub_dir_path, file), 'r') as f:
+                                    with open(os.path.join(sub_dir_path, file), 'r', encoding='utf-8') as f:
                                         res = json.load(f)
                                         model_name = res.get('model', 'unknown')
                                         all_results[model_name] = res
@@ -273,7 +273,7 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
             
             if all_results:
                 os.makedirs(os.path.dirname(agg_file), exist_ok=True)
-                with open(agg_file, 'w') as f:
+                with open(agg_file, 'w', encoding='utf-8') as f:
                     json.dump(all_results, f, indent=4)
 
             # ── 데이터셋별 요약 (target metric 기준 정렬) ────────────────────
@@ -291,7 +291,7 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                     for fname in os.listdir(sub_dir_path):
                         if fname.startswith(f"result_{dataset_name}_") and fname.endswith(".json"):
                             try:
-                                with open(os.path.join(sub_dir_path, fname)) as f:
+                                with open(os.path.join(sub_dir_path, fname), encoding='utf-8') as f:
                                     res = json.load(f)
                                 mname = res.get('search_name') or res.get('model', sub_dir)
                                 avg = res.get('final_metric_average', {})
@@ -325,7 +325,7 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                     ds_summary_out[mname] = entry
 
                 ds_summary_file = os.path.join(dataset_dir, f"dataset_summary_{dataset_name}.json")
-                with open(ds_summary_file, 'w') as f:
+                with open(ds_summary_file, 'w', encoding='utf-8') as f:
                     json.dump(ds_summary_out, f, indent=4, ensure_ascii=False)
 
                 # 콘솔 테이블

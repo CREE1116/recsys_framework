@@ -35,7 +35,7 @@ def load_raw_data(data_path, separator, columns, has_header=False):
 def parse_lightgcn_file(filepath):
     """LightGCN 형식 (user_id item1 item2 ...) 파일을 DataFrame으로 파싱."""
     rows = []
-    with open(filepath, 'r') as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) < 2:

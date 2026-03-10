@@ -21,14 +21,14 @@ def aggregate_all_baselines(output_dir_base="output/paper_baselines"):
                 for file in os.listdir(sub_dir_path):
                     if file.startswith(f"result_{dataset_name}_") and file.endswith(".json"):
                         try:
-                            with open(os.path.join(sub_dir_path, file), 'r') as f:
+                            with open(os.path.join(sub_dir_path, file), 'r', encoding='utf-8') as f:
                                 res = json.load(f)
                                 model_name = res.get('model', 'unknown')
                                 
                                 # Overwrite best_metric with final test metric
                                 best_dir = res.get('best_dir')
                                 if best_dir and os.path.exists(os.path.join(best_dir, "final_metrics.json")):
-                                    with open(os.path.join(best_dir, "final_metrics.json"), 'r') as fm:
+                                    with open(os.path.join(best_dir, "final_metrics.json"), 'r', encoding='utf-8') as fm:
                                         final_metrics = json.load(fm)
                                         res['val_metric'] = res.get('best_metric', None)
                                         # Use standard metric from JSON, fallback to NDCG@10
@@ -41,7 +41,7 @@ def aggregate_all_baselines(output_dir_base="output/paper_baselines"):
         
         if all_results:
             os.makedirs(os.path.dirname(agg_file), exist_ok=True)
-            with open(agg_file, 'w') as f:
+            with open(agg_file, 'w', encoding='utf-8') as f:
                 json.dump(all_results, f, indent=4)
             print(f"Successfully aggregated {len(all_results)} models for {dataset_name}.")
         else:

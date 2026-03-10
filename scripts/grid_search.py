@@ -91,9 +91,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # 설정 파일 로드
-    with open(args.dataset_config, 'r') as f:
+    with open(args.dataset_config, 'r', encoding='utf-8') as f:
         dataset_config = yaml.safe_load(f)
-    with open(args.model_config, 'r') as f:
+    with open(args.model_config, 'r', encoding='utf-8') as f:
         model_config = yaml.safe_load(f)
 
     # 3단계 병합: evaluation.yaml(기본) → dataset → model
