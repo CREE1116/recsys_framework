@@ -23,7 +23,7 @@ def generate_stats():
     for config_path in config_files:
         print(f"\nProcessing {config_path}...")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding='utf-8') as f:
                 dataset_config = yaml.safe_load(f)
             
             # YAML 파일에 없는 경우 파일명으로 이름 지정
@@ -77,13 +77,13 @@ def generate_stats():
             target_save_dir = os.path.dirname(dataset_config['data_path'])
             if os.path.isdir(target_save_dir):
                 save_path = os.path.join(target_save_dir, "stats.json")
-                with open(save_path, 'w') as f:
+                with open(save_path, 'w', encoding='utf-8') as f:
                     json.dump(stats, f, indent=4)
                 print(f"  Saved stats to {save_path}")
             
             # 중앙 관리용 저장
             central_save_path = os.path.join(output_base_dir, f"{dataset_config['dataset_name']}.json")
-            with open(central_save_path, 'w') as f:
+            with open(central_save_path, 'w', encoding='utf-8') as f:
                 json.dump(stats, f, indent=4)
             
             all_summary.append(stats)
@@ -102,7 +102,7 @@ def generate_stats():
         print("="*80)
         
         # 전체 요약 JSON 저장
-        with open(os.path.join(output_base_dir, "all_datasets.json"), 'w') as f:
+        with open(os.path.join(output_base_dir, "all_datasets.json"), 'w', encoding='utf-8') as f:
             json.dump(all_summary, f, indent=4)
 
 if __name__ == "__main__":

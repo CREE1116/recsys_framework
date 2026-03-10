@@ -84,7 +84,7 @@ def aggregate_results(results_base_dir, output_csv):
             exp_name = os.path.basename(exp_dir)
             params = parse_experiment_name(exp_name)
             
-            with open(metric_file, 'r') as f:
+            with open(metric_file, 'r', encoding='utf-8') as f:
                 metrics = json.load(f)
             
             row = {**params, **metrics}
@@ -166,7 +166,7 @@ if __name__ == '__main__':
     
     # 2. 결과 취합
     # dataset_config 파일을 로드하여 dataset_name을 추출
-    with open(args.dataset_config, 'r') as f:
+    with open(args.dataset_config, 'r', encoding='utf-8') as f:
         loaded_dataset_config = yaml.safe_load(f)
     dataset_name = loaded_dataset_config['dataset_name']
 

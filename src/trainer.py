@@ -46,7 +46,7 @@ class Trainer:
         self.best_val_metrics = {}
         self.best_epoch = -1
 
-        with open(os.path.join(self.output_path, 'config.yaml'), 'w') as f:
+        with open(os.path.join(self.output_path, 'config.yaml'), 'w', encoding='utf-8') as f:
             config_to_save = copy.deepcopy(self.config)
             config_to_save.pop('run_name', None)
             yaml.dump(config_to_save, f, default_flow_style=False)
@@ -284,13 +284,13 @@ class Trainer:
 
             metrics_path = os.path.join(self.output_path, 'final_metrics.json')
             dumpable_metrics = _convert_numpy_types_to_python_types(current_metrics)
-            with open(metrics_path, 'w') as f:
+            with open(metrics_path, 'w', encoding='utf-8') as f:
                 json.dump(dumpable_metrics, f, indent=4)
             print(f"Final metrics saved to {metrics_path}")
         elif self.config.get('hpo_mode', False):
             metrics_path = os.path.join(self.output_path, 'final_metrics.json')
             dumpable_metrics = _convert_numpy_types_to_python_types(current_metrics)
-            with open(metrics_path, 'w') as f:
+            with open(metrics_path, 'w', encoding='utf-8') as f:
                 json.dump(dumpable_metrics, f, indent=4)
 
         return current_metrics
@@ -299,7 +299,7 @@ class Trainer:
         val_metrics_path = os.path.join(self.output_path, 'val_metrics.json')
         dumpable_val = _convert_numpy_types_to_python_types(metrics)
         dumpable_val['best_epoch'] = self.best_epoch
-        with open(val_metrics_path, 'w') as f:
+        with open(val_metrics_path, 'w', encoding='utf-8') as f:
             json.dump(dumpable_val, f, indent=4)
 
     def _check_early_stopping(self, current_metrics, epoch):
@@ -340,15 +340,15 @@ class Trainer:
             
         losses_history_path = os.path.join(self.output_path, 'losses_history.json')
         os.makedirs(self.output_path, exist_ok=True)
-        with open(losses_history_path, 'w') as f:
+        with open(losses_history_path, 'w', encoding='utf-8') as f:
             json.dump(_convert_numpy_types_to_python_types(dict(self.train_losses)), f, indent=4)
 
         metrics_history_path = os.path.join(self.output_path, 'metrics_history.json')
-        with open(metrics_history_path, 'w') as f:
+        with open(metrics_history_path, 'w', encoding='utf-8') as f:
             json.dump(_convert_numpy_types_to_python_types(dict(self.eval_metrics)), f, indent=4)
 
         params_history_path = os.path.join(self.output_path, 'params_history.json')
-        with open(params_history_path, 'w') as f:
+        with open(params_history_path, 'w', encoding='utf-8') as f:
             json.dump(_convert_numpy_types_to_python_types(dict(self.tracked_params)), f, indent=4)
 
         plot_results(

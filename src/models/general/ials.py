@@ -205,7 +205,7 @@ class iALS(BaseModel):
             output_path = self.output_path
 
             if os.path.exists(output_path):
-                with open(os.path.join(output_path, 'losses_history.json'), 'w') as f:
+                with open(os.path.join(output_path, 'losses_history.json'), 'w', encoding='utf-8') as f:
                     json.dump({'total_loss': loss_history}, f, indent=4)
                 plot_results(
                     data_dict={'total_loss': loss_history},

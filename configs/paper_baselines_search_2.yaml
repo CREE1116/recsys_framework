@@ -2,11 +2,11 @@
 # 실행: uv run python scripts/run_all_smart_searches.py --config configs/paper_baselines_search.yaml --output_dir output/paper_baselines
 
 datasets:
-  # - "configs/dataset/ml100k.yaml"
-  # - "configs/dataset/ml1m.yaml"
+  - "configs/dataset/ml100k.yaml"
+  - "configs/dataset/ml1m.yaml"
   # - "configs/dataset/ml20m.yaml"
   # - "configs/dataset/steam.yaml"
-  - "configs/dataset/lastfm_2k.yaml"
+  # - "configs/dataset/lastfm_2k.yaml"
   # - "configs/dataset/amazon_music.yaml"
   # - "configs/dataset/gowalla.yaml"
   # - "configs/dataset/yelp2018.yaml"
@@ -31,204 +31,245 @@ summary_metrics:
   - "LongTailRecall@20"
   - "LongTailNDCG@20"
 searches:
+  - name: "LightGCN"
+    method: "bayesian"
+    model_config: "configs/model/general/lightgcn.yaml"
+    params:
+      - name: "model.n_layers"
+        type: "int"
+        range: "1 3"
+      - name: "train.lr"
+        type: "float"
+        range: "0.00001 0.01"
+      - name: "train.embedding_l2"
+        type: "float"
+        range: "0.00001 0.01"
+      - name: "model.embedding_dim"
+        type: "int"
+        range: "64 128"
+    n_trials: 60
+    patience: 20
+    metric: "NDCG@20"
+
+  # ============================================================
+  # Baselines: Matrix Factorization
+  # ============================================================
+
+  - name: "mf"
+    method: "bayesian"
+    model_config: "configs/model/general/mf.yaml"
+    params:
+      - name: "train.lr"
+        type: "float"
+        range: "0.00001 0.01"
+      - name: "train.embedding_l2"
+        type: "float"
+        range: "0.00001 0.01"
+      - name: "model.embedding_dim"
+        type: "int"
+        range: "64 128"
+    n_trials: 60
+    patience: 20
+    metric: "NDCG@20"
+
   # ============================================================
   # Baselines: Linear / Closed-form
   # ============================================================
 
-  - name: "EASE"
-    method: "bayesian"
-    model_config: "configs/model/general/ease.yaml"
-    params:
-      - name: "model.reg_lambda"
-        type: "float"
-        range: "0.1 100000"
-        log: true
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "EASE"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/ease.yaml"
+  #   params:
+  #     - name: "model.reg_lambda"
+  #       type: "float"
+  #       range: "0.1 100000"
+  #       log: true
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  - name: "SLIM"
-    method: "bayesian"
-    model_config: "configs/model/general/slim.yaml"
-    params:
-      - name: "model.alpha"
-        type: "float"
-        range: "1e-5 100.0"
-        log: true
-      - name: "model.l1_ratio"
-        type: "float"
-        range: "0.0 1.0"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "SLIM"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/slim.yaml"
+  #   params:
+  #     - name: "model.alpha"
+  #       type: "float"
+  #       range: "1e-5 100.0"
+  #       log: true
+  #     - name: "model.l1_ratio"
+  #       type: "float"
+  #       range: "0.0 1.0"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  - name: "iALS"
-    method: "bayesian"
-    model_config: "configs/model/general/ials.yaml"
-    params:
-      - name: "model.reg_lambda"
-        type: "float"
-        range: "1e-5 10000.0"
-        log: true
-      - name: "model.alpha"
-        type: "float"
-        range: "1.0 10000.0"
-        log: true
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "iALS"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/ials.yaml"
+  #   params:
+  #     - name: "model.reg_lambda"
+  #       type: "float"
+  #       range: "1e-5 10000.0"
+  #       log: true
+  #     - name: "model.alpha"
+  #       type: "float"
+  #       range: "1.0 10000.0"
+  #       log: true
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
+  # # # ============================================================
+  # # # Baselines: Spectral / SVD
+  # # # ============================================================
+
+  # - name: "PureSVD"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/pure_svd.yaml"
+  #   params:
+  #     - name: "model.embedding_dim"
+  #       type: "int_min_dim"
+  #       log: true
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
+
+  # - name: "GF-CF"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/gf_cf.yaml"
+  #   params:
+  #     - name: "model.k"
+  #       type: "int_min_dim"
+  #       log: true
+  #     - name: "model.alpha"
+  #       type: "float"
+  #       range: "0.0 2.0"
+  #     - name: "model.norm_weight"
+  #       type: "float"
+  #       range: "0.0 1.0"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
+
   # # ============================================================
-  # # Baselines: Spectral / SVD
+  # # Baselines: EASE Variants
   # # ============================================================
 
-  - name: "PureSVD"
-    method: "bayesian"
-    model_config: "configs/model/general/pure_svd.yaml"
-    params:
-      - name: "model.embedding_dim"
-        type: "int_min_dim"
-        log: true
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "RLAE"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/rlae.yaml"
+  #   params:
+  #     - name: "model.reg_lambda"
+  #       type: "float"
+  #       range: "0.1 100000"
+  #       log: true
+  #     - name: "model.b"
+  #       type: "float"
+  #       range: "0.0 1.0"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  - name: "GF-CF"
-    method: "bayesian"
-    model_config: "configs/model/general/gf_cf.yaml"
-    params:
-      - name: "model.k"
-        type: "int_min_dim"
-        log: true
-      - name: "model.alpha"
-        type: "float"
-        range: "0.0 2.0"
-      - name: "model.norm_weight"
-        type: "float"
-        range: "0.0 1.0"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "SANSA"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/sansa.yaml"
+  #   params:
+  #     - name: "model.reg_lambda"
+  #       type: "float"
+  #       range: "0.1 100000"
+  #       log: true
+  #     - name: "model.density"
+  #       type: "float"
+  #       range: "0.01 0.5"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  # ============================================================
-  # Baselines: EASE Variants
-  # ============================================================
+  # - name: "SVD_AE"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/svd_ae.yaml"
+  #   params:
+  #     - name: "model.gamma"
+  #       type: "float"
+  #       range: "0.01 1.0"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  - name: "RLAE"
-    method: "bayesian"
-    model_config: "configs/model/general/rlae.yaml"
-    params:
-      - name: "model.reg_lambda"
-        type: "float"
-        range: "0.1 100000"
-        log: true
-      - name: "model.b"
-        type: "float"
-        range: "0.0 1.0"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "SVD-EASE"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/svd_ease.yaml"
+  #   params:
+  #     - name: "model.reg_lambda"
+  #       type: "float"
+  #       range: "0.1 100000"
+  #       log: true
+  #     - name: "model.k"
+  #       type: "int"
+  #       range: "64 1024"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  - name: "SANSA"
-    method: "bayesian"
-    model_config: "configs/model/general/sansa.yaml"
-    params:
-      - name: "model.reg_lambda"
-        type: "float"
-        range: "0.1 100000"
-        log: true
-      - name: "model.density"
-        type: "float"
-        range: "0.01 0.5"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # # ============================================================
+  # # Ours: LIRA Family
+  # # ============================================================
 
-  - name: "SVD_AE"
-    method: "bayesian"
-    model_config: "configs/model/general/svd_ae.yaml"
-    params:
-      - name: "model.gamma"
-        type: "float"
-        range: "0.01 1.0"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "LIRA"
+  #   method: "bayesian"
+  #   model_config: "configs/model/csar/lira.yaml"
+  #   params:
+  #     - name: "model.reg_lambda"
+  #       type: "float"
+  #       range: "0.1 100000.0"
+  #       log: true
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  - name: "SVD-EASE"
-    method: "bayesian"
-    model_config: "configs/model/general/svd_ease.yaml"
-    params:
-      - name: "model.reg_lambda"
-        type: "float"
-        range: "0.1 100000"
-        log: true
-      - name: "model.k"
-        type: "int"
-        range: "64 1024"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "LightLIRA"
+  #   method: "bayesian"
+  #   model_config: "configs/model/csar/light_lira.yaml"
+  #   params:
+  #     - name: "model.reg_lambda"
+  #       type: "float"
+  #       range: "0.1 10000.0"
+  #       log: true
+  #     - name: "model.k"
+  #       type: "int_min_dim"
+  #       log: true
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  # ============================================================
-  # Ours: LIRA Family
-  # ============================================================
+  # - name: "ASPIRE"
+  #   method: "bayesian"
+  #   model_config: "configs/model/csar/aspire.yaml"
+  #   params:
+  #     - name: "model.alpha"
+  #       type: "float"
+  #       range: "0.1 100000.0"
+  #       log: true
+  #     # - name: "model.target_energy"
+  #     #   type: "categorical"
+  #     #   range: "0.95 0.96 0.97 0.98 0.99"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  - name: "LIRA"
-    method: "bayesian"
-    model_config: "configs/model/csar/lira.yaml"
-    params:
-      - name: "model.reg_lambda"
-        type: "float"
-        range: "0.1 100000.0"
-        log: true
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
-
-  - name: "LightLIRA"
-    method: "bayesian"
-    model_config: "configs/model/csar/light_lira.yaml"
-    params:
-      - name: "model.reg_lambda"
-        type: "float"
-        range: "0.1 10000.0"
-        log: true
-      - name: "model.k"
-        type: "int_min_dim"
-        log: true
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
-
-  - name: "ASPIRE"
-    method: "bayesian"
-    model_config: "configs/model/csar/aspire.yaml"
-    params:
-      - name: "model.alpha"
-        type: "float"
-        range: "0.1 100000.0"
-        log: true
-      # - name: "model.target_energy"
-      #   type: "categorical"
-      #   range: "0.95 0.96 0.97 0.98 0.99"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
-
-  - name: "ChebyASPIRE"
-    method: "bayesian"
-    model_config: "configs/model/csar/cheby_aspire.yaml"
-    params:
-      - name: "model.alpha"
-        type: "float"
-        range: "1.0 100000.0"
-        log: true
-      # - name: "model.degree"
-      #   type: "int"
-      #   range: "1 30"
-      # - name: "model.beta"
-      #   type: "categorical"
-      #   range: "0.1 0.3 0.5 0.7 0.9"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "ChebyASPIRE"
+  #   method: "bayesian"
+  #   model_config: "configs/model/csar/cheby_aspire.yaml"
+  #   params:
+  #     - name: "model.alpha"
+  #       type: "float"
+  #       range: "1.0 100000.0"
+  #       log: true
+  #     # - name: "model.degree"
+  #     #   type: "int"
+  #     #   range: "1 30"
+  #     # - name: "model.beta"
+  #     #   type: "categorical"
+  #     #   range: "0.1 0.3 0.5 0.7 0.9"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"

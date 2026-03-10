@@ -84,11 +84,12 @@ class BayesianOptimizer:
                     print(f"[BayesianOptimizer] Auto-setting range for '{param['name']}' to 1~{effective_max}")
                     param['range'] = f"1 {effective_max}"
                 else:
-                    low, high = map(int, param['range'].split())
+                    vals = sorted(map(int, param['range'].split()))
+                    low, high = vals[0], vals[1]
                     clamped_high = min(high, effective_max)
                     if clamped_high != high:
                         print(f"[BayesianOptimizer] Clamping '{param['name']}' max: {high} → {clamped_high} (max_dim={max_dim}, cap={MAX_DIM_CAP})")
-                    if low >= clamped_high:
+                    if low > clamped_high:
                         low = max(1, clamped_high // 2)
                         print(f"[BayesianOptimizer] Adjusted low bound to {low}")
                     param['range'] = f"{low} {clamped_high}"
@@ -107,7 +108,7 @@ class BayesianOptimizer:
         self.all_experiment_dirs = []
 
     def load_yaml(self, path):
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
 
     def merge_configs(self, dataset_conf, model_conf):
@@ -168,7 +169,7 @@ class BayesianOptimizer:
         if os.path.exists(metrics_file):
             print(f"Results already exist at {exp_dir}. Loading from {os.path.basename(metrics_file)}...")
             try:
-                with open(metrics_file, 'r') as f:
+                with open(metrics_file, 'r', encoding='utf-8') as f:
                     metrics = json.load(f)
             except:
                 print("Failed to load existing metrics. Re-running...")
@@ -179,7 +180,7 @@ class BayesianOptimizer:
         if metrics is None:
             try:
                 run_single_experiment(config)
-                with open(metrics_file, 'r') as f:
+                with open(metrics_file, 'r', encoding='utf-8') as f:
                     metrics = json.load(f)
             except Exception as e:
                 print(f"Experiment failed with config: {config.get('run_name')}")
@@ -335,10 +336,12 @@ class BayesianOptimizer:
             p_log = p_def.get('log', False)
 
             if p_type == 'float':
-                low, high = map(float, p_range.split())
+                vals = sorted(map(float, p_range.split()))
+                low, high = vals[0], vals[1]
                 val = trial.suggest_float(name, low, high, log=p_log)
             elif p_type == 'int':
-                low, high = map(int, p_range.split())
+                vals = sorted(map(int, p_range.split()))
+                low, high = vals[0], vals[1]
                 val = trial.suggest_int(name, low, high, log=p_log)
             elif p_type == 'categorical':
                 if isinstance(p_range, str):

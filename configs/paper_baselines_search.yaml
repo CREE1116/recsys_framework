@@ -109,50 +109,50 @@ searches:
   #   patience: 20
   #   metric: "NDCG@20"
 
-  # # # # # ============================================================
-  # # # # # Baselines: Graph
-  # # # # # ============================================================
+  # ============================================================
+  # Baselines: Graph
+  # ============================================================
 
-  # # # - name: "LightGCN"
-  # # #   method: "bayesian"
-  # # #   model_config: "configs/model/general/lightgcn.yaml"
-  # # #   params:
-  # # #     - name: "model.n_layers"
-  # # #       type: "int"
-  # # #       range: "1 3"
-  # # #     - name: "train.lr"
-  # # #       type: "categorical"
-  # # #       range: "0.001"
-  # # #     - name: "train.embedding_l2"
-  # # #       type: "categorical"
-  # # #       range: "0.01 0.005 0.001 0.0005 0.0001"
-  # # #     - name: "model.embedding_dim"
-  # # #       type: "categorical"
-  # # #       range: "32 48 64 96 128"
-  # # #   n_trials: 60
-  # # #   patience: 20
-  # # #   metric: "NDCG@20"
+  - name: "LightGCN"
+    method: "bayesian"
+    model_config: "configs/model/general/lightgcn.yaml"
+    params:
+      - name: "model.n_layers"
+        type: "int"
+        range: "1 3"
+      - name: "train.lr"
+        type: "float"
+        range: "0.00001 0.01"
+      - name: "train.embedding_l2"
+        type: "float"
+        range: "0.00001 0.01"
+      - name: "model.embedding_dim"
+        type: "int"
+        range: "64 128"
+    n_trials: 60
+    patience: 20
+    metric: "NDCG@20"
 
-  # # # # # # ============================================================
-  # # # # # # Baselines: Matrix Factorization
-  # # # # # # ============================================================
+  # ============================================================
+  # Baselines: Matrix Factorization
+  # ============================================================
 
-  # - name: "mf"
-  #   method: "bayesian"
-  #   model_config: "configs/model/general/mf.yaml"
-  #   params:
-  #     - name: "train.lr"
-  #       type: "categorical"
-  #       range: "0.001"
-  #     - name: "train.embedding_l2"
-  #       type: "categorical"
-  #       range: "0.01 0.005 0.001 0.0005 0.0001"
-  #     - name: "model.embedding_dim"
-  #       type: "categorical"
-  #       range: "64"
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"
+  - name: "mf"
+    method: "bayesian"
+    model_config: "configs/model/general/mf.yaml"
+    params:
+      - name: "train.lr"
+        type: "float"
+        range: "0.00001 0.01"
+      - name: "train.embedding_l2"
+        type: "float"
+        range: "0.00001 0.01"
+      - name: "model.embedding_dim"
+        type: "int"
+        range: "64 128"
+    n_trials: 60
+    patience: 20
+    metric: "NDCG@20"
   # # # # # ============================================================
   # # # # # Baselines: Autoencoder
   # # # # # ============================================================

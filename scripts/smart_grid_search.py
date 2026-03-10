@@ -31,7 +31,7 @@ class SmartGridSearch:
         self.all_experiment_dirs = []
 
     def load_yaml(self, path):
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
 
     def merge_configs(self, dataset_conf, model_conf):
@@ -88,13 +88,13 @@ class SmartGridSearch:
         
         if os.path.exists(metrics_file):
             print(f"Results already exist at {exp_dir}. Loading from {os.path.basename(metrics_file)}...")
-            with open(metrics_file, 'r') as f:
+            with open(metrics_file, 'r', encoding='utf-8') as f:
                 metrics = json.load(f)
         else:
             try:
                 # Capture standard output to reduce clutter if needed, but for now let it stream
                 run_single_experiment(config)
-                with open(metrics_file, 'r') as f:
+                with open(metrics_file, 'r', encoding='utf-8') as f:
                     metrics = json.load(f)
             except Exception as e:
                 print(f"Experiment failed: {e}")
@@ -164,7 +164,8 @@ class SmartGridSearch:
     def search(self):
         # Phase 1: Log Scale Search
         print("\n=== Phase 1: Log Scale Search ===")
-        start_exp, end_exp = map(int, self.args.range.split())
+        vals = sorted(map(int, self.args.range.split()))
+        start_exp, end_exp = vals[0], vals[1]
         
         best_exp = start_exp
         phase1_best_metric = -float('inf') if self.maximize else float('inf')
