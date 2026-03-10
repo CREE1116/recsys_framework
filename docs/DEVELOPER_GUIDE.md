@@ -64,6 +64,69 @@ class MyModel(BaseModel):
     def get_final_item_embeddings(self): ...
 ```
 
+---
+
+## Parameter Tracking
+
+Any scalar values returned as the second element of `calc_loss` are automatically tracked per epoch and saved as a plot and JSON file.
+
+**How it works:**
+
+1. `calc_loss` returns `(loss_tuple, dict | None)`.
+2. The Trainer collects the dict values every step, averages them per epoch, and stores them in `self.tracked_params`.
+3. After training, it writes `params_history.json` and renders `params_plot.png` — both saved alongside the model checkpoint.
+
+**Example: tracking individual loss components and an internal parameter:**
+
+```python
+def calc_loss(self, batch_data):
+    # ... compute losses ...
+    bpr_loss = ...
+    cl_loss  = ...
+    l2_loss  = self.get_l2_reg_loss(self.user_emb.weight, self.item_emb.weight)
+
+    params_to_log = {
+        'loss_bpr': bpr_loss.item(),
+        'loss_cl':  cl_loss.item(),
+        'loss_l2':  l2_loss.item(),
+    }
+    return (bpr_loss, cl_loss, l2_loss), params_to_log
+```
+
+**Example: tracking a learnable scale parameter (CSAR-style):**
+
+```python
+params_to_log = {
+    'scale':      self.attention_layer.scale.item(),
+    'loss_main':  loss.item(),
+    'loss_orth':  orth_loss.item(),
+}
+return (loss, self.lamda * orth_loss), params_to_log
+```
+
+**Example: tracking KL annealing schedule (MultiVAE-style):**
+
+```python
+anneal = min(self.anneal_cap, 1. * self.update_count / self.total_anneal_steps)
+params_to_log = {
+    'nll':    nll_loss.item(),
+    'kl':     kl_loss.item(),
+    'anneal': anneal,
+}
+return (nll_loss, anneal * kl_loss), params_to_log
+```
+
+**Output files (in `trained_model/{dataset}/{model}/`):**
+
+| File | Contents |
+|---|---|
+| `params_history.json` | `{key: [epoch_0_avg, epoch_1_avg, ...]}` for every tracked key |
+| `params_plot.png` | Line plot of all tracked values over epochs |
+| `loss_plot.png` | Per-component loss curves (one line per `loss_N` in the tuple) |
+| `metrics_plot.png` | Validation metric curves over epochs |
+
+If `calc_loss` returns `None` as the second element, no parameter tracking is performed.
+
 **Step 2 — Register in the model registry:**
 
 ```python
