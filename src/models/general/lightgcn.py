@@ -4,9 +4,8 @@ from ..base_model import BaseModel
 from src.loss import BPRLoss
 
 class LightGCN(BaseModel):
-    """
-    LightGCN: 희소/밀집 인접 행렬을 모두 지원.
-    """
+    """LightGCN: supports both sparse and dense adjacency matrices."""
+
     def __init__(self, config, data_loader):
         super(LightGCN, self).__init__(config, data_loader)
 
@@ -15,18 +14,29 @@ class LightGCN(BaseModel):
 
         self.n_users = self.data_loader.n_users
         self.n_items = self.data_loader.n_items
-        
-        # 희소/밀집 행렬을 모델의 device로 이동 (state_dict 제외)
+
         self.register_buffer('adj_matrix', self.data_loader.get_interaction_graph().to(self.device), persistent=False)
-        
-        # [Optimization] 정규화된 인접 행렬 계산 및 Dense 변환 (GPU 가속 최적화, state_dict 제외)
         self.register_buffer('norm_adj_matrix', self._get_normalized_adj_matrix(), persistent=False)
-        
-        # [NEW] 노드 수가 일정 수준 이하이면 Dense로 변환하여 GPU 가속 극대화 (특히 MPS)
+
+        # Small graphs: convert sparse to dense for faster GPU matmul
         total_nodes = self.n_users + self.n_items
         if total_nodes < 15000:
-            self._log(f"Node count {total_nodes} < 15000. Converting to Dense for GPU acceleration.")
+            self._log(f"Node count {total_nodes} < 15000 — converting to dense for GPU matmul.")
             self.register_buffer('norm_adj_matrix', self.norm_adj_matrix.to_dense(), persistent=False)
+
+        # Pre-resolve propagation strategy to avoid per-iteration checks in forward.
+        # MPS does not reliably support sparse mm; keep sparse matrix on CPU and move
+        # results back to device after each propagation step.
+        if self.norm_adj_matrix.is_sparse and self.device.type == 'mps':
+            self.register_buffer('norm_adj_matrix', self.norm_adj_matrix.cpu(), persistent=False)
+            self._adj_device = torch.device('cpu')
+            self._sparse_prop = True
+        elif self.norm_adj_matrix.is_sparse:
+            self._adj_device = self.norm_adj_matrix.device
+            self._sparse_prop = True
+        else:
+            self._adj_device = self.device
+            self._sparse_prop = False
 
         self.user_embedding = nn.Embedding(self.data_loader.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.data_loader.n_items, self.embedding_dim)
@@ -38,40 +48,24 @@ class LightGCN(BaseModel):
         self._final_item_emb = None
 
     def _get_normalized_adj_matrix(self):
-        """[수정] 희소/밀집 행렬에 따라 정규화된 인접 행렬 D^-0.5 * A * D^-0.5 를 계산합니다."""
+        """Compute symmetric normalized adjacency D^{-0.5} A D^{-0.5}."""
         A = self.adj_matrix
-        
+
         if A.is_sparse:
-            # 희소 행렬 정규화
             A = A.coalesce()
             row_sum = torch.sparse.sum(A, dim=1).to_dense()
             D_inv_sqrt = torch.pow(row_sum, -0.5)
             D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.
-            
+
             indices = A.indices()
-            values = A.values()
-            
-            row_degrees = D_inv_sqrt[indices[0]]
-            col_degrees = D_inv_sqrt[indices[1]]
-            
-            new_values = values * row_degrees * col_degrees
-            norm_adj = torch.sparse_coo_tensor(indices, new_values, A.shape)
+            values = A.values() * D_inv_sqrt[indices[0]] * D_inv_sqrt[indices[1]]
+            return torch.sparse_coo_tensor(indices, values, A.shape)
         else:
-            # [Optimized] 밀집 행렬 정규화 (Broadcasting 사용)
-            # D^-0.5 * A * D^-0.5 = A * d_i * d_j (element-wise)
             D = A.sum(1)
             D_inv_sqrt = torch.pow(D, -0.5)
             D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.
-            
-            # Broadcasting: (N, 1) * (N, N) * (1, N)
-            try:
-                norm_adj = A * D_inv_sqrt.unsqueeze(1) * D_inv_sqrt.unsqueeze(0)
-            except (RuntimeError, MemoryError) as e:
-                self._log(f"Error in dense graph normalization (OOM?): {e}")
-                # For now just raise to be caught by global handler
-                raise e
-            
-        return norm_adj
+            # D^{-0.5} A D^{-0.5} via broadcasting: (N,1) * (N,N) * (1,N)
+            return A * D_inv_sqrt.unsqueeze(1) * D_inv_sqrt.unsqueeze(0)
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)
@@ -93,21 +87,11 @@ class LightGCN(BaseModel):
         all_embeddings = torch.cat([self.user_embedding.weight, self.item_embedding.weight], dim=0)
         embeddings_list = [all_embeddings]
 
-        # [수정] 희소/밀집 행렬에 따라 다른 곱셈 연산 사용
         for _ in range(self.n_layers):
-            if self.norm_adj_matrix.is_sparse:
-                if self.norm_adj_matrix.device != all_embeddings.device:
-                    # Efficient cross-device sparse mm for MPS stability
-                    all_embeddings = torch.sparse.mm(self.norm_adj_matrix, all_embeddings.to(self.norm_adj_matrix.device)).to(self.device)
-                else:
-                    try:
-                        all_embeddings = torch.sparse.mm(self.norm_adj_matrix, all_embeddings)
-                    except (RuntimeError, NotImplementedError):
-                        # Fallback for MPS which might not support sparse mm
-                        # Move matrix to CPU permanently if it fails once? 
-                        # For now, stay consistent with LIRALayer approach
-                        self.register_buffer('norm_adj_matrix', self.norm_adj_matrix.cpu())
-                        all_embeddings = torch.sparse.mm(self.norm_adj_matrix, all_embeddings.cpu()).to(self.device)
+            if self._sparse_prop:
+                all_embeddings = torch.sparse.mm(
+                    self.norm_adj_matrix, all_embeddings.to(self._adj_device)
+                ).to(self.device)
             else:
                 all_embeddings = torch.matmul(self.norm_adj_matrix, all_embeddings)
             embeddings_list.append(all_embeddings)
@@ -125,7 +109,6 @@ class LightGCN(BaseModel):
         return self._propagate_embeddings()
 
     def get_final_item_embeddings(self):
-        """LightGCN의 최종 아이템 임베딩 (Graph-Propagated)을 반환합니다."""
         _, item_embeddings = self.get_embeddings()
         return item_embeddings.detach()
 
@@ -134,7 +117,6 @@ class LightGCN(BaseModel):
         pos_items = batch_data['pos_item_id']
         neg_items = batch_data['neg_item_id']
 
-        # [Optimization] Propagate once per batch instead of twice
         user_embeds, item_embeds = self.get_embeddings()
         
         user_vec = user_embeds[users]
@@ -146,7 +128,7 @@ class LightGCN(BaseModel):
 
         loss = self.loss_fn(pos_scores, neg_scores)
         
-        # [추가] L2 규제 (전파된 임베딩이 아닌 학습 대상인 베이스 임베딩에 적용)
+        # L2 regularization on base embeddings (not propagated)
         u_base_emb = self.user_embedding(users)
         p_base_emb = self.item_embedding(pos_items)
         n_base_emb = self.item_embedding(neg_items)
