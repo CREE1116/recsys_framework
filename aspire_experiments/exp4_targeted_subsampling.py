@@ -92,7 +92,7 @@ def run_beta_tracking_v2(
     crossover_eta=0.6,      # 이 값 이상부터 단조 증가 구간으로 간주
 ):
     if eta_targets is None:
-        eta_targets = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5]
+        eta_targets = np.linspace(0.0, 2.0, 21).tolist()
 
     print(f"Running Experiment 4: Targeted Subsampling on {dataset_name}")
     print(f"  η_targets={eta_targets}, density={target_density}, seeds={n_seeds}")
@@ -280,9 +280,9 @@ if __name__ == "__main__":
     parser.add_argument("--dataset",    type=str,   nargs="+", default=["ml1m"])
     parser.add_argument("--energy",     type=float, default=0.95)
     parser.add_argument("--eta",        type=float, nargs="+",
-                        default=[0.0, 0.3, 0.6, 0.9, 1.2, 1.5])
+                        default=None)
     parser.add_argument("--density",    type=float, default=0.5)
-    parser.add_argument("--seeds",      type=int,   default=3)
+    parser.add_argument("--seeds",      type=int,   default=5)
     parser.add_argument("--crossover",  type=float, default=0.6,
                         help="이 η 이상을 단조 증가 구간으로 간주 (linearity figure용)")
     args = parser.parse_args()

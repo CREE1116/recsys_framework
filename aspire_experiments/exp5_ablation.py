@@ -97,7 +97,7 @@ def fast_evaluate_ndcg(scores, ground_truth, user_history, k_target=10):
 # (TPESampler, EarlyStoppingCallback, save_results 포함)
 
 def find_best_params_bayesian(XV_val, S, V, val_gt, val_history, device,
-                              beta_val=None, n_trials=30, patience=10, seed=42,
+                              beta_val=None, n_trials=30, patience=20, seed=42,
                               study_name="HPO", out_dir=None):
     """
     beta_val이 지정되면 alpha만 검색,
@@ -192,7 +192,7 @@ def run_ablation(dataset_name, target_energy=0.95):
     print("\n[HPO] Joint Bayesian Search (Alpha & Beta) for Upper Bound...")
     joint_params, joint_val = find_best_params_bayesian(
         XV_val, S_tensor, V_tensor, val_gt, val_history, device,
-        beta_val=None, n_trials=50, patience=15, seed=42,
+        beta_val=None, n_trials=50, patience=20, seed=42,
         study_name="Joint_HPO",
         out_dir=os.path.join(hpo_dir, "Joint_HPO"),
     )
@@ -228,7 +228,7 @@ def run_ablation(dataset_name, target_energy=0.95):
             safe_name = name.replace(' ', '_').replace('(', '').replace(')', '').replace('+', '_')
             alpha_params, _ = find_best_params_bayesian(
                 XV_val, S_tensor, V_tensor, val_gt, val_history, device,
-                beta_val=beta, n_trials=30, patience=10, seed=42,
+                beta_val=beta, n_trials=30, patience=20, seed=42,
                 study_name=f"Alpha_{safe_name}",
                 out_dir=os.path.join(hpo_dir, f"Alpha_{safe_name}"),
             )
