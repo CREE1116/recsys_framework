@@ -25,9 +25,18 @@ def load_config(dataset_name):
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
-    # model name is required by DataLoader
+    # model name and evaluation config are required by DataLoader/Evaluation
     if 'model' not in config:
         config['model'] = {'name': 'aspire'}
+    if 'evaluation' not in config:
+        config['evaluation'] = {
+            'method': 'full',
+            'top_k': [10],
+            'metrics': ['NDCG'],
+            'validation_method': 'full'
+        }
+    elif 'validation_method' not in config['evaluation']:
+        config['evaluation']['validation_method'] = 'full'
     
     return config
 

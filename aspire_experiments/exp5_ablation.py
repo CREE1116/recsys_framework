@@ -1,208 +1,190 @@
 # Usage: uv run python aspire_experiments/exp5_ablation.py --dataset ml1m --energy 0.95
 #
-# §6.3 실험 C: β 추정 방법 Ablation (v3)
-# 각 방법별로 최적의 alpha를 개별적으로 HPO하여 공정한 최대 성능 비교 진행
+# §6.3 실험 C: β 추정 방법 Ablation (v5 - Efficiency & Alignment)
+# 프레임워크 로직과 NDCG 계산 방식을 엄격하게 준수하되, HPO 시 불필요한 데이터 수집 반복 제거.
 #
-# 측정 지표: NDCG@10 (전체, Head, Mid, Tail), Item Coverage@10
+# 비교 방법:
+#   (1) SPP + Huber (Proposed)
+#   (2) SPP + OLS
+#   (3) Slope ratio (ChebyASPIRE 방식)
+#   (4) β = 0.5 fixed
+#   (5) β = HPO (Joint)
+#   (6) SPP direct (β=1.0)
+#   (7) 0.5 damping (β = β_huber * 0.5)
 
 import os
 import sys
 import json
 import torch
+import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
-from sklearn.linear_model import HuberRegressor, LinearRegression
+import pandas as pd
+from tqdm import tqdm
+from scipy.sparse import csr_matrix
+from sklearn.linear_model import LinearRegression
 
 sys.path.append(os.getcwd())
 
 from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
+from src.evaluation import evaluate_metrics
 
 
-# ── 유틸리티 및 계산 함수 ──────────────────────────────────────────────────────
+# ── 프레임워크 호환 모델 래퍼 ──────────────────────────────────────────────────
 
-def dcg_at_k(relevance, k):
-    r = np.asarray(relevance[:k], dtype=float)
-    if r.size == 0: return 0.0
-    discounts = np.log2(np.arange(2, r.size + 2))
-    return (r / discounts).sum()
+class ASPIREAblationModel(nn.Module):
+    def __init__(self, V, filter_diag, XV=None, R_train=None):
+        super().__init__()
+        self.V = V # (n_items, k)
+        self.filter_diag = filter_diag
+        self.XV = XV # (n_users, k)
+        self.R_train = R_train 
+        self.n_items = V.shape[0]
 
-
-def ndcg_at_k(scores, labels, k=10):
-    sorted_idx = np.argsort(scores)[::-1]
-    rel = labels[sorted_idx]
-    ideal = np.sort(labels)[::-1]
-    dcg = dcg_at_k(rel, k)
-    idcg = dcg_at_k(ideal, k)
-    return dcg / (idcg + 1e-9) if idcg > 0 else 0.0
-
-
-def make_pop_groups(R_train, head_ratio=0.20, mid_ratio=0.40):
-    pop = np.array(R_train.sum(axis=0)).flatten()
-    sorted_idx = np.argsort(pop)[::-1]
-    n = len(pop)
-    h_end = int(n * head_ratio)
-    m_end = int(n * (head_ratio + mid_ratio))
-    return {'head': sorted_idx[:h_end], 'mid': sorted_idx[h_end:m_end], 'tail': sorted_idx[m_end:]}
+    def forward(self, user_ids):
+        if self.XV is not None:
+            xv_batch = self.XV[user_ids]
+        else:
+            X_batch = self.R_train[user_ids]
+            xv_batch = torch.mm(X_batch, self.V)
+            
+        XVh = xv_batch * self.filter_diag
+        scores = torch.mm(XVh, self.V.t())
+        return scores
 
 
-def split_data(R, val_ratio=0.1, test_ratio=0.1, seed=42):
-    from scipy.sparse import csr_matrix
-    rng = np.random.default_rng(seed)
-    rows_tr, cols_tr, rows_va, cols_va, rows_te, cols_te = [], [], [], [], [], []
-    R_csr = R.tocsr()
-    for u in range(R_csr.shape[0]):
-        items = R_csr.getrow(u).nonzero()[1]
-        if len(items) < 3:
-            rows_tr.extend([u] * len(items)); cols_tr.extend(items.tolist()); continue
-        rng.shuffle(items)
-        n_val = max(1, int(len(items) * val_ratio)); n_test = max(1, int(len(items) * test_ratio))
-        te, va, tr = items[:n_test], items[n_test:n_test + n_val], items[n_test + n_val:]
-        rows_tr.extend([u] * len(tr)); cols_tr.extend(tr.tolist())
-        rows_va.extend([u] * len(va)); cols_va.extend(va.tolist())
-        rows_te.extend([u] * len(te)); cols_te.extend(te.tolist())
-    def to_csr(r, c): return csr_matrix((np.ones(len(r)), (r, c)), shape=R.shape)
-    return to_csr(rows_tr, cols_tr), to_csr(rows_va, cols_va), to_csr(rows_te, cols_te)
+# ── 효율적인 HPO용 NDCG 계산 (Framework Logic 동기화) ──────────────────────────
 
+def fast_evaluate_ndcg(scores, ground_truth, user_history, k_target=10):
+    """
+    scores: (batch_size, n_items) torch.Tensor
+    ground_truth: dict {u_id: [item_ids]}
+    user_history: dict {u_id: {item_ids}}
+    """
+    batch_size, n_items = scores.shape
+    u_ids = list(ground_truth.keys())
+    
+    # 1. Masking
+    for idx, u_id in enumerate(u_ids):
+        history = user_history.get(u_id, set())
+        gt = set(ground_truth[u_id])
+        to_exclude = list(history - gt)
+        if to_exclude:
+            scores[idx, to_exclude] = -1e9
 
-# ── β 추정 방법들 ────────────────────────────────────────────────────────────
-
-def estimate_beta_ols(S, p_tilde):
-    x = np.log(S.numpy() + 1e-9).reshape(-1, 1)
-    y = np.log(p_tilde + 1e-9)
-    lm = LinearRegression().fit(x, y)
-    beta = lm.coef_[0] / 2.0
-    return float(beta), float(lm.score(x, y))
-
-
-def estimate_beta_slope(R_train):
-    pop = np.array(R_train.sum(axis=0)).flatten()
-    ranks = np.arange(1, len(pop) + 1, dtype=float)
-    sorted_pop = np.sort(pop)[::-1]
-    mask = sorted_pop > 0
-    lm_n = LinearRegression().fit(np.log(ranks[mask]).reshape(-1, 1), np.log(sorted_pop[mask]))
-    slope_n = float(lm_n.coef_[0])
-
-    from scipy.sparse.linalg import svds
-    _, s, _ = svds(R_train.astype(float), k=min(100, min(R_train.shape) - 1))
-    s = np.sort(s)[::-1]
-    s_ranks = np.arange(1, len(s) + 1, dtype=float)
-    lm_s = LinearRegression().fit(np.log(s_ranks[s > 0]).reshape(-1, 1), np.log(s[s > 0]))
-    slope_sigma = float(lm_s.coef_[0])
-
-    beta = (slope_n / (slope_sigma + 1e-9)) / 2.0
-    return float(beta)
-
-
-# ── 필터 적용 및 평가 ─────────────────────────────────────────────────────────
-
-def evaluate_filter(R_train, R_test, beta, alpha, item_pop_groups, k=10):
-    from scipy.sparse.linalg import svds
-    n_users, n_items = R_train.shape
-    k_svd = min(200, min(R_train.shape) - 1)
-    u, s, vt = svds(R_train.astype(float), k=k_svd)
-    idx = np.argsort(s)[::-1]; s, vt = s[idx], vt[idx, :]; V = vt.T
-
-    s_tensor = torch.from_numpy(s.copy()).float()
-    h = AspireEngine.apply_filter(s_tensor, alpha=alpha, beta=beta)
-    h_np = h.numpy()
-
-    X_dense = np.array(R_train.todense())
-    XV = X_dense @ V
-    XVh = XV * h_np
-    R_pred = XVh @ V.T
-
-    R_train_dense = np.array(R_train.todense())
-    R_pred = R_pred * (1 - R_train_dense)
-    R_test_dense = np.array(R_test.todense())
-
-    ndcg_all, ndcg_head, ndcg_mid, ndcg_tail = [], [], [], []
-    recommended_items = set()
-
-    for u in range(n_users):
-        if R_test_dense[u].sum() == 0: continue
-        scores = R_pred[u]
-        labels = R_test_dense[u]
-        ndcg_all.append(ndcg_at_k(scores, labels, k))
+    # 2. Top-K
+    _, top_indices = torch.topk(scores, k=k_target, dim=1)
+    top_indices = top_indices.cpu().numpy()
+    
+    all_ndcg = []
+    # 3. NDCG Calculation (same as src/evaluation.py)
+    for idx, u_id in enumerate(u_ids):
+        pred_list = top_indices[idx]
+        gt = ground_truth[u_id]
         
-        top_k_idx = np.argsort(scores)[::-1][:k]
-        recommended_items.update(top_k_idx.tolist())
-
-        for group_name, group_idx in item_pop_groups.items():
-            s_g = scores[group_idx]; l_g = labels[group_idx]
-            val = ndcg_at_k(s_g, l_g, k)
-            if group_name == 'head': ndcg_head.append(val)
-            elif group_name == 'mid': ndcg_mid.append(val)
-            elif group_name == 'tail': ndcg_tail.append(val)
-
-    coverage = len(recommended_items) / n_items
-    return {
-        'ndcg_all': float(np.mean(ndcg_all)),
-        'ndcg_head': float(np.mean(ndcg_head)) if ndcg_head else 0.0,
-        'ndcg_mid': float(np.mean(ndcg_mid)) if ndcg_mid else 0.0,
-        'ndcg_tail': float(np.mean(ndcg_tail)) if ndcg_tail else 0.0,
-        'coverage': float(coverage)
-    }
+        dcg = 0.0
+        for i, item in enumerate(pred_list):
+            if item in gt:
+                dcg += 1.0 / np.log2(i + 2)
+        
+        idcg = 0.0
+        n_relevant = min(len(gt), k_target)
+        for i in range(n_relevant):
+            idcg += 1.0 / np.log2(i + 2)
+            
+        all_ndcg.append(dcg / idcg if idcg > 0 else 0.0)
+        
+    return np.mean(all_ndcg) if all_ndcg else 0.0
 
 
-def find_alpha(R_train, R_val, beta, alpha_grid=None, k_svd=200):
-    from scipy.sparse.linalg import svds
-    # 알파 범위를 0.1(10^-1)에서 1,000,000(10^6)까지 대폭 확대하며 로그 스케일링
-    if alpha_grid is None: alpha_grid = np.logspace(-1, 6, 100) 
-    k_svd = min(k_svd, min(R_train.shape) - 1)
-    u, s, vt = svds(R_train.astype(float), k=k_svd)
-    idx = np.argsort(s)[::-1]; s, vt = s[idx], vt[idx, :]; V = vt.T
-    X_dense = np.array(R_train.todense()); XV = X_dense @ V
-    R_val_dense = np.array(R_val.todense()); R_train_dense = np.array(R_train.todense())
+# ── β 추정 사이드 로직 ──────────────────────────────────────
 
+def estimate_beta_ols_trimmed(s, p_tilde, trim=0.05):
+    k = len(s)
+    lo, hi = max(1, int(k * trim)), max(1 + 5, int(k * (1 - trim)))
+    s_, pt_ = s[lo:hi], p_tilde[lo:hi]
+    mask = (s_ > 1e-9) & (pt_ > 1e-9)
+    if mask.sum() < 4: return 0.5
+    log_s = np.log(s_[mask]).reshape(-1, 1)
+    log_pt = np.log(pt_[mask])
+    lm = LinearRegression().fit(log_s, log_pt)
+    return float(np.clip(lm.coef_[0] / 2.0, 0.0, 0.999))
+
+
+# ── 최적의 Alpha 찾기 ────────────────────────────────────────
+
+def find_best_alpha(XV, S, V, beta, alpha_grid, val_gt, val_history, device):
     best_alpha, best_ndcg = 1.0, -1.0
+    val_users = torch.LongTensor(list(val_gt.keys())).to(device)
+    
+    # Pre-calculate XV_val once
+    XV_val = XV[val_users]
+    
     for alpha in alpha_grid:
-        h = (s ** (2 - 2 * beta)) / (s ** (2 - 2 * beta) + alpha)
-        R_pred = (XV * h) @ V.T * (1 - R_train_dense)
-        ndcgs = [ndcg_at_k(R_pred[u], R_val_dense[u], k=10) for u in range(R_val_dense.shape[0]) if R_val_dense[u].sum() > 0]
-        score = float(np.mean(ndcgs)) if ndcgs else 0.0
-        if score > best_ndcg: best_ndcg, best_alpha = score, float(alpha)
+        h = AspireEngine.apply_filter(S, alpha, beta).to(device)
+        # Fast score calculation
+        scores = torch.mm(XV_val * h, V.t())
+        score = fast_evaluate_ndcg(scores, val_gt, val_history, k_target=10)
+        
+        if score > best_ndcg:
+            best_ndcg, best_alpha = score, alpha
+            
     return best_alpha
 
 
-def beta_hpo_joint_sweep(R_train, R_val, beta_grid=None, alpha_grid=None):
-    if beta_grid is None: beta_grid = np.linspace(0.0, 1.5, 31) 
-    best_beta, best_alpha, best_ndcg = 0.5, 1.0, -1.0
-    for beta in beta_grid:
-        alpha = find_alpha(R_train, R_val, beta, alpha_grid=alpha_grid)
-        res = evaluate_filter(R_train, R_val, beta, alpha, {'h':[]}, k=10)
-        if res['ndcg_all'] > best_ndcg:
-            best_ndcg, best_beta, best_alpha = res['ndcg_all'], float(beta), float(alpha)
-    return best_beta, best_alpha
+# ── 메인 실험 ────────────────────────────────────────────────────────────────
 
-
-# ── 메인 실험 로직 ────────────────────────────────────────────────────────────
-
-def run_ablation(dataset_name, target_energy=0.95, k_svd=200):
-    print(f"\n{'='*60}\nRunning Experiment 5 (Per-Method HPO) on {dataset_name}\n{'='*60}")
-    loader, R_full, _, _, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
-    R_train, R_val, R_test = split_data(R_full)
-    pop_groups = make_pop_groups(R_train)
-
-    from scipy.sparse.linalg import svds
-    k_svd_est = min(k_svd, min(R_train.shape) - 1)
-    _, s_svd, vt_svd = svds(R_train.astype(float), k=k_svd_est)
-    idx = np.argsort(s_svd)[::-1]; s_svd, vt_svd = s_svd[idx], vt_svd[idx, :]
-    V_tr = torch.from_numpy(vt_svd.T.copy()).float(); S_tr = torch.from_numpy(s_svd.copy()).float()
-    item_pops = np.array(R_train.sum(axis=0)).flatten()
-    p_tilde = AspireEngine.compute_spp(V_tr, item_pops)
-
-    # 1. 7가지 Beta 추정
-    beta_huber, _ = AspireEngine.estimate_beta(S_tr, p_tilde, verbose=False)
-    beta_ols, _ = estimate_beta_ols(S_tr, p_tilde)
-    beta_slope = estimate_beta_slope(R_train)
-    beta_fixed = 0.5
-    beta_direct = 1.0
-    beta_damped = float(beta_huber * 0.5)
+def run_ablation(dataset_name, target_energy=0.95):
+    print(f"\n{'='*60}\nRunning Ablation (v5: Optimized) on {dataset_name}\n{'='*60}")
     
-    # 상한선 (Joint Sweep)
-    beta_hpo, alpha_hpo = beta_hpo_joint_sweep(R_train, R_val)
+    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+    
+    # 1. Data & SVD
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
+    
+    R_train_tensor = torch.from_numpy(R.todense()).float().to(device)
+    S_tensor = S.to(device)
+    V_tensor = V.to(device)
+    
+    print(f"[HPO] Pre-computing Latent Projections (XV)...")
+    XV_tensor = torch.mm(R_train_tensor, V_tensor)
+    
+    # 2. Validation Ground Truth Collection (ONCE)
+    print(f"[HPO] Collecting Validation Data once...")
+    val_loader = loader.get_validation_loader(batch_size=2048)
+    val_users, val_items = [], []
+    for u_batch, i_batch in val_loader:
+        val_users.append(u_batch.numpy()); val_items.append(i_batch.numpy())
+    val_users, val_items = np.concatenate(val_users), np.concatenate(val_items)
+    val_df = pd.DataFrame({'u': val_users, 'i': val_items})
+    val_gt = val_df.groupby('u')['i'].apply(list).to_dict()
+    val_history = loader.train_user_history # Validation시는 train만 마스킹
+
+    # 3. Beta Estimation
+    s_np, V_np = S.cpu().numpy(), V.cpu().numpy()
+    item_pops = np.array(R.sum(axis=0)).flatten()
+    p_tilde = AspireEngine.compute_spp(V_np, item_pops)
+    beta_huber, _ = AspireEngine.estimate_beta(S_tensor, p_tilde, dataset_name=dataset_name)
+    beta_ols = estimate_beta_ols_trimmed(s_np, p_tilde)
+    beta_slope, _ = AspireEngine.estimate_beta_from_slope(s_np, item_pops, dataset_name=dataset_name)
+    beta_fixed, beta_direct = 0.5, 1.0
+    beta_damped = float(beta_huber * 0.5)
+
+    # 4. HPO Sweep
+    print("\n[HPO] Joint Beta/Alpha Sweep for Upper Bound...")
+    beta_grid = np.linspace(0.0, 1.5, 16)
+    alpha_grid = np.logspace(-1, 6, 30)
+    
+    best_beta_hpo, best_alpha_hpo, max_val_ndcg = 0.5, 1000.0, -1.0
+    for b in tqdm(beta_grid, desc="Beta Sweep"):
+        a = find_best_alpha(XV_tensor, S_tensor, V_tensor, b, alpha_grid, val_gt, val_history, device)
+        # Re-check best score
+        h = AspireEngine.apply_filter(S_tensor, a, b).to(device)
+        score = fast_evaluate_ndcg(torch.mm(XV_tensor[torch.LongTensor(list(val_gt.keys())).to(device)] * h, V_tensor.t()), val_gt, val_history)
+        if score > max_val_ndcg:
+            max_val_ndcg, best_beta_hpo, best_alpha_hpo = score, b, a
 
     betas = {
         "(1) SPP+Huber": beta_huber,
@@ -211,37 +193,50 @@ def run_ablation(dataset_name, target_energy=0.95, k_svd=200):
         "(4) β=0.5 fixed": beta_fixed,
         "(6) SPP direct": beta_direct,
         "(7) 0.5 damping": beta_damped,
-        "(5) β=HPO": beta_hpo
+        "(5) β=HPO": best_beta_hpo
     }
 
-    print("\n  Optimizing alpha for EACH beta (Per-method HPO)...")
-    results_table = []
-    print(f"\n  {'Method':<20} | {'Beta':<5} | {'Alpha':<7} | {'NDCG':<7} | {'Tail':<7} | {'Cov':<7}")
-    print(f"  {'-'*20}-|-{'-'*5}-|-{'-'*7}-|-{'-'*7}-|-{'-'*7}-|-{'-'*7}")
+    # 5. Final Evaluation (Framework Aligned)
+    eval_config = loader.config.copy()
+    eval_config['metrics'] = ['NDCG', 'HeadNDCG', 'LongTailNDCG', 'Coverage']
+    eval_config['top_k'] = [10]
+    eval_config['long_tail_percent'] = 0.8
     
+    test_loader = loader.get_full_test_loader(batch_size=2048)
+    results_table = []
+    
+    print("\n[Evaluation] Running Final Test and Alpha HPO for each method...")
     for name, beta in betas.items():
         if name == "(5) β=HPO":
-            alpha = alpha_hpo
+            alpha = best_alpha_hpo
         else:
-            alpha = find_alpha(R_train, R_val, beta)
+            alpha = find_best_alpha(XV_tensor, S_tensor, V_tensor, beta, alpha_grid, val_gt, val_history, device)
             
-        m = evaluate_filter(R_train, R_test, beta, alpha, pop_groups, k=10)
-        results_table.append({"method": name, "beta": float(beta), "alpha": float(alpha), **m})
-        print(f"  {name:<20} | {beta:.3f} | {alpha:.2f} | {m['ndcg_all']:.4f} | {m['ndcg_tail']:.4f} | {m['coverage']:.3f}")
+        model = ASPIREAblationModel(V_tensor, AspireEngine.apply_filter(S_tensor, alpha, beta).to(device), XV=XV_tensor)
+        res = evaluate_metrics(model, loader, eval_config, device, test_loader, is_final=True)
+        
+        row = {
+            "method": name, "beta": float(beta), "alpha": float(alpha),
+            "ndcg_all": res.get('NDCG@10', 0.0), "ndcg_head": res.get('HeadNDCG@10', 0.0),
+            "ndcg_tail": res.get('LongTailNDCG@10', 0.0), "coverage": res.get('Coverage@10', 0.0)
+        }
+        results_table.append(row)
+        print(f"  {name:<15} | b={beta:.3f} a={alpha:.0f} | NDCG: {row['ndcg_all']:.4f} (H:{row['ndcg_head']:.4f}/T:{row['ndcg_tail']:.4f}) | Cov: {row['coverage']:.3f}")
 
+    # 6. Output & Visualization
     dataset_label = config['dataset_name']
     out_dir = ensure_dir(f"aspire_experiments/output/ablation/{dataset_label}")
     with open(os.path.join(out_dir, "result_per_method.json"), 'w') as f:
-        json.dump({"dataset": dataset_label, "methods": results_table}, f, indent=4)
+        json.dump({"dataset": dataset_label, "methods": results_table, "k": int(V.shape[1])}, f, indent=4)
 
-    # Visualization: NDCG comparison
-    m_names = [r['method'] for r in results_table]
     plt.figure(figsize=(12, 6))
-    x = np.arange(len(m_names))
-    plt.bar(x, [r['ndcg_all'] for r in results_table], color='skyblue', label='Overall NDCG')
-    plt.xticks(x, m_names, rotation=15, ha='right')
-    plt.title(f"Ablation (Per-method HPO): Overall NDCG@10 — {dataset_label}")
-    plt.tight_layout(); plt.savefig(os.path.join(out_dir, "ablation_per_method_ndcg.png"), dpi=150); plt.close()
+    m = [r['method'] for r in results_table]
+    x = np.arange(len(m)); width = 0.25
+    plt.bar(x - width, [r['ndcg_head'] for r in results_table], width, label='Head NDCG', color='lightcoral')
+    plt.bar(x, [r['ndcg_all'] for r in results_table], width, label='Overall NDCG', color='skyblue')
+    plt.bar(x + width, [r['ndcg_tail'] for r in results_table], width, label='Tail NDCG', color='lightgreen')
+    plt.xticks(x, m, rotation=15, ha='right'); plt.ylabel("NDCG@10"); plt.legend(); plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "ablation_breakdown.png"), dpi=150); plt.close()
 
     return results_table
 
