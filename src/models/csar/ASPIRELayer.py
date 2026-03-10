@@ -14,6 +14,7 @@ from sklearn.linear_model import HuberRegressor
 from src.utils.gpu_accel import SVDCacheManager
 from src.models.csar.lira_visualizer import LIRAVisualizer
 from src.utils.cache_manager import GlobalCacheManager
+from src.models.csar import beta_estimators
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -39,7 +40,7 @@ class MNARGammaCacheManager(GlobalCacheManager):
         path = cls._get_path(dataset_name)
         if path and os.path.exists(path):
             try:
-                with open(path) as f:
+                with open(path, encoding='utf-8') as f:
                     data = json.load(f)
                 cls._mem_cache[dataset_name] = data
                 return data
@@ -56,7 +57,7 @@ class MNARGammaCacheManager(GlobalCacheManager):
             try:
                 payload = val if isinstance(val, dict) else {"value": val}
                 payload["timestamp"] = time.time()
-                with open(path, "w") as f:
+                with open(path, "w", encoding='utf-8') as f:
                     json.dump(payload, f)
             except Exception as e:
                 print(f"[MNARGammaCache] save failed: {e}")
@@ -199,6 +200,7 @@ class AspireEngine:
         verbose: bool = True,
         dataset_name: str = "",
         return_line: bool = False,
+        estimator_type: str = "huber",
     ) -> tuple:
         """
         p̃_k의 멱법칙 피팅으로 β 추출.
@@ -215,23 +217,38 @@ class AspireEngine:
         s_  = s[lo:hi]
         pt_ = pt[lo:hi]
 
-        mask = (s_ > 1e-9) & (pt_ > 1e-9)
-        if mask.sum() < 4:
-            if verbose:
-                print(f"[ASPIRE] {dataset_name}: 유효 포인트 부족 → β=0.5 fallback")
-            return (0.5, 0.0, np.zeros_like(pt)) if return_line else (0.5, 0.0)
+        # Use specialized estimators if requested
+        if estimator_type == "ols":
+            beta, r2 = beta_estimators.beta_ols(s_, pt_)
+        elif estimator_type == "theil_sen":
+            beta, r2 = beta_estimators.beta_theil_sen(s_, pt_)
+        elif estimator_type == "huber_fixed":
+            # Using custom IRLS implementation from beta_estimators
+            beta, r2 = beta_estimators.beta_huber_fixed(s_, pt_)
+        elif estimator_type == "huber_mad":
+            beta, r2 = beta_estimators.beta_huber_mad(s_, pt_)
+        elif estimator_type == "lad":
+            beta, r2 = beta_estimators.beta_lad(s_, pt_)
+        elif estimator_type == "fixed_0.5":
+            beta, r2 = 0.5, 1.0
+        else: # Default: sklearn Huber (current behavior)
+            mask = (s_ > 1e-9) & (pt_ > 1e-9)
+            if mask.sum() < 4:
+                if verbose:
+                    print(f"[ASPIRE] {dataset_name}: 유효 포인트 부족 → β=0.5 fallback")
+                return (0.5, 0.0, np.zeros_like(pt)) if return_line else (0.5, 0.0)
 
-        log_s  = np.log(s_[mask]).reshape(-1, 1)
-        log_pt = np.log(pt_[mask])
+            log_s  = np.log(s_[mask]).reshape(-1, 1)
+            log_pt = np.log(pt_[mask])
 
-        hub = HuberRegressor(epsilon=1.35, max_iter=300, fit_intercept=True)
-        hub.fit(log_s, log_pt)
+            hub = HuberRegressor(epsilon=1.35, max_iter=300, fit_intercept=True)
+            hub.fit(log_s, log_pt)
 
-        beta = float(np.clip(hub.coef_[0] / 2.0, 0.0, 0.999))
-        r2   = float(hub.score(log_s, log_pt))
+            beta = float(np.clip(hub.coef_[0] / 2.0, 0.0, 0.999))
+            r2   = float(hub.score(log_s, log_pt))
 
         if verbose:
-            print(f"[ASPIRE] {dataset_name}: β={beta:.4f}  R²={r2:.4f}")
+            print(f"[ASPIRE] {dataset_name} ({estimator_type}): β={beta:.4f}  R²={r2:.4f}")
 
         if return_line:
             y_pred_full = hub.predict(np.log(s + 1e-9).reshape(-1, 1))
@@ -250,6 +267,7 @@ class AspireEngine:
         verbose: bool = True,
         dataset_name: str = "",
         save_dir: str = None,
+        estimator_type: str = "huber",
     ) -> tuple[float, float]:
         """
         slope 비율로 β 추정 — SVD-free ChebyASPIRE 전용.
@@ -288,18 +306,30 @@ class AspireEngine:
         p_i = n_raw / (n_raw.max() + 1e-9)
         p_all_sorted = np.sort(p_i)[::-1]
 
-        hub = HuberRegressor(epsilon=1.35, max_iter=300, fit_intercept=True)
-
         def _slope(vals: np.ndarray) -> float:
             L  = len(vals)
             lo = max(1, int(L * 0.05))
             hi = max(lo + 4, int(L * 0.95))
-            r  = np.arange(lo + 1, hi + 1, dtype=float)
-            lv = np.log(np.clip(vals[lo:hi], 1e-12, None))
-            w  = np.sqrt(r)   # tail-weighted
-            hub.fit(np.log(r).reshape(-1, 1), lv, sample_weight=w)
-            # 멱법칙 특성상 slope는 음수지만, 우리는 그 '강도'(절댓값)를 원함
-            return abs(float(hub.coef_[0]))
+            r  = np.arange(lo + 1, hi + 1, dtype=float).astype(float)
+            lv = np.clip(vals[lo:hi], 1e-12, None).astype(float)
+
+            # Use robust estimators directly on (r, lv) power-law nodes
+            if estimator_type == "ols":
+                beta_val, _ = beta_estimators.beta_ols(r, lv)
+            elif estimator_type == "theil_sen":
+                beta_val, _ = beta_estimators.beta_theil_sen(r, lv)
+            elif estimator_type == "huber_mad":
+                beta_val, _ = beta_estimators.beta_huber_mad(r, lv)
+            elif estimator_type == "lad":
+                beta_val, _ = beta_estimators.beta_lad(r, lv)
+            else: # Default: sklearn Huber (current behavior)
+                hub = HuberRegressor(epsilon=1.35, max_iter=300, fit_intercept=True)
+                w   = np.sqrt(r)
+                hub.fit(np.log(r).reshape(-1, 1), np.log(lv), sample_weight=w)
+                return abs(float(hub.coef_[0]))
+            
+            # For new estimators, beta_val is slope/2. We want direct slope (alpha).
+            return abs(beta_val * 2.0)
 
         sl_s = _slope(s)
         sl_n = _slope(p_all_sorted)
@@ -401,6 +431,7 @@ class ASPIRELayer(nn.Module):
         alpha: float | list     = 500.0,
         beta: float | str | list = "auto",
         target_energy: float | list = 0.95,
+        estimator_type: str = "huber",
     ):
         super().__init__()
         self.k             = int(k[0] if isinstance(k, (list, np.ndarray)) else k)
@@ -410,6 +441,7 @@ class ASPIRELayer(nn.Module):
             target_energy[0] if isinstance(target_energy, (list, np.ndarray))
             else target_energy
         )
+        self.estimator_type = estimator_type
 
         self.beta          = 0.5
         self.r_squared     = 0.0
@@ -457,6 +489,7 @@ class ASPIRELayer(nn.Module):
                 self.beta, self.r_squared = AspireEngine.estimate_beta(
                     s_np, p_tilde,
                     verbose=True, dataset_name=dataset_name or "?",
+                    estimator_type=self.estimator_type,
                 )
                 self.alignment_slope = self.beta * 2.0
                 if cache_key:
@@ -520,6 +553,7 @@ class ChebyASPIRELayer(nn.Module):
         beta: float | str | list     = "auto",
         lambda_max_estimate: float | str = "auto",
         threshold: float             = 1e-4,
+        estimator_type: str          = "huber",
     ):
         super().__init__()
         self.alpha               = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
@@ -527,6 +561,7 @@ class ChebyASPIRELayer(nn.Module):
         self.beta_config         = beta[0] if isinstance(beta, (list, np.ndarray)) else beta
         self.lambda_max_estimate = lambda_max_estimate
         self.threshold           = float(threshold)
+        self.estimator_type      = estimator_type
 
         self.beta            = 0.5
         self.alignment_slope = 0.0
@@ -617,6 +652,7 @@ class ChebyASPIRELayer(nn.Module):
                     X_sparse=X_sparse,
                     verbose=True,
                     dataset_name=dataset_name or "?",
+                    estimator_type=self.estimator_type,
                 )
                 self.alignment_slope = a
                 if cache_key:

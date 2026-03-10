@@ -24,6 +24,7 @@ class ChebyASPIRE(BaseModel):
         self.lambda_max_estimate = model_config.get('lambda_max_estimate', 'auto')
         self.threshold = model_config.get('threshold', 1e-4)
         self.visualize = model_config.get('visualize', True)
+        self.estimator_type = model_config.get('estimator_type', 'huber')
         
         # ChebyASPIRE Layer
         self.lira_layer = ChebyASPIRELayer(
@@ -31,7 +32,8 @@ class ChebyASPIRE(BaseModel):
             degree=self.degree,
             beta=self.beta,
             lambda_max_estimate=self.lambda_max_estimate,
-            threshold=self.threshold
+            threshold=self.threshold,
+            estimator_type=self.estimator_type
         )
         self.lira_layer.to(self.device)
         
