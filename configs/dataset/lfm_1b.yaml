@@ -1,7 +1,7 @@
 # LFM-1B 데이터셋 설정 (Last.fm 1 Billion)
 # 주의: 9GB 이상의 대용량 데이터셋
 dataset_name: "lfm_1b"
-data_path: "/Users/leejongmin/code/recsys_framework/data/lfm-1b/lfm1b-tracks.inter"
+data_path: "./data/lfm-1b/lfm1b-tracks.inter"
 separator: "\t"
 columns: ["user_id", "item_id", "timestamp", "num_repeat"] # RecBole 형식
 has_header: true # 첫 줄이 헤더 (user_id:token etc.)

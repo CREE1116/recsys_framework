@@ -1,6 +1,6 @@
 # 데이터셋 설정 (10-core filtering)
 dataset_name: "ml-1m-10c"
-data_path: "/Users/leejongmin/code/recsys_framework/data/ml1m/ratings.dat"
+data_path: "./data/ml1m/ratings.dat"
 separator: "::"
 columns: ["user_id", "item_id", "rating", "timestamp"]
 

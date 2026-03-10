@@ -1,6 +1,6 @@
 # Amazon Music
 dataset_name: "amazon_music"
-data_path: "/Users/leejongmin/code/recsys_framework/data/amazon_music/Amazon_Digital_Music.inter"
+data_path: "./data/amazon_music/Amazon_Digital_Music.inter"
 separator: "\t"
 columns: ["user_id", "item_id", "rating", "timestamp"]
 
