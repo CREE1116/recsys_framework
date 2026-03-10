@@ -1,6 +1,6 @@
 # LastFM-2k 데이터셋 설정
 dataset_name: "lastfm_2k"
-data_path: "/Users/leejongmin/code/recsys_framework/data/lastfm-2k/user_artists.dat"
+data_path: "./data/lastfm-2k/user_artists.dat"
 separator: "\t"
 columns: ["user_id", "item_id", "weight"] # weight = listening count
 has_header: true # 첫 줄이 헤더

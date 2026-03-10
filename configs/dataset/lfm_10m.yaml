@@ -1,6 +1,6 @@
 # LFM-10M (LFM-1B 1% subset, implicit feedback)
 dataset_name: "lfm_10m"
-data_path: "/Users/leejongmin/code/recsys_framework/data/lfm-10m/ratings.dat"
+data_path: "./data/lfm-10m/ratings.dat"
 separator: "\t"
 columns: ["user_id", "item_id", "timestamp", "num_repeat"]
 has_header: true

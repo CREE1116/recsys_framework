@@ -52,7 +52,7 @@ evaluation:
 | Field | Description | Example |
 |---|---|---|
 | `dataset_name` | Dataset identifier | `"ml-1m"` |
-| `data_path` | Path to the raw data file | `"/data/ml-1m/ratings.dat"` |
+| `data_path` | Path to the raw data file | `"./data/ml-1m/ratings.dat"` |
 | `separator` | Column separator | `"::"`, `"\t"`, `","` |
 | `columns` | Column names | `["user_id", "item_id", "rating", "timestamp"]` |
 | `min_user_interactions` | Minimum interactions per user (k-core) | `5` |
@@ -104,8 +104,8 @@ Same as `temporal_ratio` but without requiring timestamps. Use for datasets that
 
 ```yaml
 split_method: "presplit"
-train_file: "/data/gowalla/train.txt"
-test_file: "/data/gowalla/test.txt"
+train_file: "./data/gowalla/train.txt"
+test_file: "./data/gowalla/test.txt"
 ```
 
 Loads externally provided train/test files in LightGCN format (each line: `user_id item_id item_id ...`). No k-core filtering or ID remapping is applied — IDs must be pre-processed and zero-indexed. No validation set is created.
@@ -114,7 +114,7 @@ Loads externally provided train/test files in LightGCN format (each line: `user_
 
 ```yaml
 dataset_name: "ml-1m"
-data_path: "/data/ml-1m/ratings.dat"
+data_path: "./data/ml-1m/ratings.dat"
 separator: "::"
 columns: ["user_id", "item_id", "rating", "timestamp"]
 rating_threshold: 4
