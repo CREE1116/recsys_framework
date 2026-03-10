@@ -100,6 +100,16 @@ valid_ratio: 0.1
 
 Same as `temporal_ratio` but without requiring timestamps. Use for datasets that lack timestamp data.
 
+**`presplit`:**
+
+```yaml
+split_method: "presplit"
+train_file: "/data/gowalla/train.txt"
+test_file: "/data/gowalla/test.txt"
+```
+
+Loads externally provided train/test files in LightGCN format (each line: `user_id item_id item_id ...`). No k-core filtering or ID remapping is applied — IDs must be pre-processed and zero-indexed. No validation set is created.
+
 ### Example: MovieLens 1M
 
 ```yaml
