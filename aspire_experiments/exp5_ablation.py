@@ -98,7 +98,7 @@ def fast_evaluate_ndcg(scores, ground_truth, user_history, k_target=10):
 # (TPESampler, EarlyStoppingCallback, save_results 포함)
 
 def find_best_params_bayesian(XV_val, S, V, val_gt, val_history, device,
-                              beta_val=None, n_trials=30, patience=10, seed=42,
+                              beta_val=None, n_trials=30, patience=20, seed=42,
                               study_name="HPO", out_dir=None):
     """
     beta_val이 지정되면 alpha만 검색,
