@@ -27,6 +27,7 @@ from sklearn.linear_model import LinearRegression
 sys.path.append(os.getcwd())
 
 from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir, AspireHPO
+from src.models.csar import beta_estimators
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.evaluation import evaluate_metrics
 
@@ -192,7 +193,7 @@ def run_ablation(dataset_name, target_energy=0.95):
     print("\n[HPO] Joint Bayesian Search (Alpha & Beta) for Upper Bound...")
     joint_params, joint_val = find_best_params_bayesian(
         XV_val, S_tensor, V_tensor, val_gt, val_history, device,
-        beta_val=None, n_trials=50, patience=20, seed=42,
+        beta_val=None, n_trials=60, patience=20, seed=42,
         study_name="Joint_HPO",
         out_dir=os.path.join(hpo_dir, "Joint_HPO"),
     )
@@ -200,14 +201,29 @@ def run_ablation(dataset_name, target_energy=0.95):
     best_alpha_hpo = joint_params['alpha']
     print(f"  -> Best Joint: Beta={best_beta_hpo:.4f}, Alpha={best_alpha_hpo:.2f} (Val NDCG: {joint_val:.4f})")
 
+    # Mapping name to estimator_type for R2 retrieval
+    name_to_type = {
+        "SPP+Huber (sklearn)": "huber",
+        "SPP+OLS": "ols",
+        "SPP+Theil-Sen": "theil_sen",
+        "SPP+Huber (Fixed)": "huber_fixed",
+        "SPP+Huber (MAD)": "huber_mad",
+        "SPP+LAD": "lad",
+        "Slope ratio": "slope_ratio",
+        "β=0.5 fixed": "fixed_0.5",
+        "β=HPO (Joint)": "huber", # or just use a default
+    }
+
     betas = {
-        "(1) SPP+Huber": beta_huber,
-        "(2) SPP+OLS":   beta_ols,
-        "(3) Slope ratio": beta_slope,
-        "(4) β=0.5 fixed": beta_fixed,
-        "(6) SPP direct": beta_direct,
-        "(7) 0.5 damping": beta_damped,
-        "(5) β=HPO":     best_beta_hpo,
+        "SPP+Huber (sklearn)": beta_huber,
+        "SPP+OLS":   beta_ols,
+        "SPP+Theil-Sen": AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="theil_sen")[0],
+        "SPP+Huber (Fixed)": AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="huber_fixed")[0],
+        "SPP+Huber (MAD)":   AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="huber_mad")[0],
+        "SPP+LAD":           AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="lad")[0],
+        "Slope ratio":       beta_slope,
+        "β=0.5 fixed":       beta_fixed,
+        "β=HPO (Joint)":     best_beta_hpo,
     }
 
     # 5. Final Evaluation
@@ -228,7 +244,7 @@ def run_ablation(dataset_name, target_energy=0.95):
             safe_name = name.replace(' ', '_').replace('(', '').replace(')', '').replace('+', '_')
             alpha_params, _ = find_best_params_bayesian(
                 XV_val, S_tensor, V_tensor, val_gt, val_history, device,
-                beta_val=beta, n_trials=30, patience=20, seed=42,
+                beta_val=beta, n_trials=40, patience=20, seed=42,
                 study_name=f"Alpha_{safe_name}",
                 out_dir=os.path.join(hpo_dir, f"Alpha_{safe_name}"),
             )
@@ -238,8 +254,11 @@ def run_ablation(dataset_name, target_energy=0.95):
         model = ASPIREAblationModel(V_tensor, h, XV=XV_tensor)
         res = evaluate_metrics(model, loader, eval_config, device, test_loader, is_final=True)
 
+        # Get Fit Diagnostics (R2)
+        _, r2 = AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type=name_to_type.get(name, "huber"))
+
         row = {
-            "method": name, "beta": float(beta), "alpha": float(alpha),
+            "method": name, "beta": float(beta), "alpha": float(alpha), "r2": float(r2),
             "ndcg_all":  res.get('NDCG@10', 0.0),
             "ndcg_head": res.get('HeadNDCG@10', 0.0),
             "ndcg_tail": res.get('LongTailNDCG@10', 0.0),
