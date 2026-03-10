@@ -100,6 +100,16 @@ valid_ratio: 0.1
 
 `temporal_ratio`와 동일하지만 타임스탬프 없이 랜덤으로 분할합니다. 타임스탬프가 없는 데이터셋에 사용합니다.
 
+**`presplit`:**
+
+```yaml
+split_method: "presplit"
+train_file: "/data/gowalla/train.txt"
+test_file: "/data/gowalla/test.txt"
+```
+
+LightGCN 형식(각 줄: `user_id item_id item_id ...`)의 외부 학습/테스트 파일을 로드합니다. k-core 필터링이나 ID 리매핑을 적용하지 않으며, ID가 이미 전처리되어 0부터 시작한다고 가정합니다. 검증 세트는 생성되지 않습니다.
+
 ### 예시: MovieLens 1M
 
 ```yaml
