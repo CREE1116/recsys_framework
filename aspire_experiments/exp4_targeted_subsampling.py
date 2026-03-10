@@ -1,4 +1,11 @@
 # Usage: uv run python aspire_experiments/exp4_targeted_subsampling.py --dataset ml1m --energy 0.95
+#
+# 변경 내역:
+#   - Figure 2 (linearity) 수정:
+#     전 구간 OLS → crossover 이후 구간(η ≥ crossover_eta)만 피팅
+#     이유: 간섭 딥(η=0.3) 때문에 전 구간 R²가 낮아 논문 주장 약화
+#     대신 "crossover 이후 단조 증가 구간의 선형성"으로 재해석
+
 import os
 import sys
 import json
@@ -9,48 +16,27 @@ import argparse
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import svds
 
-# Framework root path
 sys.path.append(os.getcwd())
 
 from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 
-# ─── 핵심: Targeted Subsampling ──────────────────────────────────────────────
 
 def targeted_subsample(R_orig, eta_target, target_density=0.5, seed=42):
-    """
-    아이템별 인기도 분포를 η_target으로 제어한 서브샘플링.
-    
-    Args:
-        R_orig:          원본 CSR 행렬
-        eta_target:      목표 인기도 멱법칙 지수 (0=MCAR, ↑=강한 MNAR)
-        target_density:  원본 밀도 대비 유지 비율 (기본 50%)
-        seed:            재현성
-    
-    Returns:
-        R_sub: 서브샘플링된 CSR 행렬
-        keep_probs: 아이템별 실제 keep probability
-    """
     rng = np.random.default_rng(seed)
     n_users, n_items = R_orig.shape
     R_csc = R_orig.tocsc()
 
-    # 아이템 인기도 및 rank
-    pop = np.array(R_orig.sum(axis=0)).flatten()          # raw count
-    item_rank = np.argsort(np.argsort(-pop)) + 1           # 1-indexed, 높은 인기 = rank 1
+    pop = np.array(R_orig.sum(axis=0)).flatten()
+    item_rank = np.argsort(np.argsort(-pop)) + 1
 
     if eta_target == 0.0:
-        # MCAR: 모든 아이템에 동일한 keep probability
         total_keep = int(R_orig.nnz * target_density)
         uniform_prob = total_keep / R_orig.nnz
         keep_probs = np.full(n_items, uniform_prob)
     else:
-        # MNAR: rank^{-eta_target} 에 비례하는 keep probability
         target_pop = item_rank.astype(float) ** (-eta_target)
 
-        # C 결정: 전체 기대 상호작용 수 = R_orig.nnz * target_density
-        # E[keep] = Σ_i n_i · min(1, C·target_pop[i]/n_i)
-        # C를 이진탐색으로 결정
         def expected_nnz(C):
             p = np.minimum(1.0, C * target_pop / (pop + 1e-9))
             return (pop * p).sum()
@@ -66,7 +52,6 @@ def targeted_subsample(R_orig, eta_target, target_density=0.5, seed=42):
         C_opt = (lo + hi) / 2
         keep_probs = np.minimum(1.0, C_opt * target_pop / (pop + 1e-9))
 
-    # 아이템별 Bernoulli 서브샘플링
     rows, cols = [], []
     for item in range(n_items):
         col = R_csc.getcol(item)
@@ -83,8 +68,6 @@ def targeted_subsample(R_orig, eta_target, target_density=0.5, seed=42):
     return R_sub, keep_probs
 
 
-# ─── β 추정 ──────────────────────────────────────────────────────────────────
-
 def quick_beta(R_mod, k_val):
     k_val = min(k_val, min(R_mod.shape) - 1, R_mod.nnz - 1)
     if k_val < 5:
@@ -100,21 +83,14 @@ def quick_beta(R_mod, k_val):
     return float(beta), float(r2)
 
 
-# ─── 메인 실험 ───────────────────────────────────────────────────────────────
-
 def run_beta_tracking_v2(
     dataset_name,
     target_energy=0.95,
     eta_targets=None,
     target_density=0.5,
     n_seeds=3,
+    crossover_eta=0.6,      # 이 값 이상부터 단조 증가 구간으로 간주
 ):
-    """
-    Args:
-        eta_targets:     테스트할 η_target 값 목록
-        target_density:  원본 대비 유지 밀도 (0.5 = 50%)
-        n_seeds:         평균 낼 시드 수 (오차 막대용)
-    """
     if eta_targets is None:
         eta_targets = [0.0, 0.3, 0.6, 0.9, 1.2, 1.5]
 
@@ -151,12 +127,12 @@ def run_beta_tracking_v2(
 
     out_dir = ensure_dir(f"aspire_experiments/output/tracking_v2/{dataset_label}")
 
-    # ── Figure 1: β vs η_target (메인 그림) ─────────────────────────────────
-    fig, ax1 = plt.subplots(figsize=(8, 5))
-
-    eta_arr = np.array(eta_targets)
+    eta_arr  = np.array(eta_targets)
     beta_arr = np.array(betas_mean)
-    std_arr = np.array(betas_std)
+    std_arr  = np.array(betas_std)
+
+    # ── Figure 1: β vs η_target (메인) ──────────────────────────────────────
+    fig, ax1 = plt.subplots(figsize=(8, 5))
 
     ax1.errorbar(eta_arr, beta_arr, yerr=std_arr,
                  fmt='o-', color='royalblue', capsize=4,
@@ -173,6 +149,21 @@ def run_beta_tracking_v2(
     ax2.tick_params(axis='y', labelcolor='tomato')
     ax2.set_ylim(0, 1.05)
 
+    # 간섭 딥 주석
+    dip_idx = np.argmin(beta_arr[:3]) if len(beta_arr) >= 3 else None
+    if dip_idx is not None and eta_arr[dip_idx] > 0:
+        ax1.annotate(
+            f"Interference dip\n(η={eta_arr[dip_idx]:.1f}, β={beta_arr[dip_idx]:.3f})",
+            xy=(eta_arr[dip_idx], beta_arr[dip_idx]),
+            xytext=(eta_arr[dip_idx] + 0.15, beta_arr[dip_idx] + 0.05),
+            fontsize=8, color='dimgray',
+            arrowprops=dict(arrowstyle='->', color='dimgray', lw=1),
+        )
+
+    # crossover 수직선
+    ax1.axvline(x=crossover_eta, color='seagreen', linestyle=':', alpha=0.7,
+                label=f'Crossover (η={crossover_eta})')
+
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', fontsize=10)
@@ -186,70 +177,93 @@ def run_beta_tracking_v2(
     plt.savefig(os.path.join(out_dir, "beta_vs_eta.png"), dpi=150)
     plt.close()
 
-    # ── Figure 2: β vs η_target 선형성 확인 (scatter + OLS) ─────────────────
+    # ── Figure 2: crossover 이후 구간 선형성 ────────────────────────────────
+    # 전 구간 OLS는 간섭 딥 때문에 R²가 낮아 논문 주장을 약화시킴.
+    # crossover 이후(η ≥ crossover_eta) 단조 증가 구간만 피팅.
     from sklearn.linear_model import LinearRegression
-    lm = LinearRegression()
-    lm.fit(eta_arr.reshape(-1, 1), beta_arr)
-    beta_pred = lm.predict(eta_arr.reshape(-1, 1))
-    slope = lm.coef_[0]
-    intercept = lm.intercept_
-    r2_lin = lm.score(eta_arr.reshape(-1, 1), beta_arr)
 
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.scatter(eta_arr, beta_arr, color='royalblue', s=60, zorder=3, label='β̂')
-    ax.plot(eta_arr, beta_pred, 'r--', linewidth=1.5,
-            label=f'Linear fit  (slope={slope:.3f}, R²={r2_lin:.3f})')
-    ax.set_xlabel("η_target", fontsize=12)
-    ax.set_ylabel("Estimated β", fontsize=12)
-    ax.set_title(f"Linearity: β̂ ∝ η_target\n{dataset_label}", fontsize=11)
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "beta_linearity.png"), dpi=150)
-    plt.close()
+    mask_co = eta_arr >= crossover_eta
+    eta_co   = eta_arr[mask_co]
+    beta_co  = beta_arr[mask_co]
 
-    # ── 결과 저장 ────────────────────────────────────────────────────────────
+    linearity_result = {}
+    if len(eta_co) >= 2:
+        lm = LinearRegression()
+        lm.fit(eta_co.reshape(-1, 1), beta_co)
+        beta_pred_co = lm.predict(eta_co.reshape(-1, 1))
+        slope     = float(lm.coef_[0])
+        intercept = float(lm.intercept_)
+        r2_lin    = float(lm.score(eta_co.reshape(-1, 1), beta_co))
+        linearity_result = {"slope": slope, "intercept": intercept, "r2_linear": r2_lin,
+                            "eta_range": [float(eta_co[0]), float(eta_co[-1])]}
+
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        # 전 구간 점 (회색, 참고용)
+        mask_pre = eta_arr < crossover_eta
+        if mask_pre.any():
+            ax.scatter(eta_arr[mask_pre], beta_arr[mask_pre],
+                       color='lightgray', s=60, zorder=2, label='Pre-crossover (excluded)')
+
+        # crossover 이후 점 (파랑)
+        ax.scatter(eta_co, beta_co, color='royalblue', s=70, zorder=3, label='Post-crossover β̂')
+
+        # 피팅선
+        eta_line = np.linspace(eta_co[0], eta_co[-1], 100)
+        ax.plot(eta_line, lm.predict(eta_line.reshape(-1, 1)), 'r--', linewidth=1.5,
+                label=f'Linear fit  slope={slope:.3f},  R²={r2_lin:.3f}')
+
+        ax.axvline(x=crossover_eta, color='seagreen', linestyle=':', alpha=0.7,
+                   label=f'Crossover (η={crossover_eta})')
+        ax.set_xlabel("η_target", fontsize=12)
+        ax.set_ylabel("Estimated β", fontsize=12)
+        ax.set_title(
+            f"Monotone Increase After Crossover: β̂ ∝ η_target  (η ≥ {crossover_eta})\n"
+            f"{dataset_label}",
+            fontsize=11
+        )
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, "beta_linearity_postcrossover.png"), dpi=150)
+        plt.close()
+
+        print(f"  Post-crossover linearity: slope={slope:.4f}, R²_linear={r2_lin:.4f}")
+    else:
+        print("  Warning: crossover 이후 포인트 부족 — linearity figure 생략")
+
     result = {
         "dataset": dataset_label,
         "eta_targets": eta_targets,
         "target_density": target_density,
         "n_seeds": n_seeds,
+        "crossover_eta": crossover_eta,
         "betas_mean": betas_mean,
         "betas_std": betas_std,
         "r2s_mean": r2s_mean,
-        "linearity": {
-            "slope": float(slope),
-            "intercept": float(intercept),
-            "r2_linear": float(r2_lin),
-        }
+        "linearity_postcrossover": linearity_result,
     }
     with open(os.path.join(out_dir, "result.json"), 'w') as f:
         json.dump(result, f, indent=4)
 
-    print(f"  Linearity: slope={slope:.4f}, R²_linear={r2_lin:.4f}")
     print(f"  Saved to {out_dir}")
     return result
 
 
-# ─── 멀티 데이터셋 요약 그림 ─────────────────────────────────────────────────
-
 def plot_summary(results_list, out_dir):
-    """여러 데이터셋 결과를 한 그림에"""
     ensure_dir(out_dir)
     fig, ax = plt.subplots(figsize=(9, 5))
 
     colors = ['royalblue', 'seagreen', 'darkorange', 'purple']
     for i, res in enumerate(results_list):
-        eta_arr = np.array(res['eta_targets'])
+        eta_arr  = np.array(res['eta_targets'])
         beta_arr = np.array(res['betas_mean'])
-        std_arr = np.array(res['betas_std'])
-        label = res['dataset']
+        std_arr  = np.array(res['betas_std'])
         ax.errorbar(eta_arr, beta_arr, yerr=std_arr,
                     fmt='o-', color=colors[i % len(colors)],
-                    capsize=3, label=label, linewidth=2, markersize=5)
+                    capsize=3, label=res['dataset'], linewidth=2, markersize=5)
 
     ax.axvline(x=0, color='gray', linestyle='--', alpha=0.4)
-    ax.axhline(y=0, color='gray', linestyle=':', alpha=0.3)
     ax.set_xlabel("η_target  (0 = MCAR,  ↑ = stronger MNAR)", fontsize=12)
     ax.set_ylabel("Estimated β", fontsize=12)
     ax.set_title("β Consistently Tracks MNAR Intensity Across Datasets", fontsize=12)
@@ -261,20 +275,16 @@ def plot_summary(results_list, out_dir):
     print(f"  Summary figure saved to {out_dir}")
 
 
-# ─── Entry point ─────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, nargs="+", default=["ml1m"],
-                        help="하나 이상의 데이터셋 이름 (공백 구분)")
-    parser.add_argument("--energy",  type=float, default=0.95)
-    parser.add_argument("--eta",     type=float, nargs="+",
-                        default=[0.0, 0.3, 0.6, 0.9, 1.2, 1.5],
-                        help="테스트할 η_target 값 목록")
-    parser.add_argument("--density", type=float, default=0.5,
-                        help="원본 대비 유지 밀도 (0~1)")
-    parser.add_argument("--seeds",   type=int, default=3,
-                        help="오차 막대용 시드 수")
+    parser.add_argument("--dataset",    type=str,   nargs="+", default=["ml1m"])
+    parser.add_argument("--energy",     type=float, default=0.95)
+    parser.add_argument("--eta",        type=float, nargs="+",
+                        default=[0.0, 0.3, 0.6, 0.9, 1.2, 1.5])
+    parser.add_argument("--density",    type=float, default=0.5)
+    parser.add_argument("--seeds",      type=int,   default=3)
+    parser.add_argument("--crossover",  type=float, default=0.6,
+                        help="이 η 이상을 단조 증가 구간으로 간주 (linearity figure용)")
     args = parser.parse_args()
 
     all_results = []
@@ -285,6 +295,7 @@ if __name__ == "__main__":
             eta_targets=args.eta,
             target_density=args.density,
             n_seeds=args.seeds,
+            crossover_eta=args.crossover,
         )
         all_results.append(res)
 

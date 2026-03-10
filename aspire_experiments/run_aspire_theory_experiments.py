@@ -1,246 +1,110 @@
 import os
 import sys
-import json
-import torch
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 import argparse
-from scipy.sparse import csr_matrix
-from sklearn.linear_model import HuberRegressor
+import pandas as pd
+import json
 
 # Framework root path
 sys.path.append(os.getcwd())
 
-from src.data_loader import DataLoader
-from src.utils.gpu_accel import SVDCacheManager
-from src.models.csar.ASPIRELayer import AspireEngine
-from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
-
-def setup_output_dirs(dataset_name, base_dir="aspire_experiments/output"):
-    """
-    Returns a dictionary of paths.
-    - slp, powerlaw: dataset level (deterministic)
-    - tracking: seed level (randomized) handled inside the loop
-    """
-    paths = {
-        "slp": ensure_dir(os.path.join(base_dir, "slp", dataset_name)),
-        "powerlaw": ensure_dir(os.path.join(base_dir, "powerlaw", dataset_name)),
-        "tracking_base": os.path.join(base_dir, "tracking", dataset_name)
-    }
-    return paths
-
-def get_interaction_matrix(loader):
-    """DataLoader에서 interaction matrix R 생성"""
-    n_users = loader.n_users
-    n_items = loader.n_items
-    train_df = loader.train_df
-    
-    rows = train_df['user_id'].values
-    cols = train_df['item_id'].values
-    vals = np.ones(len(rows))
-    
-    R = csr_matrix((vals, (rows, cols)), shape=(n_users, n_items))
-    return R
-
-def experiment_1_slp(R, V, dataset_name, out_dir):
-    print(f"  Running Experiment 1: SLP Verification (Deterministic)...")
-    # Item popularity
-    p = np.array(R.sum(axis=0)).flatten()
-    p_norm = p / (p.max() + 1e-9)
-    P_diag = p_norm
-    
-    # M = V^T P V
-    V_np = V.cpu().numpy()
-    M = (V_np.T * P_diag) @ V_np
-    
-    diag_vals = np.diag(M)
-    mask = ~np.eye(len(M), dtype=bool)
-    epsilon = float(np.mean(np.abs(M[mask])) / (np.mean(diag_vals) + 1e-9))
-    
-    # Visualization
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(M, cmap='viridis')
-    plt.title(f"Spectral Popularity Matrix M (Rank K={V_np.shape[1]})\nDataset: {dataset_name}, ε={epsilon:.4f}")
-    plt.savefig(os.path.join(out_dir, "slp_heatmap.png"))
-    plt.close()
-    
-    result = {
-        "dataset": dataset_name,
-        "epsilon": float(epsilon),
-        "rank_k": int(V.shape[1])
-    }
-    with open(os.path.join(out_dir, "result.json"), 'w') as f:
-        json.dump(result, f, indent=4)
-    
-    print(f"    SLP Epsilon: {epsilon:.4f}")
-    return result
-
-def experiment_2_powerlaw(S, V, item_pops, dataset_name, out_dir):
-    print(f"  Running Experiment 2: Power-law Coupling (Deterministic)...")
-    s_np = S.cpu().numpy()
-    
-    p_tilde = AspireEngine.compute_spp(V, item_pops)
-    
-    # Beta estimation
-    beta, r2 = AspireEngine.estimate_beta(S, p_tilde, verbose=False)
-    
-    # Log-Log fitting for visualization
-    x = np.log(s_np + 1e-9)
-    y = np.log(p_tilde + 1e-9)
-    
-    plt.figure(figsize=(8, 6))
-    plt.scatter(x, y, alpha=0.5, label='Data points')
-    
-    # Linear fit for plotting
-    hub = HuberRegressor()
-    hub.fit(x.reshape(-1, 1), y)
-    y_pred = hub.predict(x.reshape(-1, 1))
-    
-    plt.plot(x, y_pred, color='red', label=f'Huber Fit (slope={hub.coef_[0]:.3f}, beta={beta:.4f})')
-    plt.xlabel("log(σ_k)")
-    plt.ylabel("log(p̃_k)")
-    plt.title(f"Spectral Power-law Coupling\nDataset: {dataset_name}, R²={r2:.4f}")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(out_dir, "powerlaw_fit.png"))
-    plt.close()
-    
-    result = {
-        "dataset": dataset_name,
-        "beta": float(beta),
-        "r2": float(r2),
-        "slope": float(hub.coef_[0])
-    }
-    with open(os.path.join(out_dir, "result.json"), 'w') as f:
-        json.dump(result, f, indent=4)
-    
-    print(f"    Estimated Beta: {beta:.4f}, R²: {r2:.4f}")
-    return result
-
-def experiment_3_tracking(R, K, dataset_name, out_dir, remove_levels=[0.0, 0.2, 0.4, 0.6, 0.8]):
-    print(f"    Running Experiment 3: Beta-MNAR Tracking (Randomized)...")
-    
-    n_users, n_items = R.shape
-    popularity = np.array(R.sum(axis=0)).flatten()
-    item_rank = np.argsort(popularity)
-    
-    # Tail 40% items
-    tail_threshold = int(n_items * 0.4)
-    tail_items = item_rank[:tail_threshold]
-    
-    mnar_betas = []
-    mcar_betas = []
-    
-    for r in remove_levels:
-        # MNAR: Remove from tail items
-        R_mnar = R.copy().tolil()
-        for item in tail_items:
-            indices = R_mnar.getcol(item).nonzero()[0]
-            if len(indices) > 0:
-                remove_n = int(len(indices) * r)
-                if remove_n > 0:
-                    remove_idx = np.random.choice(indices, remove_n, replace=False)
-                    for ridx in remove_idx:
-                        R_mnar[ridx, item] = 0
-        
-        # MCAR: Remove randomly from all interactions
-        R_mcar = R.copy().tolil()
-        total_interactions = R.nnz
-        remove_n_total = int(total_interactions * (r * 0.4)) # Adjusted to match scale
-        all_rows, all_cols = R.nonzero()
-        remove_indices = np.random.choice(total_interactions, remove_n_total, replace=False)
-        for idx in remove_indices:
-            R_mcar[all_rows[idx], all_cols[idx]] = 0
-            
-        # Estimate beta for both
-        def quick_beta(R_mod):
-            R_mod_csr = R_mod.tocsr()
-            # Fast SVD
-            from scipy.sparse.linalg import svds
-            u, s, vt = svds(R_mod_csr.astype(float), k=K)
-            idx = np.argsort(s)[::-1]
-            s, vt = s[idx], vt[idx, :]
-            V_mod = torch.from_numpy(vt.T.copy()).float()
-            S_mod = torch.from_numpy(s.copy()).float()
-            item_pops = np.array(R_mod_csr.sum(axis=0)).flatten()
-            p_tilde = AspireEngine.compute_spp(V_mod, item_pops)
-            beta, _ = AspireEngine.estimate_beta(S_mod, p_tilde, verbose=False)
-            return beta
-
-        beta_mnar = quick_beta(R_mnar)
-        beta_mcar = quick_beta(R_mcar)
-        
-        mnar_betas.append(beta_mnar)
-        mcar_betas.append(beta_mcar)
-        print(f"      Ratio {r:.1f}: MNAR_beta={beta_mnar:.4f}, MCAR_beta={beta_mcar:.4f}")
-
-    # Visualization
-    plt.figure(figsize=(8, 6))
-    plt.plot(remove_levels, mnar_betas, 'o-', label='MNAR (Tail removal)', color='blue')
-    plt.plot(remove_levels, mcar_betas, 's-', label='MCAR (Random removal)', color='gray')
-    plt.xlabel("Removal Ratio")
-    plt.ylabel("Estimated Beta")
-    plt.title(f"Beta-MNAR Tracking\nDataset: {dataset_name}")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(out_dir, "beta_tracking.png"))
-    plt.close()
-    
-    result = {
-        "remove_levels": remove_levels,
-        "mnar_betas": [float(b) for b in mnar_betas],
-        "mcar_betas": [float(b) for b in mcar_betas]
-    }
-    with open(os.path.join(out_dir, "result.json"), 'w') as f:
-        json.dump(result, f, indent=4)
-        
-    return result
+from aspire_experiments.exp1_slp import run_slp
+from aspire_experiments.exp2_power_law import run_power_law
+from aspire_experiments.exp3_beta_tracking import run_beta_tracking
+from aspire_experiments.exp4_targeted_subsampling import run_beta_tracking_v2
+from aspire_experiments.exp5_ablation import run_ablation
+from aspire_experiments.exp_utils import ensure_dir
 
 def main():
-    parser = argparse.ArgumentParser(description="Run ASPIRE Theory Experiments")
-    parser.add_argument("--datasets", nargs='+', default=["ml100k"], help="Dataset names (space-separated)")
-    parser.add_argument("--seeds", type=int, nargs='+', default=[42], help="Random seeds (space-separated)")
+    parser = argparse.ArgumentParser(description="Run ASPIRE Theory Experiments (Master Script)")
+    parser.add_argument("--datasets", nargs='+', default=["ml1m"], help="Dataset names (e.g., ml1m ml100k)")
     parser.add_argument("--energy", type=float, default=0.95, help="Target energy for SVD rank")
-    parser.add_argument("--k", type=int, default=None, help="Fixed rank K (optional, overrides energy)")
+    parser.add_argument("--seeds", type=int, nargs='+', default=[42], help="Random seeds (for Exp 3, 4)")
     args = parser.parse_args()
 
-    datasets = args.datasets
-    seeds = args.seeds
+    summary_data = []
 
-    for dataset in datasets:
-        print(f"\nProcessing Dataset: {dataset}")
-        
-        # Load data and SVD (Deterministic state)
+    for dataset in args.datasets:
+        print(f"\n{'='*60}")
+        print(f"PROCESS DATASET: {dataset}")
+        print(f"{'='*60}")
+
+        # Exp 1: SLP Verification
+        run_slp(dataset, target_energy=args.energy)
+
+        # Exp 2: Power-law Coupling
+        run_power_law(dataset, target_energy=args.energy)
+
+        # Exp 3: Beta Tracking (MCAR Injection)
+        # v3 implementation supports multiple datasets and has its own aggregation
+        run_beta_tracking(dataset, target_energy=args.energy)
+
+        # Exp 4: Targeted Subsampling
+        # v2 implementation supports seeds and has its own aggregation
+        run_beta_tracking_v2(dataset, target_energy=args.energy, n_seeds=len(args.seeds))
+
+        # Exp 5: Beta Estimation Ablation
+        # New implementation compares 5 methods with NDCG@10
+        run_ablation(dataset, target_energy=args.energy)
+
+        # Collect summary metrics (if result files exist)
         try:
-            loader, R, S, V, config = get_loader_and_svd(dataset, k=args.k, target_energy=args.energy)
+            # Result folders might have hyphens even if argument doesn't (or vice versa)
+            def find_latest_res(exp_type, ds_name):
+                base = f"aspire_experiments/output/{exp_type}"
+                search_params = [ds_name, ds_name.replace("ml", "ml-")]
+                # For ablation, check both versions
+                filenames = ["result_per_method.json", "result.json"] if exp_type == "ablation" else ["result.json"]
+                for p in search_params:
+                    for f_name in filenames:
+                        target = os.path.join(base, p, f_name)
+                        if os.path.exists(target): return target
+                return None
+
+            res1_path = find_latest_res("slp", dataset)
+            res2_path = find_latest_res("powerlaw", dataset)
+            # ablation uses result.json in the standalone script
+            res5_path = find_latest_res("ablation", dataset)
+            
+            if not res1_path or not res2_path or not res5_path:
+                raise FileNotFoundError(f"Missing results for {dataset}: slp:{res1_path}, pl:{res2_path}, abl:{res5_path}")
+
+            with open(res1_path, 'r') as f: r1 = json.load(f)
+            with open(res2_path, 'r') as f: r2 = json.load(f)
+            with open(res5_path, 'r') as f: r5 = json.load(f)
+            
+            # Huber is [0], HPO is [6], Direct is [4], Damped is [5] in the 7-method list
+            huber_res = next(m for m in r5["methods"] if "(1)" in m["method"])
+            hpo_res   = next(m for m in r5["methods"] if "(5)" in m["method"])
+            direct_res = next(m for m in r5["methods"] if "(6)" in m["method"])
+            damped_res = next(m for m in r5["methods"] if "(7)" in m["method"])
+            
+            summary_data.append({
+                "Dataset": dataset,
+                "SLP_Epsilon": r1["epsilon"],
+                "PowerLaw_Beta": r2["beta"],
+                "PowerLaw_R2": r2["r2"],
+                "Ablation_Huber_NDCG": huber_res["ndcg_all"],
+                "Ablation_Huber_Tail": huber_res["ndcg_tail"],
+                "Ablation_Huber_Cov": huber_res["coverage"],
+                "Ablation_Damped_NDCG": damped_res["ndcg_all"],
+                "Ablation_Direct_NDCG": direct_res["ndcg_all"],
+                "Ablation_HPO_NDCG": hpo_res["ndcg_all"],
+            })
         except Exception as e:
-            print(f"  Error loading dataset {dataset}: {e}")
-            continue
+            print(f"  Warning: Could not collect summary for {dataset}: {e}")
 
-        item_pops = np.array(R.sum(axis=0)).flatten()
-        base_paths = setup_output_dirs(dataset)
+    # Final Summary Table
+    if summary_data:
+        summary_dir = ensure_dir("aspire_experiments/output/summary")
+        df = pd.DataFrame(summary_data)
+        df.to_csv(os.path.join(summary_dir, "master_summary.csv"), index=False)
+        print(f"\n{'#'*60}")
+        print(f"MASTER SUMMARY")
+        print(f"{'#'*60}")
+        print(df.to_string(index=False))
+        print(f"\nFinal summary saved in {summary_dir}")
 
-        # Run Deterministic Experiments (Once per dataset)
-        experiment_1_slp(R, V, dataset, base_paths["slp"])
-        experiment_2_powerlaw(S, V, item_pops, dataset, base_paths["powerlaw"])
+    print("\nAll integrated experiments completed.")
 
-        # Run Randomized Experiments (Per seed)
-        for seed in seeds:
-            print(f"   Seed: {seed}")
-            # Set seeds
-            np.random.seed(seed)
-            torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(seed)
-
-            seed_tracking_dir = ensure_dir(os.path.join(base_paths["tracking_base"], f"seed_{seed}"))
-            experiment_3_tracking(R, K=min(50, V.shape[1]), dataset_name=dataset, out_dir=seed_tracking_dir)
-
-    print("\nAll experiments completed successfully.")
-
-if __name__ == "__main__":
-    main()
 if __name__ == "__main__":
     main()
