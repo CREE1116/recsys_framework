@@ -40,7 +40,7 @@ class LIRAVisualizer:
             metrics['K_Gram'] = get_stats('K_Gram', gram_tensor)
 
         metrics_path = os.path.join(save_dir, 'lira_metrics.json')
-        with open(metrics_path, 'w') as f:
+        with open(metrics_path, 'w', encoding='utf-8') as f:
             json.dump(metrics, f, indent=4)
 
         def plot_heatmap(matrix, name, filename, cmap='viridis', center=None, vmin=None, vmax=None):
@@ -97,7 +97,7 @@ class LIRAVisualizer:
             
         filter_w = filter_diag.detach().cpu().numpy()
 
-        with open(os.path.join(save_dir, f'{file_prefix}_metrics.json'), 'w') as f:
+        with open(os.path.join(save_dir, f'{file_prefix}_metrics.json'), 'w', encoding='utf-8') as f:
             json.dump(metrics, f, indent=4)
 
         plt.figure(figsize=(15, 5))
@@ -171,7 +171,7 @@ class LIRAVisualizer:
         else:
             cum_energy_ratio = cum_energy / (cum_energy[-1] + 1e-9)
             
-        with open(os.path.join(save_dir, f'{file_prefix}_metrics.json'), 'w') as f:
+        with open(os.path.join(save_dir, f'{file_prefix}_metrics.json'), 'w', encoding='utf-8') as f:
             json.dump(metrics, f, indent=4)
 
         plt.figure(figsize=(18, 5))
