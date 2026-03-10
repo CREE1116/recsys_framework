@@ -63,14 +63,14 @@ def gpu_cholesky_solve(G_np, rhs_np=None, device='auto', return_tensor=False):
             del L, G_t
             
             if return_tensor:
-                print(f"[gpu_accel] {dev.upper()} Cholesky Solve ({M}x{M}) [Tensor]: {time.time()-t0:.2f}s")
+                print(f"[gpu_accel] {dev.type.upper()} Cholesky Solve ({M}x{M}) [Tensor]: {time.time()-t0:.2f}s")
                 return X_t
                 
             result = X_t.cpu().numpy()
-            print(f"[gpu_accel] {dev.upper()} Cholesky Solve ({M}x{M}) [NumPy]: {time.time()-t0:.2f}s")
+            print(f"[gpu_accel] {dev.type.upper()} Cholesky Solve ({M}x{M}) [NumPy]: {time.time()-t0:.2f}s")
             return result
         except RuntimeError as e:
-            print(f"[gpu_accel] {dev.upper()} cholesky OOM ({e}), CPU fallback...")
+            print(f"[gpu_accel] {dev.type.upper()} cholesky OOM ({e}), CPU fallback...")
     
     res_np = _cpu_cholesky(G_np, rhs_np)
     return torch.from_numpy(res_np).float().to(dev) if return_tensor else res_np
@@ -87,12 +87,9 @@ def _cpu_cholesky(G_np, rhs_np, block_size=2000):
     from scipy.linalg import cho_factor, cho_solve
     
     # Factorize in-place to save memory (M x M x 4 bytes)
-    print(f"[gpu_accel] Factorizing {M}x{M} matrix in-place...")
     cho, low = cho_factor(G_np, lower=True, overwrite_a=True, check_finite=False)
-    
+
     if rhs_np is None:
-        # Memory-efficient inversion: avoid creating large identity matrix
-        print(f"[gpu_accel] Pre-allocating result matrix ({M}x{M})...")
         result = np.empty((M, M), dtype=np.float32)
         for i in range(0, M, block_size):
             end = min(i + block_size, M)
@@ -104,7 +101,7 @@ def _cpu_cholesky(G_np, rhs_np, block_size=2000):
             result[:, i:end] = cho_solve((cho, low), rhs_block, check_finite=False)
             del rhs_block
             gc.collect() # Force garbage collection of old blocks
-        print(f"[gpu_accel] CPU Cholesky Block-wise Inversion ({M}x{M}): {time.time()-t0:.2f}s")
+        print(f"[gpu_accel] CPU Cholesky inversion ({M}x{M}): {time.time()-t0:.2f}s")
     else:
         result = cho_solve((cho, low), rhs_np, check_finite=False)
         print(f"[gpu_accel] CPU Cholesky Solve ({M}x{rhs_np.shape[1]}): {time.time()-t0:.2f}s")
@@ -194,7 +191,7 @@ class GramEigenCacheManager(GlobalCacheManager):
     def put(cls, X_sparse, V, eigvals):
         key = cls._key(X_sparse)
         cls._cache[key] = (V, eigvals)
-        print(f"[gpu_accel] Eigen cache stored ({V.shape[0]}x{V.shape[0]}, {V.nbytes/1024**3:.1f}GB)")
+        print(f"[gpu_accel] Gram eigen cached (M={V.shape[0]}, {V.nbytes/1024**2:.0f} MB)")
     
     @classmethod
     def clear(cls):
@@ -295,8 +292,7 @@ class SVDCacheManager(GlobalCacheManager):
                 return torch.empty(M, 0), torch.empty(0), torch.empty(N, 0), 0.0
             matrix_id = self._generate_matrix_id(X_sparse)
         else:
-            matrix_id = "*" # Wildcard for glob
-            print(f"[SVD-Manager] X_sparse is None. Searching for best cache for dataset: {dataset_name}")
+            matrix_id = "*"  # Wildcard for glob
         
         dataset_name = dataset_name or "unknown"
         
@@ -331,7 +327,7 @@ class SVDCacheManager(GlobalCacheManager):
 
                 if best_file:
                     f_k, f_path = best_file
-                    print(f"[SVD-Manager] Cache hit: {dataset_name} (Loaded k{f_k} for req: k{k or 'energy'})")
+                    print(f"[SVD] Cache hit (k={f_k}, dataset={dataset_name})")
                     cp = torch.load(f_path, map_location='cpu')
                     u, s, v = cp['u'], cp['s'], cp['v']
                     
@@ -342,7 +338,7 @@ class SVDCacheManager(GlobalCacheManager):
                     
                     # Truncate if k is specified
                     if k is not None and len(s) > k:
-                        print(f"[SVD-Manager] Truncating cache: k{len(s)} -> k{k}")
+                        print(f"[SVD] Truncating: k={len(s)} -> k={k}")
                         u, s, v = u[:, :k], s[:k], v[:, :k]
                     
                     # Check energy if target_energy is specified
@@ -352,11 +348,11 @@ class SVDCacheManager(GlobalCacheManager):
                         mask = (cum_energy >= target_energy).nonzero()
                         if len(mask) > 0:
                             final_k = mask[0].item() + 1
-                            print(f"[SVD-Manager] Precision hit: k{len(s)} enough for {target_energy*100}% energy (needs k{final_k})")
+                            print(f"[SVD] Cache satisfied target energy (needs k={final_k})")
                             return u[:, :final_k], s[:final_k], v[:, :final_k], total_energy
                         else:
                             if k is None:
-                                print(f"[SVD-Manager] Cache k{len(s)} insufficient for {target_energy*100}% energy. Recomputing...")
+                                print(f"[SVD] Cache k={len(s)} insufficient for target energy. Recomputing...")
                             else:
                                 return u, s, v, total_energy # Return what we have if k was also fixed
                     
@@ -372,14 +368,16 @@ class SVDCacheManager(GlobalCacheManager):
         total_energy = float(np.sum(X_sparse.data ** 2))
         
         while True:
-            print(f"[SVD-Manager] Computing SVD (dataset={dataset_name}, matrix_id={matrix_id}, shape={X_sparse.shape}, k={compute_k})...")
+            print(f"[SVD] Computing (shape={X_sparse.shape}, k={compute_k}, dataset={dataset_name})...")
             start = time.time()
             min_dim = min(M, N)
-            if self.device.type == 'mps' and min_dim >= 5000:
+            if self.device.type == 'cuda' and min_dim >= 5000:
+                u, s, v = self._cuda_randomized_svd(X_sparse, compute_k)
+            elif self.device.type == 'mps' and min_dim >= 5000:
                 u, s, v = self._mps_randomized_svd(X_sparse, compute_k)
             else:
                 u, s, v = self._cpu_svd(X_sparse, compute_k)
-            print(f"[SVD-Manager] SVD done ({time.time()-start:.2f}s) for k={compute_k}")
+            print(f"[SVD] Done ({time.time()-start:.2f}s, k={compute_k})")
 
             # Check if energy target is met (only when target_energy is specified and k was not fixed)
             if target_energy is not None and k is None:
@@ -389,16 +387,15 @@ class SVDCacheManager(GlobalCacheManager):
                 mask = (cum_energy >= target_energy).nonzero()
                 if len(mask) > 0:
                     final_k = mask[0].item() + 1
-                    print(f"[SVD-Manager] Target {target_energy*100:.1f}% energy MET. Formatting to k={final_k}.")
+                    print(f"[SVD] Target energy met, k={final_k}")
                     u, s, v = u[:, :final_k], s[:final_k], v[:, :final_k]
                     break
                 elif compute_k >= min_dim - 1:
-                    print(f"[SVD-Manager] Reached max rank {compute_k} but energy is {cum_energy[-1].item()*100:.2f}%. Cannot extend further.")
+                    print(f"[SVD] Reached max rank k={compute_k}, energy={cum_energy[-1].item()*100:.1f}%")
                     break
                 else:
-                    # Extend compute_k and retry
                     new_k = min(min_dim - 1, compute_k * 2)
-                    print(f"[SVD-Manager] Target energy NOT met ({cum_energy[-1].item()*100:.2f}% < {target_energy*100:.1f}%). Expanding k: {compute_k} -> {new_k}")
+                    print(f"[SVD] Energy not met ({cum_energy[-1].item()*100:.1f}%), expanding k: {compute_k} -> {new_k}")
                     compute_k = new_k
             else:
                 # Target energy not tracked or k is manually fixed
@@ -448,6 +445,60 @@ class SVDCacheManager(GlobalCacheManager):
             return Y / Y.norm(dim=0, keepdim=True).clamp(min=1e-12)
 
     @torch.no_grad()
+    def _cuda_randomized_svd(self, X_sparse, k, n_iter=2, oversampling=10):
+        """CUDA-accelerated Randomized SVD (Halko et al., 2011) using native sparse CSR.
+
+        Unlike the MPS path (which batches due to memory/op constraints), CUDA supports
+        torch.sparse.mm on CSR tensors natively and efficiently, so no batching is needed.
+        Uses torch.linalg.qr for orthonormalization (stable on CUDA).
+        """
+        device = torch.device("cuda")
+        M, N = X_sparse.shape
+        q = min(k + oversampling, M, N)
+        if q < 1:
+            q = 1
+
+        print(f"[CUDA-SVD] k={k}, q={q}, n_iter={n_iter}")
+
+        # Build CUDA sparse CSR tensors from scipy sparse
+        X_coo = X_sparse.tocoo()
+        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
+        values = torch.from_numpy(X_coo.data.copy()).float()
+        X_t = torch.sparse_coo_tensor(
+            indices, values, (M, N), device=device
+        ).coalesce().to_sparse_csr()
+        Xt_t = torch.sparse_coo_tensor(
+            torch.stack([indices[1], indices[0]]), values,
+            (N, M), device=device
+        ).coalesce().to_sparse_csr()
+
+        # Phase 1: Random sketch
+        G = torch.randn(N, q, device=device, dtype=torch.float32)
+        Y = torch.sparse.mm(X_t, G)        # (M, q)
+        Q, _ = torch.linalg.qr(Y)          # (M, q), orthonormal columns
+
+        # Phase 2: Power iterations (improves approximation quality)
+        for i in range(n_iter):
+            Z = torch.sparse.mm(Xt_t, Q)   # (N, q)
+            Q_z, _ = torch.linalg.qr(Z)    # (N, q)
+            Y = torch.sparse.mm(X_t, Q_z)  # (M, q)
+            Q, _ = torch.linalg.qr(Y)      # (M, q)
+
+        # Phase 3: Project into low-dimensional space
+        B = torch.sparse.mm(Xt_t, Q).t()   # (q, N)
+
+        # Phase 4: Small dense SVD on projected matrix
+        U_hat, S_vals, Vh = torch.linalg.svd(B, full_matrices=False)  # (q,q), (q,), (q,N)
+
+        # Recover full-space singular vectors
+        U = torch.mm(Q, U_hat)             # (M, q)
+        V = Vh.t()                         # (N, q)
+
+        U, S_vals, V = U[:, :k].cpu(), S_vals[:k].cpu(), V[:, :k].cpu()
+        print(f"[CUDA-SVD] Done! σ range: [{S_vals[-1]:.4f}, {S_vals[0]:.4f}]")
+        return U, S_vals, V
+
+    @torch.no_grad()
     def _mps_randomized_svd(self, X_sparse, k, n_iter=2, oversampling=10, batch_size=2000):
         """MPS-accelerated Randomized SVD (Halko et al., 2011)"""
         device = torch.device("mps")
@@ -463,7 +514,6 @@ class SVDCacheManager(GlobalCacheManager):
         Q = self._orthonormalize(Y, device)
         
         for i in range(n_iter):
-            print(f"[MPS-SVD] Power iteration {i+1}/{n_iter}...")
             Z = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device)
             Q_z = self._orthonormalize(Z, device)
             Y = self._sparse_mm_batched(X_sparse, Q_z, batch_size, device)
@@ -471,11 +521,9 @@ class SVDCacheManager(GlobalCacheManager):
             del Z, Q_z
         
         # Phase 2: Projection (B = Q^T @ A)
-        print(f"[MPS-SVD] Projection...")
         B = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device).t()
-        
+
         # Phase 3: Small SVD via eigen trick
-        print(f"[MPS-SVD] Small matrix SVD ({q}x{q})...")
         C = torch.mm(B, B.t())
         try:
             S2, U_hat = torch.linalg.eigh(C.cpu())

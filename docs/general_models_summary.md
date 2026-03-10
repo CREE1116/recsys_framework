@@ -1,106 +1,137 @@
-# RecSys Framework General Models 정리
+# Models Reference
 
-이 문서는 `src/models/general/`에 구현된 일반적인 추천 시스템 베이스라인 모델들의 특징과 구조를 정리한 것입니다.
-
----
-
-## 1. 전통적 매트릭스 분해 (Matrix Factorization)
-
-### **MF (Matrix Factorization)**
-
-- **위치**: `src/models/general/mf.py`
-- **특징**:
-  - 가장 기본적인 Latent Factor Model.
-  - 유저와 아이템을 동일한 차원의 벡터로 임베딩하고, 내적(Dot Product)을 통해 선호도를 예측.
-  - $Score = u \cdot i$
-
-### **NeuMF (Neural Matrix Factorization)**
-
-- **위치**: `src/models/general/neumf.py`
-- **특징**:
-  - MF(선형 결합)와 MLP(비선형 결합)를 결합한 모델 (NCF 프레임워크).
-  - GMF(Generalized Matrix Factorization) 파트와 MLP 파트가 각각의 임베딩을 갖고 최종단에서 합쳐짐.
-  - 비선형적인 유저-아이템 상호작용을 포착 가능.
-
-### **SoftplusMF**
-
-- **위치**: `src/models/general/softplusmf.py`
-- **특징**:
-  - MF의 예측값에 **Softplus** 활성화 함수를 적용.
-  - 점수가 항상 양수(Positive)가 되도록 강제하며, Energy-based Model의 특성을 가짐.
-  - CSAR와의 공정한 비교를 위한 베이스라인으로 사용됨.
+This document describes the models implemented in `src/models/`.
 
 ---
 
-## 2. 그래프 신경망 (Graph Neural Networks)
+## Closed-form Models
 
-### **LightGCN**
+### EASE
 
-- **위치**: `src/models/general/lightgcn.py`
-- **특징**:
-  - NGCF(Neural Graph Collaborative Filtering)에서 불필요한 비선형 활성화와 Feature Transformation을 제거하여 경량화한 모델.
-  - 이웃 노드의 임베딩을 단순히 가중 평균(Weighted Sum)하여 전파(Propagate).
-  - **SOTA (State-of-the-Art)** 급의 성능을 보여주는 강력한 베이스라인.
-  - Layer 수($L$)에 따라 High-order Connectivity를 학습.
+**File:** `src/models/general/ease.py`
+
+Embarrassingly Shallow Autoencoder. Computes an item-item weight matrix `B` as a closed-form ridge regression solution:
+
+```
+B = (X^T X + λI)^{-1} X^T X,  diag(B) = 0
+```
+
+Scores are `X @ B`. No training epochs. Fast and surprisingly competitive on sparse datasets. Uses `gpu_gram_solve` for GPU-accelerated computation.
+
+### LIRA
+
+**File:** `src/models/csar/LIRA.py`, layer: `src/models/csar/LIRALayer.py::LIRALayer`
+
+Linear Interest covariance Ridge Analysis. Computes a dual ridge regression via user-user Gram matrix:
+
+```
+K = X X^T,  CX = (K + λI)^{-1} X,  S = X^T CX
+```
+
+Scores are `X @ S`. Dense computation; suitable for small-to-medium datasets.
+
+### LightLIRA
+
+**File:** `src/models/csar/LightLIRA.py`, layer: `LIRALayer.py::LightLIRALayer`
+
+SVD-based spectral approximation of LIRA. Avoids the `n_users x n_users` matrix inversion by working in the low-rank SVD subspace:
+
+```
+filter = σ^2 / (σ^2 + λ),  score = (X V) * filter @ V^T
+```
+
+O(nk) inference. Suitable for large datasets. Uses `SVDCacheManager` for SVD caching.
+
+### ASPIRE
+
+**File:** `src/models/csar/ASPIRE.py`, layer: `ASPIRELayer.py::ASPIRELayer`
+
+Popularity-debiased item similarity model with MNAR (Missing Not At Random) correction. Estimates exposure bias parameters and applies a Gamma correction to the item interaction matrix before computing similarities. Uses SVD-based low-rank approximation.
+
+### ItemKNN
+
+**File:** `src/models/general/item_knn.py`
+
+Memory-based collaborative filtering. Precomputes a cosine item-item similarity matrix and scores items based on the user's interaction history weighted by similarity. Simple but often competitive.
+
+### Most Popular
+
+**File:** `src/models/general/most_popular.py`
+
+Non-personalized baseline. Recommends the globally most interacted items to all users. Used as a lower-bound reference.
+
+### Pure SVD
+
+**File:** `src/models/general/pure_svd.py`
+
+Recommendation via truncated SVD of the interaction matrix. Projects users into the latent space and ranks items by projection score.
+
+### SVD-EASE
+
+**File:** `src/models/general/svd_ease.py`
+
+EASE approximated using SVD: applies the spectral filter in the low-rank SVD subspace instead of solving the full Gram matrix. Scales better than EASE for large item sets.
+
+### SLIM
+
+**File:** `src/models/general/slim.py`
+
+Sparse Linear Method. Learns a sparse item-item weight matrix via coordinate descent with L1+L2 regularization. Can be slow to compute but produces interpretable sparse weights.
+
+### GF-CF
+
+**File:** `src/models/general/gf_cf.py`
+
+Graph-based closed-form recommendation. Applies a graph frequency filter to the interaction matrix using SVD.
 
 ---
 
-## 3. 선형 및 오토인코더 (Linear & AutoEncoders)
+## Gradient-based Models
 
-### **EASE (Embarrassingly Shallow Autoencoders)**
+### MF (Matrix Factorization)
 
-- **위치**: `src/models/general/ease.py`
-- **특징**:
-  - 학습(Gradient Descent)이 없는 **Closed-form Solution** 모델.
-  - 아이템 간의 가중치 행렬 $B$를 역행렬 연산으로 한 번에 계산.
-  - 희소(Sparse)한 데이터셋에서 딥러닝 모델들을 압도하는 성능을 자주 보여줌.
-  - Training Epoch가 필요 없음 (0 Epoch).
+**File:** `src/models/general/mf.py`
 
-### **Multi-VAE (Variational Autoencoder)**
+User and item embeddings trained with BPR or SampledSoftmax loss. Prediction: `u · i^T`. The baseline for latent factor models.
 
-- **위치**: `src/models/general/multivae.py`
-- **특징**:
-  - 생성 모델(Generative Model)인 VAE를 협업 필터링에 적용.
-  - 입력으로 유저의 전체 이력(Bag-of-Words)을 받고, 이를 재구성하도록 학습.
-  - **Multinomial Likelihood**를 사용하여 Implicit Feedback 데이터에 강함.
-  - 비선형적인 유저 선호도 분포를 모델링.
+### NeuMF
+
+**File:** `src/models/general/neumf.py`
+
+NCF-style model combining GMF (generalized MF) and MLP paths. Each path has its own embeddings; outputs are concatenated before the final prediction layer.
+
+### LightGCN
+
+**File:** `src/models/general/lightgcn.py`
+
+Graph convolution collaborative filtering without nonlinear activation or feature transformation. Aggregates neighbor embeddings via normalized weighted sum across L layers. Strong baseline for graph-based recommendation.
+
+### Multi-VAE
+
+**File:** `src/models/general/multivae.py`
+
+Variational autoencoder trained with multinomial likelihood. Input is the full user interaction history (bag-of-words); the model reconstructs it via a stochastic latent representation. Performs well on datasets with dense interaction histories.
+
+### ProtoMF
+
+**File:** `src/models/general/protomf.py`
+
+Prototype-based MF. Users and items are represented as weighted combinations of K shared prototype vectors with orthogonality regularization. Provides some interpretability via prototype assignments.
+
+### UltraGCN
+
+**File:** `src/models/general/ultragcn.py`
+
+Constraint-based graph CF that approximates infinite-layer graph convolution. Uses a precomputed constraint matrix over the user-item graph to regularize the embedding learning.
+
+### SimGCL
+
+**File:** `src/models/general/simgcl.py`
+
+Graph contrastive learning model that generates augmented views by adding uniform noise to graph embeddings and applies InfoNCE to align them.
 
 ---
 
-## 4. 프로토타입 및 앵커 기반 (Prototype & Anchor)
+## Loss Functions
 
-### **ProtoMF (Prototype-based Matrix Factorization)**
-
-- **위치**: `src/models/general/protomf.py`
-- **특징**:
-  - 유저와 아이템을 직접 임베딩하는 대신, $K$개의 **프로토타입(Prototype)** 벡터들의 가중합으로 표현.
-  - "이 유저는 '액션 영화' 프로토타입과 유사하다"와 같은 설명 가능성(Explainability) 제공.
-  - 프로토타입 간의 직교성(Orthogonality)을 강제하여 표현의 다양성 확보.
-
-### **ACF (Anchor-based Collaborative Filtering)**
-
-- **위치**: `src/models/general/ACF_NLL.py`
-- **변형**: `ACF_NLL` (NLL Loss), `ACF_BPR` (BPR Loss)
-- **특징**:
-  - ProtoMF와 유사하게 **앵커(Anchor)** 벡터를 사용하여 임베딩을 재구성.
-  - **Exclusiveness Loss**: 아이템이 소수의 앵커에만 속하게 함.
-  - **Inclusiveness Loss**: 모든 앵커가 골고루 사용되게 함.
-
----
-
-## 5. 통계 및 기타 (Statistical & Others)
-
-### **MostPopular**
-
-- **위치**: `src/models/general/most_popular.py`
-- **특징**:
-  - 단순히 "가장 많이 소비된 아이템"을 추천.
-  - 개인화가 전혀 없지만, 추천 시스템 성능 평가의 기준점(Lower Bound) 역할을 함.
-
-### **ItemKNN**
-
-- **위치**: `src/models/general/item_knn.py`
-- **특징**:
-  - 메모리 기반 협업 필터링.
-  - 아이템 간의 코사인 유사도를 미리 계산해두고, 유저가 소비한 아이템과 유사한 아이템을 추천.
-  - 전통적이지만 여전히 강력한 성능을 내는 베이스라인.
+See [loss_functions_summary.md](loss_functions_summary.md) for details on `BPRLoss`, `SampledSoftmaxLoss`, `MSELoss`, and `DynamicMarginBPRLoss`.

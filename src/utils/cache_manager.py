@@ -56,10 +56,13 @@ class CacheRegistry:
             mgr.invalidate()
 
     def log_status(self):
-        """등록된 캐시 매니저 상태 출력"""
+        """Print aggregated cache summary: entry count and total size."""
         if not self._managers:
             return
-        print(f"[CacheRegistry] {len(self._managers)} cache manager(s):")
-        for name, mgr in self._managers.items():
+        total_entries = 0
+        total_mb = 0.0
+        for mgr in self._managers.values():
             s = mgr.summary()
-            print(f"  [GLOBAL] {name}: {s}")
+            total_entries += s.get('files', 0) + s.get('entries', 0)
+            total_mb += s.get('size_mb', 0)
+        print(f"[Cache] {total_entries} entries, ~{total_mb:.0f} MB on disk")

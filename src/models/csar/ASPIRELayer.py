@@ -63,9 +63,7 @@ class MNARGammaCacheManager(GlobalCacheManager):
 
     def summary(self):
         files = _glob.glob(os.path.join(self._cache_dir, "mnar_gamma_*.json"))
-        return {"type": "MNAR_Gamma",
-                "cached_datasets": list(self._mem_cache.keys()),
-                "files": len(files)}
+        return {"type": "MNAR_Gamma", "entries": len(self._mem_cache), "files": len(files)}
 
     def invalidate(self, key=None):
         if key:
@@ -642,10 +640,10 @@ class ChebyASPIRELayer(nn.Module):
         L = _GramCache.get(dataset_name, device=device)
         if L is None and n <= 15000:
             print(f"[ChebyASPIRELayer] Gram 행렬 계산 중 (n={n})...")
-            L = torch.sparse.mm(
-                self.Xt_torch_csr.to(self.sparse_device),
-                self.X_torch_csr.to_dense().to(self.sparse_device),
-            ).to(device)
+            # X_dense.t() @ X_dense 가 cuBLAS(CUDA) / Accelerate(MPS) 최적화 경로
+            X_dense = self.X_torch_csr.to_dense().to(device)
+            L = torch.mm(X_dense.t(), X_dense)
+            del X_dense
             if dataset_name:
                 _GramCache.put(dataset_name, L)
 
