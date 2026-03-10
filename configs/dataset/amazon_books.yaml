@@ -1,6 +1,6 @@
 # 데이터셋 설정
 dataset_name: "amazon_books"
-data_path: "/Users/leejongmin/code/recsys_framework/data/amazon_books/Amazon_Books.inter"
+data_path: "./data/amazon_books/Amazon_Books.inter"
 separator: "\t"
 columns: ["user_id", "item_id", "rating", "timestamp"]
 

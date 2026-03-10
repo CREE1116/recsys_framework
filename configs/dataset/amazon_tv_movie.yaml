@@ -1,6 +1,6 @@
 # Amazon Movies & TV
 dataset_name: "amazon_tv_movie"
-data_path: "/Users/leejongmin/code/recsys_framework/data/amazon_tv_movie/Movies_and_TV.csv"
+data_path: "./data/amazon_tv_movie/Movies_and_TV.csv"
 separator: ","
 columns: ["item_id", "user_id", "rating", "timestamp"]
 

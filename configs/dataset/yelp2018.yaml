@@ -1,6 +1,6 @@
 # Yelp2018 Dataset Config (Optimized Subset for EASE)
 dataset_name: "yelp2018"
-data_path: "/Users/leejongmin/code/recsys_framework/data/yelp2018/yelp2018_subset.txt"
+data_path: "./data/yelp2018/yelp2018_subset.txt"
 separator: "\t"
 has_header: True
 # user_id item_id rating timestamp useful funny cool review_id

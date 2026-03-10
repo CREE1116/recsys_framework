@@ -3,7 +3,7 @@
 # Place dataset configs in configs/dataset/ (gitignored)
 
 dataset_name: "ml-100k"
-data_path: "/path/to/your/data/ml100k/u.data" # ← 로컬 경로로 수정
+data_path: "./data/ml100k/u.data" # ← 로컬 경로로 수정
 separator: '\t'
 columns: ["user_id", "item_id", "rating", "timestamp"]
 
