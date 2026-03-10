@@ -210,10 +210,10 @@ class DataLoader:
             cache_file_name = f"{self.config['dataset_name']}_presplit.pkl"
             self.cache_file = os.path.join(self.data_cache_path, cache_file_name)
             if os.path.exists(self.cache_file):
-                print(f"Loading processed data from cache: {self.cache_file}")
+                print(f"[DataLoader] Cache hit")
                 self._load_from_cache()
             else:
-                print("Processing presplit data and saving to cache...")
+                print("[DataLoader] Processing presplit data...")
                 self._process_presplit_data()
         else:
             rt = self.config.get('rating_threshold', 'none')
@@ -229,10 +229,10 @@ class DataLoader:
             self.cache_file = os.path.join(self.data_cache_path, cache_file_name)
 
             if os.path.exists(self.cache_file):
-                print(f"Loading processed data from cache: {self.cache_file}")
+                print(f"[DataLoader] Cache hit")
                 self._load_from_cache()
             else:
-                print("Processing data and saving to cache...")
+                print("[DataLoader] Processing data...")
                 self._process_data()
 
     def _process_presplit_data(self):
@@ -346,7 +346,7 @@ class DataLoader:
             data_to_cache['valid_uni99_negatives'] = self.valid_uni99_negatives
         with open(self.cache_file, 'wb') as f:
             pickle.dump(data_to_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
-        print(f"[DataLoader] Cache saved: {self.cache_file}")
+        print(f"[DataLoader] Cache saved")
 
     def _load_from_cache(self):
         with open(self.cache_file, 'rb') as f:

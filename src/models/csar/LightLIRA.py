@@ -83,25 +83,18 @@ class LightLIRA(BaseModel):
         self._log("="*60)
         
         # Always perform visualization (Lightweight vs Heavyweight controlled by visualize flag)
-        self._log("Precomputing Gram Matrix...")
         try:
-            # Use SVDCacheManager to resolve analysis path
-            from src.utils.gpu_accel import SVDCacheManager
             analysis_dir = SVDCacheManager.get_analysis_dir(self.config)
             os.makedirs(analysis_dir, exist_ok=True)
-            self._log(f"Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
-            
-            # Use 'visualize' config to control heavyweight heatmaps
+            self._log(f"Analysis directory: {os.path.abspath(analysis_dir)}")
             self.lira_layer.visualize_matrices(
-                X_sparse=self.train_matrix_csr, 
+                X_sparse=self.train_matrix_csr,
                 save_dir=analysis_dir,
                 lightweight=not self.visualize
             )
             self._log(f"Analysis results saved to {analysis_dir}")
         except Exception as e:
             self._log(f"Visualization skipped: {e}")
-            import traceback
-            traceback.print_exc()
         self._log("="*60 + "\n")
 
     def get_embeddings(self):

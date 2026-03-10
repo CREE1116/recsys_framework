@@ -1,94 +1,77 @@
-# 평가 프로토콜 요약
+# Evaluation Protocol
 
-## 📊 데이터 분할
+## Data Splitting
 
-| 설정                     | 값                  | 설명                                  |
-| ------------------------ | ------------------- | ------------------------------------- |
-| **분할 방식**            | Leave-One-Out (LOO) | 시간순 마지막 상호작용 → 테스트       |
-| **Tie-breaker**          | item_id 기준        | 동일 timestamp 시 결정적 분할         |
-| **평점 임계값**          | ≥ 4                 | 4점 이상만 positive 상호작용으로 간주 |
-| **최소 유저 상호작용**   | 5개                 | 콜드 스타트 유저 제외                 |
-| **최소 아이템 상호작용** | 5개                 | 콜드 스타트 아이템 제외               |
-
----
-
-## 🎯 Negative Sampling
-
-| 설정            | 값                     | 설명                                         |
-| --------------- | ---------------------- | -------------------------------------------- |
-| **제외 대상**   | `train_user_history`만 | RecBole 표준 (테스트 아이템도 negative 가능) |
-| **샘플링 방식** | 개별 독립 샘플링       | 배치 내 candidates pool 공유 안 함           |
-| **기본 전략**   | Uniform                | 인기도 bias 없음 (popularity 설정 가능)      |
+| Setting | Value | Description |
+|---|---|---|
+| Split method | Leave-One-Out (LOO) | Last interaction per user → test set |
+| Tie-breaker | item_id | Deterministic split when timestamps are equal |
+| Rating threshold | ≥ 4 | Only interactions rated 4 or above are treated as positive |
+| Min user interactions | 5 | Users with fewer interactions are excluded |
+| Min item interactions | 5 | Items with fewer interactions are excluded |
 
 ---
 
-## 📈 평가 방법
+## Negative Sampling
 
-| 설정          | 값             | 설명                                               |
-| ------------- | -------------- | -------------------------------------------------- |
-| **최종 평가** | `full`         | 전체 아이템 랭킹                                   |
-| **검증**      | `full_subset`  | 일부 유저로 빠른 검증                              |
-| **마스킹**    | Train 아이템만 | 랭킹에서 학습 아이템 제외 (**테스트 타겟은 포함**) |
-
----
-
-## 📐 평가 지표
-
-### 정확도
-
-- **NDCG@K**: 정규화된 할인 누적 이득
-- **HitRate@K**: 적중률 (단일 정답 기준 Recall)
-- K 값: 5, 10, 20, 50
-
-### 다양성 & 공정성
-
-- **Coverage**: 추천된 전체 아이템 비율
-- **ILD**: 리스트 내 다양성 (임베딩 거리 기반)
-- **Entropy**: 추천 엔트로피
-- **GiniIndex**: 분포 공정성
-- **LongTailCoverage**: 하위 20% 인기도 아이템 커버리지
-
-### 신규성
-
-- **Novelty**: Self-information 기반 신규성
-
-### 임베딩 품질
-
-- **GiniIndex_emb**: 임베딩 norm 분포 공정성
+| Setting | Value | Description |
+|---|---|---|
+| Exclusion set | Train history only | Test items may appear as negatives (RecBole standard) |
+| Sampling strategy | Independent uniform | No shared candidate pool within a batch |
 
 ---
 
-## ⚙️ 통일된 하이퍼파라미터
+## Evaluation Methods
 
-| 파라미터              | 값     |
-| --------------------- | ------ |
-| `batch_size`          | 1024   |
-| `early_stop_patience` | 40     |
-| `l2_regularization`   | 0.0001 |
-| `optimizer`           | AdamW  |
-| `learning_rate`       | 0.001  |
+| Method | Description |
+|---|---|
+| `full` | Score all items; mask train interactions; extract top-K |
+| `sampled` | Score all items on a random subset of users |
+| `uni99` | 1 positive + 99 uniform random negatives per user |
 
----
-
-## 🔧 프레임워크 설정
-
-| 설정          | 값                              |
-| ------------- | ------------------------------- |
-| `main_metric` | NDCG@10                         |
-| `epochs`      | 500 (최대)                      |
-| `device`      | auto (선호도: Cuda > MPS > CPU) |
-
-> 💡 **Apple Silicon (MPS) 최적화**:
-> 전체 평가 시(수만 개의 아이템에 대해 스코어링) PyTorch MPS 백엔드를 적극 활용하여, 메모리 OOM 없이 배치 단위로 빠르게 Top-K 랭킹을 추출합니다.
+Train and validation interactions are masked from the ranking at test time. The test item itself is not masked.
 
 ---
 
-## ✅ 준수 체크리스트
+## Metrics
 
-- [x] LOO (시간순)
-- [x] 평가 시 Train/Val 제외
-- [x] 전체 아이템 랭킹 (Full Ranking)
-- [x] 인기도 bias 없는 Negative Sampling (기본값)
-- [x] 평점 ≥ 4 필터링
-- [x] 다양성 관련 지표 포함
-- [x] RecBole 표준 Negative Sampling
+**Accuracy:**
+- `NDCG@K` — Normalized Discounted Cumulative Gain
+- `HitRate@K` — 1 if the test item appears in top-K
+- `Recall@K` — Fraction of test items in top-K (equal to HitRate for LOO)
+- `Precision@K`
+- K values: 5, 10, 20, 50
+
+**Diversity and fairness:**
+- `Coverage@K` — Fraction of all items that appear in at least one recommendation list
+- `ILD@K` — Intra-List Diversity (mean pairwise distance within recommendation lists, based on item embeddings)
+- `GiniIndex@K` — Gini coefficient of item recommendation frequency
+- `LongTailCoverage@K` — Coverage restricted to the bottom 20% popularity items
+- `LongTailRatio@K` — Fraction of recommendations that are long-tail items
+
+**Novelty:**
+- `Novelty@K` — Self-information-based novelty (higher for less popular items)
+
+---
+
+## Default Hyperparameters
+
+| Parameter | Value |
+|---|---|
+| `batch_size` | 1024 |
+| `early_stop_patience` | 40 |
+| `embedding_l2` | 1e-4 |
+| `optimizer` | AdamW |
+| `lr` | 0.001 |
+| `main_metric` | NDCG@10 |
+| `max_epochs` | 500 |
+| `device` | auto (CUDA > MPS > CPU) |
+
+---
+
+## HitRate vs. Recall
+
+Under LOO splitting (one test item per user), HitRate and Recall are identical. Under ratio-based splitting (multiple test items per user), they differ:
+
+- **HitRate@K**: 1 if at least one test item is in top-K
+- **Recall@K**: (# test items in top-K) / (# total test items)

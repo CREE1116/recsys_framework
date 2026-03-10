@@ -6,10 +6,8 @@ import numpy as np
 from tqdm import tqdm
 import collections
 import json
-import time
 import copy
-import torch.nn as nn
-from .evaluation import evaluate_metrics  # 함수 임포트
+from .evaluation import evaluate_metrics
 from .utils import plot_results
 
 def _convert_numpy_types_to_python_types(obj):
@@ -40,36 +38,19 @@ class Trainer:
         self.device = model.device
         self.model.to(self.device)
 
-        # 캐시 레지스트리 참조
         self._cache_registry = getattr(model, 'cache_registry', None)
-
-        self.output_path = getattr(self.model, 'output_path', None)
-        if self.output_path is None:
-            # Fallback if model doesn't have it (should not happen with BaseModel)
-            model_name = self.config['model']['name']
-            dataset_name = self.config['dataset_name']
-            run_name = self.config.get('run_name')
-            base_path = os.path.join('trained_model', dataset_name)
-            if 'output_path_override' in self.config:
-                self.output_path = self.config['output_path_override']
-            elif run_name and run_name != 'default':
-                self.output_path = os.path.join(base_path, f"{model_name}__{run_name}")
-            else:
-                self.output_path = os.path.join(base_path, model_name)
-
+        self.output_path = model.output_path
         os.makedirs(self.output_path, exist_ok=True)
 
         self.best_metric_value = -float('inf')
         self.best_val_metrics = {}
-        self.best_epoch = -1 # Best achieved epoch (1-indexed for training, -1 for non-trainable)
+        self.best_epoch = -1
 
         with open(os.path.join(self.output_path, 'config.yaml'), 'w') as f:
             config_to_save = copy.deepcopy(self.config)
             config_to_save.pop('run_name', None)
             yaml.dump(config_to_save, f, default_flow_style=False)
 
-        # BUG FIX: 학습 관련 설정은 'train' 블록이 있을 때만 초기화
-        # 비학습 모델도 안전하게 기본값 보유
         self.is_trainable = 'train' in self.config
         self.train_losses = collections.defaultdict(list)
         self.eval_metrics = collections.defaultdict(list)
@@ -91,22 +72,18 @@ class Trainer:
             self.validation_loader = self.data_loader.get_validation_loader(self.config['train']['batch_size'] * 2)
             print("Data loaders initialized.")
 
-            # [추가] AMP 가속 (cuda/mps 모두 GradScaler + autocast 지원, torch>=2.9)
             self.use_amp = self.config['train'].get('use_amp', True) and self.device.type in ['cuda', 'mps']
             self.scaler = torch.amp.GradScaler(self.device.type) if self.use_amp else None
 
     def _get_optimizer(self, optimizer_name):
-        # 이 메소드는 self.config['train']이 존재할 때만 호출됨
         lr = self.config['train'].get('lr', self.config['train'].get('learning_rate'))
         if lr is None:
-             raise ValueError("Learning rate not found in config. Please specify 'lr' or 'learning_rate'.")
+            raise ValueError("Learning rate not found in config. Please specify 'lr' or 'learning_rate'.")
         lr = float(lr)
 
-        # [Strict Split] MLP/Linear 전용 Weight Decay (weight_decay 키워드만 사용)
         weight_decay = float(self.config['train'].get('weight_decay', 0.0))
 
-        # [수정] nn.Embedding 파라미터는 배치 단위 L2 규제를 위해 weight_decay에서 제외
-        # 이름에 'embedding'이 들어가는 모든 파라미터를 규제 대상에서 제외
+        # nn.Embedding params use per-batch L2 reg; exclude from weight_decay
         no_decay_params = []
         decay_params = []
         for name, param in self.model.named_parameters():
@@ -138,7 +115,6 @@ class Trainer:
         - train 설정이 있으면 SGD 학습 루프 실행
         - 없으면 비학습 모델로 간주하고 바로 최종 평가
         """
-        # 1. fit() 호출 (모델이 지원하는 경우) 및 캐시된 모델 재사용
         best_model_path = os.path.join(self.output_path, "best_model.pt")
         if self.config.get('skip_fit', False) and os.path.exists(best_model_path):
             print(f"Loading cached model from {best_model_path} and skipping fit/train.")
@@ -147,25 +123,19 @@ class Trainer:
             print(f"Model has 'fit' method. Calling fit()...")
             self.model.fit(self.data_loader)
 
-        # 캐시 상태 로깅
         if self._cache_registry:
             self._cache_registry.log_status()
 
-        # 2. 학습 루프 또는 바로 평가
         if self.is_trainable:
             return self._train_loop()
         else:
             print("Non-trainable model. Proceeding directly to evaluation...")
-            # 비학습 모델도 hpo_mode이면 test 생략
             return self.evaluate(is_final_evaluation=not self.config.get('hpo_mode', False))
 
     def _train_loop(self):
-        """SGD 학습 루프 (내부용)"""
         print(f"Training started on device: {self.device}")
-        
-        
+
         for epoch in range(self.epochs):
-            # Optional: Curriculum learning callback
             if hasattr(self.model, 'on_epoch_start'):
                 self.model.on_epoch_start(epoch)
 
@@ -187,8 +157,7 @@ class Trainer:
                         batch_data['neg_item_id'] = hard_neg_items
 
                 self.optimizer.zero_grad()
-                
-                # AMP Autocast 적용 (cuda/mps 네이티브, torch>=2.9)
+
                 with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
                     losses_tuple, params_to_log = self.model.calc_loss(batch_data)
                     total_loss_for_backward = sum(losses_tuple)
@@ -201,14 +170,13 @@ class Trainer:
                     total_loss_for_backward.backward()
                     self.optimizer.step()
 
-                # [추가] 모델별 학습 스텝 후처리 (예: EMA 업데이트)
                 if hasattr(self.model, 'on_step_end'):
                     self.model.on_step_end()
 
                 epoch_losses['total_loss'] += total_loss_for_backward.item()
                 for i, l in enumerate(losses_tuple):
                     epoch_losses[f'loss_{i}'] += l.item()
-                
+
                 if params_to_log:
                     for k, v in params_to_log.items():
                         epoch_params[k].append(v)
@@ -224,20 +192,19 @@ class Trainer:
             if epoch_params:
                 for k, v_list in epoch_params.items():
                     self.tracked_params[k].append(np.mean(v_list))
-            
+
             eval_config_for_val = self.config.get('evaluation', {})
             main_metric = eval_config_for_val.get('main_metric', 'NDCG')
             main_metric_k = eval_config_for_val.get('main_metric_k', 10)
-            
-            # [최적화] 미리 생성된 검증 로더를 전달
+
             current_metrics = self.evaluate(
                 loader=self.validation_loader,
                 is_final_evaluation=False
             )
-            
+
             for k, v in current_metrics.items():
                 self.eval_metrics[k].append(v)
-            
+
             main_metric_name = f"{main_metric}@{main_metric_k}"
             main_metric_value = current_metrics.get(main_metric_name, 0.0)
             print(f"Epoch {epoch+1}/{self.epochs} - Loss: {avg_total_loss:.4f} (Main: {avg_main_loss:.4f}) - Val {main_metric_name}: {main_metric_value:.4f}")
@@ -252,42 +219,37 @@ class Trainer:
             print(f"Best model loaded from {best_model_path}")
         else:
             print("[Warning] Best model checkpoint not found. Using last epoch model.")
-        
-        # [수정] HPO 중이면 TEST 평가 생략하고 베스트 검증 지표 반환
+
         if self.config.get('hpo_mode', False):
             print("[HPO-Mode] Skipping TEST evaluation. Using best validation metrics.")
             if self.best_val_metrics:
                 return self.best_val_metrics
             return self.evaluate(is_final_evaluation=False, update_best_snapshot=True)
-            
+
         current_metrics = self.evaluate(is_final_evaluation=True)
-        
         self._visualize_results()
         return current_metrics
 
     def evaluate(self, loader=None, is_final_evaluation=False, update_best_snapshot=False):
         self.model.eval()
-        
+
         eval_config = self.config.get('evaluation', {})
-        
+
         if loader is None:
             print("Creating a new loader for evaluation...")
             eval_batch_size = eval_config.get('batch_size')
             if eval_batch_size is None:
                 eval_batch_size = self.config.get('train', {}).get('batch_size', 512) * 2
-            
+
             if is_final_evaluation:
                 loader = self.data_loader.get_final_loader(eval_batch_size)
-            else: 
+            else:
                 loader = self.data_loader.get_validation_loader(eval_batch_size)
 
-        # 평가에 사용할 설정 결정
         if is_final_evaluation:
-            # 최종 평가 시에는 YAML에 정의된 evaluation 블록을 기반으로 method 명시
             config_for_eval = eval_config.copy()
             config_for_eval['method'] = eval_config.get('final_method', 'full')
-        else: # Validation during training
-            # 학습 중 검증 시에는 main_metric만 계산
+        else:
             config_for_eval = {
                 'method': eval_config.get('validation_method', 'full'),
                 'metrics': [eval_config.get('main_metric', 'NDCG')],
@@ -303,48 +265,39 @@ class Trainer:
             m_val = current_metrics.get(m_name, 0.0)
             if m_val >= self.best_metric_value:
                 self.best_metric_value = m_val
-                # [수정] 학습 가능한 모델은 이미 _check_early_stopping에서 에포크가 기록됨. 
-                # 비학습 모델(EASE 등)이나 아직 기록이 없는 경우에만 0으로 설정.
                 if not self.is_trainable or self.best_epoch == -1:
-                    self.best_epoch = 0 
+                    self.best_epoch = 0
                 self.best_val_metrics = copy.deepcopy(current_metrics)
                 self._save_val_metrics(current_metrics)
-                self._save_checkpoint()  # [추가] 비학습 모델도 재사용을 위해 모델 상태 저장
+                self._save_checkpoint()
 
         if is_final_evaluation:
-            # [추가] 만약 검증이 한 번도 수행되지 않았다면 수행 (EASE 등 비학습 모델 대응)
             if not self.best_val_metrics:
                 print("No validation metrics found. Running validation before final evaluation...")
                 self.evaluate(is_final_evaluation=False, update_best_snapshot=True)
 
             print(f"Final Evaluation (Test): {current_metrics}")
-            
-            # [추가] 베스트 검증 지표가 있다면 접두사를 붙여 병합 (HPO에서 참조 가능하도록)
+
             if hasattr(self, 'best_val_metrics') and self.best_val_metrics:
                 for k, v in self.best_val_metrics.items():
                     current_metrics[f"val_{k}"] = v
-            
+
             metrics_path = os.path.join(self.output_path, 'final_metrics.json')
             dumpable_metrics = _convert_numpy_types_to_python_types(current_metrics)
             with open(metrics_path, 'w') as f:
                 json.dump(dumpable_metrics, f, indent=4)
             print(f"Final metrics saved to {metrics_path}")
         elif self.config.get('hpo_mode', False):
-            # [수정] HPO 모드에서는 검증 결과를 final_metrics.json에도 기록하여 Optuna가 읽게 함
-            # (원래는 TEST 결과가 들어가는 자리지만 HPO 시에는 VALIDATION 결과를 반환)
             metrics_path = os.path.join(self.output_path, 'final_metrics.json')
             dumpable_metrics = _convert_numpy_types_to_python_types(current_metrics)
             with open(metrics_path, 'w') as f:
                 json.dump(dumpable_metrics, f, indent=4)
-            # print(f"[HPO-Mode] Best validation metrics saved as trial result to {metrics_path}")
-        
+
         return current_metrics
 
     def _save_val_metrics(self, metrics):
-        """[수정] 최고 검증 성과와 epoch 번호를 val_metrics.json에 기록"""
         val_metrics_path = os.path.join(self.output_path, 'val_metrics.json')
         dumpable_val = _convert_numpy_types_to_python_types(metrics)
-        # best_epoch 정보 추가
         dumpable_val['best_epoch'] = self.best_epoch
         with open(val_metrics_path, 'w') as f:
             json.dump(dumpable_val, f, indent=4)
@@ -363,13 +316,13 @@ class Trainer:
         if current_main_metric > self.best_metric_value:
             self.best_metric_value = current_main_metric
             self.best_epoch = epoch
-            self.best_val_metrics = copy.deepcopy(current_metrics) # 전체 지표 스냅샷 저장
+            self.best_val_metrics = copy.deepcopy(current_metrics)
             self.patience_counter = 0
-            self._save_val_metrics(current_metrics) # [수정] 최고 기록 시점에만 파일 업데이트
+            self._save_val_metrics(current_metrics)
             self._save_checkpoint()
         else:
             self.patience_counter += 1
-        
+
         if self.patience_counter >= self.early_stop_patience:
             print(f"Early stopping triggered at epoch {len(self.train_losses['total_loss'])}")
             return True
