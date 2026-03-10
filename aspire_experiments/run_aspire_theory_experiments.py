@@ -18,12 +18,17 @@ from src.utils.gpu_accel import SVDCacheManager
 from src.models.csar.ASPIRELayer import AspireEngine
 from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 
-def setup_output_dirs(dataset_name, seed, base_dir="aspire_experiments/output"):
-    paths = {}
-    for exp in ["slp", "powerlaw", "tracking"]:
-        path = os.path.join(base_dir, exp, dataset_name, f"seed_{seed}")
-        os.makedirs(path, exist_ok=True)
-        paths[exp] = path
+def setup_output_dirs(dataset_name, base_dir="aspire_experiments/output"):
+    """
+    Returns a dictionary of paths.
+    - slp, powerlaw: dataset level (deterministic)
+    - tracking: seed level (randomized) handled inside the loop
+    """
+    paths = {
+        "slp": ensure_dir(os.path.join(base_dir, "slp", dataset_name)),
+        "powerlaw": ensure_dir(os.path.join(base_dir, "powerlaw", dataset_name)),
+        "tracking_base": os.path.join(base_dir, "tracking", dataset_name)
+    }
     return paths
 
 def get_interaction_matrix(loader):
@@ -40,7 +45,7 @@ def get_interaction_matrix(loader):
     return R
 
 def experiment_1_slp(R, V, dataset_name, out_dir):
-    print(f"  Running Experiment 1: SLP Verification...")
+    print(f"  Running Experiment 1: SLP Verification (Deterministic)...")
     # Item popularity
     p = np.array(R.sum(axis=0)).flatten()
     p_norm = p / (p.max() + 1e-9)
@@ -73,7 +78,7 @@ def experiment_1_slp(R, V, dataset_name, out_dir):
     return result
 
 def experiment_2_powerlaw(S, V, item_pops, dataset_name, out_dir):
-    print(f"  Running Experiment 2: Power-law Coupling...")
+    print(f"  Running Experiment 2: Power-law Coupling (Deterministic)...")
     s_np = S.cpu().numpy()
     
     p_tilde = AspireEngine.compute_spp(V, item_pops)
@@ -115,7 +120,7 @@ def experiment_2_powerlaw(S, V, item_pops, dataset_name, out_dir):
     return result
 
 def experiment_3_tracking(R, K, dataset_name, out_dir, remove_levels=[0.0, 0.2, 0.4, 0.6, 0.8]):
-    print(f"  Running Experiment 3: Beta-MNAR Tracking...")
+    print(f"    Running Experiment 3: Beta-MNAR Tracking (Randomized)...")
     
     n_users, n_items = R.shape
     popularity = np.array(R.sum(axis=0)).flatten()
@@ -169,7 +174,7 @@ def experiment_3_tracking(R, K, dataset_name, out_dir, remove_levels=[0.0, 0.2, 
         
         mnar_betas.append(beta_mnar)
         mcar_betas.append(beta_mcar)
-        print(f"    Ratio {r:.1f}: MNAR_beta={beta_mnar:.4f}, MCAR_beta={beta_mcar:.4f}")
+        print(f"      Ratio {r:.1f}: MNAR_beta={beta_mnar:.4f}, MCAR_beta={beta_mcar:.4f}")
 
     # Visualization
     plt.figure(figsize=(8, 6))
@@ -207,30 +212,35 @@ def main():
     for dataset in datasets:
         print(f"\nProcessing Dataset: {dataset}")
         
+        # Load data and SVD (Deterministic state)
+        try:
+            loader, R, S, V, config = get_loader_and_svd(dataset, k=args.k, target_energy=args.energy)
+        except Exception as e:
+            print(f"  Error loading dataset {dataset}: {e}")
+            continue
+
+        item_pops = np.array(R.sum(axis=0)).flatten()
+        base_paths = setup_output_dirs(dataset)
+
+        # Run Deterministic Experiments (Once per dataset)
+        experiment_1_slp(R, V, dataset, base_paths["slp"])
+        experiment_2_powerlaw(S, V, item_pops, dataset, base_paths["powerlaw"])
+
+        # Run Randomized Experiments (Per seed)
         for seed in seeds:
-            print(f" Seed: {seed}")
+            print(f"   Seed: {seed}")
             # Set seeds
             np.random.seed(seed)
             torch.manual_seed(seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed(seed)
 
-            # Load data and SVD
-            try:
-                loader, R, S, V, config = get_loader_and_svd(dataset, k=args.k, target_energy=args.energy)
-            except Exception as e:
-                print(f"  Error loading dataset {dataset}: {e}")
-                continue
-
-            item_pops = np.array(R.sum(axis=0)).flatten()
-            exp_paths = setup_output_dirs(dataset, seed)
-
-            # Run Experiments
-            experiment_1_slp(R, V, dataset, exp_paths["slp"])
-            experiment_2_powerlaw(S, V, item_pops, dataset, exp_paths["powerlaw"])
-            experiment_3_tracking(R, K=min(50, V.shape[1]), dataset_name=dataset, out_dir=exp_paths["tracking"])
+            seed_tracking_dir = ensure_dir(os.path.join(base_paths["tracking_base"], f"seed_{seed}"))
+            experiment_3_tracking(R, K=min(50, V.shape[1]), dataset_name=dataset, out_dir=seed_tracking_dir)
 
     print("\nAll experiments completed successfully.")
 
+if __name__ == "__main__":
+    main()
 if __name__ == "__main__":
     main()
