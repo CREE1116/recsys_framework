@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import argparse
 from scipy.sparse import csr_matrix
 from sklearn.linear_model import HuberRegressor
 
@@ -15,12 +16,15 @@ sys.path.append(os.getcwd())
 from src.data_loader import DataLoader
 from src.utils.gpu_accel import SVDCacheManager
 from src.models.csar.ASPIRELayer import AspireEngine
+from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 
-def setup_output_dirs(base_dir="aspire_experiments/output"):
+def setup_output_dirs(dataset_name, seed, base_dir="aspire_experiments/output"):
+    paths = {}
     for exp in ["slp", "powerlaw", "tracking"]:
-        path = os.path.join(base_dir, exp)
+        path = os.path.join(base_dir, exp, dataset_name, f"seed_{seed}")
         os.makedirs(path, exist_ok=True)
-    return base_dir
+        paths[exp] = path
+    return paths
 
 def get_interaction_matrix(loader):
     """DataLoader에서 interaction matrix R 생성"""
@@ -36,26 +40,25 @@ def get_interaction_matrix(loader):
     return R
 
 def experiment_1_slp(R, V, dataset_name, out_dir):
-    print("Running Experiment 1: SLP Verification...")
+    print(f"  Running Experiment 1: SLP Verification...")
     # Item popularity
     p = np.array(R.sum(axis=0)).flatten()
-    P_diag = p
+    p_norm = p / (p.max() + 1e-9)
+    P_diag = p_norm
     
     # M = V^T P V
-    # V is (N, K), P is (N, N) diagonal
-    # M_kl = sum_i V_ik * p_i * V_il
     V_np = V.cpu().numpy()
     M = (V_np.T * P_diag) @ V_np
     
-    D = np.diag(np.diag(M))
-    off_diag = M - D
-    epsilon = np.linalg.norm(off_diag, 'fro') / np.linalg.norm(D, 'fro')
+    diag_vals = np.diag(M)
+    mask = ~np.eye(len(M), dtype=bool)
+    epsilon = float(np.mean(np.abs(M[mask])) / (np.mean(diag_vals) + 1e-9))
     
     # Visualization
     plt.figure(figsize=(10, 8))
-    sns.heatmap(M[:50, :50], cmap='viridis')
-    plt.title(f"Spectral Popularity Matrix M (Top 50x50)\nDataset: {dataset_name}, epsilon={epsilon:.4f}")
-    plt.savefig(os.path.join(out_dir, f"slp_heatmap_{dataset_name}.png"))
+    sns.heatmap(M, cmap='viridis')
+    plt.title(f"Spectral Popularity Matrix M (Rank K={V_np.shape[1]})\nDataset: {dataset_name}, ε={epsilon:.4f}")
+    plt.savefig(os.path.join(out_dir, "slp_heatmap.png"))
     plt.close()
     
     result = {
@@ -63,17 +66,16 @@ def experiment_1_slp(R, V, dataset_name, out_dir):
         "epsilon": float(epsilon),
         "rank_k": int(V.shape[1])
     }
-    with open(os.path.join(out_dir, f"slp_{dataset_name}.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result.json"), 'w') as f:
         json.dump(result, f, indent=4)
     
-    print(f"  SLP Epsilon: {epsilon:.4f}")
+    print(f"    SLP Epsilon: {epsilon:.4f}")
     return result
 
 def experiment_2_powerlaw(S, V, item_pops, dataset_name, out_dir):
-    print("Running Experiment 2: Power-law Coupling...")
+    print(f"  Running Experiment 2: Power-law Coupling...")
     s_np = S.cpu().numpy()
     
-    # p_tilde = AspireEngine.compute_spp(V, item_pops)
     p_tilde = AspireEngine.compute_spp(V, item_pops)
     
     # Beta estimation
@@ -97,7 +99,7 @@ def experiment_2_powerlaw(S, V, item_pops, dataset_name, out_dir):
     plt.title(f"Spectral Power-law Coupling\nDataset: {dataset_name}, R²={r2:.4f}")
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(out_dir, f"powerlaw_fit_{dataset_name}.png"))
+    plt.savefig(os.path.join(out_dir, "powerlaw_fit.png"))
     plt.close()
     
     result = {
@@ -106,14 +108,14 @@ def experiment_2_powerlaw(S, V, item_pops, dataset_name, out_dir):
         "r2": float(r2),
         "slope": float(hub.coef_[0])
     }
-    with open(os.path.join(out_dir, f"powerlaw_{dataset_name}.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result.json"), 'w') as f:
         json.dump(result, f, indent=4)
     
-    print(f"  Estimated Beta: {beta:.4f}, R²: {r2:.4f}")
+    print(f"    Estimated Beta: {beta:.4f}, R²: {r2:.4f}")
     return result
 
 def experiment_3_tracking(R, K, dataset_name, out_dir, remove_levels=[0.0, 0.2, 0.4, 0.6, 0.8]):
-    print("Running Experiment 3: Beta-MNAR Tracking...")
+    print(f"  Running Experiment 3: Beta-MNAR Tracking...")
     
     n_users, n_items = R.shape
     popularity = np.array(R.sum(axis=0)).flatten()
@@ -167,7 +169,7 @@ def experiment_3_tracking(R, K, dataset_name, out_dir, remove_levels=[0.0, 0.2, 
         
         mnar_betas.append(beta_mnar)
         mcar_betas.append(beta_mcar)
-        print(f"  Ratio {r:.1f}: MNAR_beta={beta_mnar:.4f}, MCAR_beta={beta_mcar:.4f}")
+        print(f"    Ratio {r:.1f}: MNAR_beta={beta_mnar:.4f}, MCAR_beta={beta_mcar:.4f}")
 
     # Visualization
     plt.figure(figsize=(8, 6))
@@ -178,7 +180,7 @@ def experiment_3_tracking(R, K, dataset_name, out_dir, remove_levels=[0.0, 0.2, 
     plt.title(f"Beta-MNAR Tracking\nDataset: {dataset_name}")
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(out_dir, f"beta_tracking_{dataset_name}.png"))
+    plt.savefig(os.path.join(out_dir, "beta_tracking.png"))
     plt.close()
     
     result = {
@@ -186,50 +188,49 @@ def experiment_3_tracking(R, K, dataset_name, out_dir, remove_levels=[0.0, 0.2, 
         "mnar_betas": [float(b) for b in mnar_betas],
         "mcar_betas": [float(b) for b in mcar_betas]
     }
-    with open(os.path.join(out_dir, f"tracking_{dataset_name}.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result.json"), 'w') as f:
         json.dump(result, f, indent=4)
         
     return result
 
 def main():
-    # Load ML-100k for speed
-    config = {
-        "dataset_name": "ml-100k",
-        "data_path": "data/ml-100k/u.data",
-        "separator": "\t",
-        "columns": ["user_id", "item_id", "rating", "timestamp"],
-        "min_user_interactions": 5,
-        "min_item_interactions": 5,
-        "split_method": "loo",
-        "evaluation": {"validation_method": "full", "final_method": "full"},
-        "model": {"name": "aspire"}
-    }
-    
-    print(f"Loading dataset: {config['dataset_name']}...")
-    loader = DataLoader(config)
-    R = get_interaction_matrix(loader)
-    
-    # SVD setup
-    K = 100
-    svd_manager = SVDCacheManager()
-    U, S, V, _ = svd_manager.get_svd(R, k=K, dataset_name=config["dataset_name"])
-    
-    item_pops = np.array(R.sum(axis=0)).flatten()
-    
-    # Setup directories
-    base_out = setup_output_dirs()
-    
-    # Exp 1
-    experiment_1_slp(R, V, config["dataset_name"], os.path.join(base_out, "slp"))
-    
-    # Exp 2
-    experiment_2_powerlaw(S, V, item_pops, config["dataset_name"], os.path.join(base_out, "powerlaw"))
-    
-    # Exp 3
-    experiment_3_tracking(R, K=50, dataset_name=config["dataset_name"], out_dir=os.path.join(base_out, "tracking"))
-    
+    parser = argparse.ArgumentParser(description="Run ASPIRE Theory Experiments")
+    parser.add_argument("--datasets", nargs='+', default=["ml100k"], help="Dataset names (space-separated)")
+    parser.add_argument("--seeds", type=int, nargs='+', default=[42], help="Random seeds (space-separated)")
+    parser.add_argument("--energy", type=float, default=0.95, help="Target energy for SVD rank")
+    parser.add_argument("--k", type=int, default=None, help="Fixed rank K (optional, overrides energy)")
+    args = parser.parse_args()
+
+    datasets = args.datasets
+    seeds = args.seeds
+
+    for dataset in datasets:
+        print(f"\nProcessing Dataset: {dataset}")
+        
+        for seed in seeds:
+            print(f" Seed: {seed}")
+            # Set seeds
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(seed)
+
+            # Load data and SVD
+            try:
+                loader, R, S, V, config = get_loader_and_svd(dataset, k=args.k, target_energy=args.energy)
+            except Exception as e:
+                print(f"  Error loading dataset {dataset}: {e}")
+                continue
+
+            item_pops = np.array(R.sum(axis=0)).flatten()
+            exp_paths = setup_output_dirs(dataset, seed)
+
+            # Run Experiments
+            experiment_1_slp(R, V, dataset, exp_paths["slp"])
+            experiment_2_powerlaw(S, V, item_pops, dataset, exp_paths["powerlaw"])
+            experiment_3_tracking(R, K=min(50, V.shape[1]), dataset_name=dataset, out_dir=exp_paths["tracking"])
+
     print("\nAll experiments completed successfully.")
-    print(f"Outputs saved in {base_out}")
 
 if __name__ == "__main__":
     main()
