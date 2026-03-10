@@ -166,12 +166,11 @@ class AspireEngine:
     def compute_spp(
         V,
         item_frequencies,
-        spp_pow: float = 0.5,
     ) -> np.ndarray:
         """
         Spectral Propensity Projection.
 
-          p_i  = (n_i / n_max)^spp_pow   # 인기도 정규화 (Power scaling 적용)
+          p_i  = n_i / n_max          # 인기도 정규화 (damping 제거)
           p̃_k = Σ_i V_{ki}² · p_i   # 방향 k의 오염 강도
 
         p̃_k는 인기도 편향 + 신호 + 노이즈를 전부 흡수한 raw 측정값.
@@ -181,7 +180,6 @@ class AspireEngine:
         ----------
         V               : (n, k) 우측 특이벡터
         item_frequencies: (n,) 아이템별 상호작용 수
-        spp_pow         : float, 인기도 propensity에 적용할 전력 지수
 
         Returns
         -------
@@ -189,7 +187,7 @@ class AspireEngine:
         """
         V_np    = AspireEngine._to_numpy(V)
         n_i     = AspireEngine._to_numpy(item_frequencies).flatten()
-        p_i     = np.power(n_i / (n_i.max() + 1e-9), spp_pow)
+        p_i     = n_i / (n_i.max() + 1e-9)
         p_tilde = (V_np ** 2).T @ p_i
         return p_tilde
 
@@ -197,27 +195,18 @@ class AspireEngine:
 
     @staticmethod
     def estimate_beta(
-        singular_values,
-        p_tilde,
+        singular_values: torch.Tensor,
+        p_tilde: np.ndarray,
         trim: float = 0.05,
         verbose: bool = True,
         dataset_name: str = "",
-    ) -> tuple[float, float]:
+        return_line: bool = False,
+    ) -> tuple:
         """
         p̃_k의 멱법칙 피팅으로 β 추출.
 
           log p̃_k = 2β · log σ_k + C
           → β = coef / 2
-
-        p̃_k의 per-k 노이즈를 β 하나로 스무딩.
-        β는 "MNAR 스펙트럴 왜곡의 전역적 강도 요약"이다.
-
-        R²: 멱법칙 가정의 성립 정도.
-            높을수록 β가 신뢰 가능, 낮으면 데이터셋 MNAR 구조가 복잡함.
-
-        Returns
-        -------
-        (beta, r_squared)
         """
         s  = np.sort(np.abs(AspireEngine._to_numpy(singular_values)))[::-1]
         pt = np.asarray(p_tilde, dtype=float)
@@ -232,7 +221,7 @@ class AspireEngine:
         if mask.sum() < 4:
             if verbose:
                 print(f"[ASPIRE] {dataset_name}: 유효 포인트 부족 → β=0.5 fallback")
-            return 0.5, 0.0
+            return (0.5, 0.0, np.zeros_like(pt)) if return_line else (0.5, 0.0)
 
         log_s  = np.log(s_[mask]).reshape(-1, 1)
         log_pt = np.log(pt_[mask])
@@ -244,11 +233,12 @@ class AspireEngine:
         r2   = float(hub.score(log_s, log_pt))
 
         if verbose:
-            print(
-                f"[ASPIRE] {dataset_name}: "
-                f"β={beta:.4f}  R²={r2:.4f}"
-                + ("  (R²<0.5: MNAR 구조 비선형)" if r2 < 0.5 else "")
-            )
+            print(f"[ASPIRE] {dataset_name}: β={beta:.4f}  R²={r2:.4f}")
+
+        if return_line:
+            y_pred_full = hub.predict(np.log(s + 1e-9).reshape(-1, 1))
+            return beta, r2, y_pred_full
+            
         return beta, r2
 
     # ── 3. β 추정 (slope 비율 — V 없을 때 fallback) ───────────────────────────
@@ -259,7 +249,6 @@ class AspireEngine:
         item_frequencies,
         X_sparse=None,
         svd_k: int = 200,
-        spp_pow: float = 0.5,
         verbose: bool = True,
         dataset_name: str = "",
         save_dir: str = None,
@@ -271,7 +260,7 @@ class AspireEngine:
           β = a / 2             (p̃_k ~ σ_k^a → p̃_k ~ σ_k^{2β} → β=a/2)
 
         V가 없는 초거대 행렬에서 사용. SPP보다 정보량이 적음.
-        slope_n 계산 시 n_i 대신 (n_i / n_max)^spp_pow 의 분포를 사용함.
+        slope_n 계산 시 n_i / n_max 의 분포를 사용함.
 
         Returns
         -------
@@ -296,9 +285,9 @@ class AspireEngine:
         else:
             raise ValueError("item_frequencies 또는 X_sparse 필요")
             
-        # [NEW] spp_pow 적용된 인기도 분포
-        # slope_n을 구할 때 n_i의 멱함수 변환 분포를 기반으로 함
-        p_i = np.power(n_raw / (n_raw.max() + 1e-9), spp_pow)
+        # [NEW] 인기도 분포
+        # slope_n을 구할 때 n_i의 정규화 분포를 기반으로 함
+        p_i = n_raw / (n_raw.max() + 1e-9)
         p_all_sorted = np.sort(p_i)[::-1]
 
         hub = HuberRegressor(epsilon=1.35, max_iter=300, fit_intercept=True)
@@ -327,7 +316,7 @@ class AspireEngine:
 
         if verbose:
             print(
-                f"[ASPIRE-slope] {tag} (spp_pow={spp_pow}): "
+                f"[ASPIRE-slope] {tag}: "
                 f"slope_σ={sl_s:.3f}  slope_n={sl_n:.3f}  "
                 f"a={a:.3f}  β=a/2={beta:.4f}"
             )
@@ -414,7 +403,6 @@ class ASPIRELayer(nn.Module):
         alpha: float | list     = 500.0,
         beta: float | str | list = "auto",
         target_energy: float | list = 0.95,
-        spp_pow: float | list = 0.5,
     ):
         super().__init__()
         self.k             = int(k[0] if isinstance(k, (list, np.ndarray)) else k)
@@ -424,7 +412,6 @@ class ASPIRELayer(nn.Module):
             target_energy[0] if isinstance(target_energy, (list, np.ndarray))
             else target_energy
         )
-        self.spp_pow       = float(spp_pow[0] if isinstance(spp_pow, (list, np.ndarray)) else spp_pow)
 
         self.beta          = 0.5
         self.r_squared     = 0.0
@@ -458,9 +445,8 @@ class ASPIRELayer(nn.Module):
         V_np      = self.V_raw.cpu().numpy()
         s_np      = self.singular_values.cpu().numpy()
 
-        # ── 2. β 결정 ─────────────────────────────────────────────────────────
-        # spp_pow가 달라지면 β도 달라지므로 캐시 키에 포함
-        cache_key = f"{dataset_name}_aspire_v13_p{self.spp_pow}" if dataset_name else None
+        # β 결정
+        cache_key = f"{dataset_name}_aspire_v13_p1.0" if dataset_name else None
         cached    = _MNARGammaCache.get(cache_key) if cache_key else None
 
         if isinstance(self.beta_config, str):  # "auto"
@@ -468,8 +454,8 @@ class ASPIRELayer(nn.Module):
                 self.beta        = float(cached["beta"])
                 self.r_squared   = float(cached.get("r2", 0.0))
             else:
-                # SPP → β (spp_pow 반영)
-                p_tilde          = AspireEngine.compute_spp(V_np, item_pops, spp_pow=self.spp_pow)
+                # SPP → β
+                p_tilde          = AspireEngine.compute_spp(V_np, item_pops)
                 self.beta, self.r_squared = AspireEngine.estimate_beta(
                     s_np, p_tilde,
                     verbose=True, dataset_name=dataset_name or "?",
@@ -491,7 +477,7 @@ class ASPIRELayer(nn.Module):
         print(
             f"[ASPIRELayer] build complete | "
             f"k={self.k}  β={self.beta:.4f}  R²={self.r_squared:.4f}  "
-            f"spp_pow={self.spp_pow}  device={dev}"
+            f"device={dev}"
         )
 
     @torch.no_grad()
@@ -536,7 +522,6 @@ class ChebyASPIRELayer(nn.Module):
         beta: float | str | list     = "auto",
         lambda_max_estimate: float | str = "auto",
         threshold: float             = 1e-4,
-        spp_pow: float | list        = 0.5,
     ):
         super().__init__()
         self.alpha               = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
@@ -544,7 +529,6 @@ class ChebyASPIRELayer(nn.Module):
         self.beta_config         = beta[0] if isinstance(beta, (list, np.ndarray)) else beta
         self.lambda_max_estimate = lambda_max_estimate
         self.threshold           = float(threshold)
-        self.spp_pow             = float(spp_pow[0] if isinstance(spp_pow, (list, np.ndarray)) else spp_pow)
 
         self.beta            = 0.5
         self.alignment_slope = 0.0
@@ -619,8 +603,8 @@ class ChebyASPIRELayer(nn.Module):
         else:
             lambda_max = float(self.lambda_max_estimate)
 
-        # ── β 결정 ────────────────────────────────────────────────────────────
-        cache_key = f"{dataset_name}_cheby_v13_p{self.spp_pow}" if dataset_name else None
+        # β 결정
+        cache_key = f"{dataset_name}_cheby_v13_p1.0" if dataset_name else None
         cached    = _MNARGammaCache.get(cache_key) if cache_key else None
 
         if isinstance(self.beta_config, str):  # "auto"
@@ -633,7 +617,6 @@ class ChebyASPIRELayer(nn.Module):
                     singular_values=None,
                     item_frequencies=item_pops,
                     X_sparse=X_sparse,
-                    spp_pow=self.spp_pow,
                     verbose=True,
                     dataset_name=dataset_name or "?",
                 )
@@ -643,7 +626,7 @@ class ChebyASPIRELayer(nn.Module):
         else:
             self.beta = float(self.beta_config)
 
-        print(f"[ChebyASPIRELayer] β={self.beta:.4f}  λ_max={lambda_max:.2f}  spp_pow={self.spp_pow}")
+        print(f"[ChebyASPIRELayer] β={self.beta:.4f}  λ_max={lambda_max:.2f}")
 
         # ── Chebyshev 계수 ────────────────────────────────────────────────────
         coeffs = self._compute_chebyshev_coeffs(0.0, lambda_max, self.degree)
@@ -753,8 +736,7 @@ class ChebyASPIRELayer(nn.Module):
         metrics = {
             "model":  "ChebyASPIRE",
             "params": {"alpha": self.alpha, "beta": self.beta,
-                       "degree": self.degree, "lambda_max": float(lambda_max),
-                       "spp_pow": self.spp_pow},
+                       "degree": self.degree, "lambda_max": float(lambda_max)},
             "fit_quality": {
                 "mae":  float(np.mean(np.abs(fit_err))),
                 "rmse": float(np.sqrt(np.mean(fit_err ** 2))),

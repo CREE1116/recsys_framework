@@ -8,5 +8,4 @@ model:
 
   target_energy: 0.95
   visualize: true
-  spp_pow: 0.5
 # Adaptive Spectral Popularity-aware Intrinsic REgularization

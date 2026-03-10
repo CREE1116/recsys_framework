@@ -5,8 +5,11 @@ datasets:
   - "configs/dataset/ml100k.yaml"
   - "configs/dataset/ml1m.yaml"
   - "configs/dataset/ml20m.yaml"
-  - "configs/dataset/gowalla.yaml"
-  - "configs/dataset/yelp2018.yaml"
+  - "configs/dataset/steam.yaml"
+  - "configs/dataset/lastfm_2k.yaml"
+  - "configs/dataset/amazon_music.yaml"
+  # - "configs/dataset/gowalla.yaml"
+  # - "configs/dataset/yelp2018.yaml"
   # - "configs/dataset/amazon_electronics.yaml"
   # - "configs/dataset/amazon_books.yaml"
 
