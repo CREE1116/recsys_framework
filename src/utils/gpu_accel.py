@@ -144,18 +144,69 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', return_tensor=
 
     # 2. Eigen Path
     if M <= EIGEN_THRESHOLD:
-        print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition (first call)...")
-        # Optimization: compute Gram matrix directly if small
-        G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
-        from scipy.linalg import eigh
-        eigvals, V = eigh(G)
-        del G
+        print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition (first call) on {dev.type}...")
+        t0 = time.time()
+        
+        # Optimization: compute Gram matrix directly.
+        # If CUDA/MPS, do it on device to massively speed up X^T * X and Eigendecomposition.
+        if dev.type in ('cuda', 'mps'):
+            try:
+                if isinstance(X_sparse, csr_matrix):
+                    # For sparse, we can convert to dense if small enough, or use sparse mm.
+                    # Since M <= 15000, M*M is up to 225M floats (~900MB), which easily fits.
+                    X_torch_dense = torch.from_numpy(X_sparse.toarray()).float().to(dev)
+                    G_t = torch.mm(X_torch_dense.t(), X_torch_dense)
+                    del X_torch_dense
+                else:
+                    # Fallback if it's already a tensor or numpy
+                    X_torch = torch.tensor(X_sparse, device=dev, dtype=torch.float32)
+                    G_t = torch.mm(X_torch.t(), X_torch)
+                    
+                eigvals_t, V_t = torch.linalg.eigh(G_t)
+                del G_t
+                
+                # Cache as NumPy to save VRAM and keep cache manager agnostic
+                eigvals = eigvals_t.cpu().numpy()
+                V = V_t.cpu().numpy()
+                del eigvals_t, V_t
+                
+                print(f"[gpu_accel] {dev.type.upper()} torch.linalg.eigh done: {time.time()-t0:.2f}s")
+            except Exception as e:
+                print(f"[gpu_accel] {dev.type.upper()} Eigen failed ({e}), fallback to Scipy CPU...")
+                G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
+                from scipy.linalg import eigh
+                eigvals, V = eigh(G)
+                del G
+        else:
+            # CPU Path
+            G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
+            from scipy.linalg import eigh
+            eigvals, V = eigh(G)
+            del G
+            
         _GramEigenCache.put(X_sparse, V.astype(np.float32), eigvals.astype(np.float32))
         return gpu_gram_solve(X_sparse, reg_lambda, rhs, device, return_tensor)
 
     # 3. Cholesky Path
-    print(f"[gpu_accel] Gram ({M}x{M}) + Exact Cholesky...")
+    print(f"[gpu_accel] Gram ({M}x{M}) + Exact Cholesky on {dev.type}...")
     t0 = time.time()
+    
+    if dev.type in ('cuda', 'mps'):
+        try:
+            if isinstance(X_sparse, csr_matrix):
+                X_torch_dense = torch.from_numpy(X_sparse.toarray()).float().to(dev)
+                G_t = torch.mm(X_torch_dense.t(), X_torch_dense)
+                del X_torch_dense
+            
+            # Diagonal shift for torch tensor
+            G_t.diagonal().add_(reg_lambda)
+            P = gpu_cholesky_solve(G_t.cpu().numpy(), rhs, device=device, return_tensor=return_tensor)
+            del G_t
+            return P
+        except Exception as e:
+            print(f"[gpu_accel] {dev.type.upper()} Gram+Cholesky prep failed ({e}), fallback to CPU...")
+
+    # Fallback / CPU
     G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
     G[np.diag_indices(M)] += reg_lambda
     
@@ -372,9 +423,9 @@ class SVDCacheManager(GlobalCacheManager):
             print(f"[SVD] Computing (shape={X_sparse.shape}, k={compute_k}, dataset={dataset_name})...")
             start = time.time()
             min_dim = min(M, N)
-            if self.device.type == 'cuda' and min_dim >= 5000:
+            if self.device.type == 'cuda' and min_dim >= 2000:
                 u, s, v = self._cuda_randomized_svd(X_sparse, compute_k)
-            elif self.device.type == 'mps' and min_dim >= 5000:
+            elif self.device.type == 'mps' and min_dim >= 2000:
                 u, s, v = self._mps_randomized_svd(X_sparse, compute_k)
             else:
                 u, s, v = self._cpu_svd(X_sparse, compute_k)
