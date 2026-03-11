@@ -243,7 +243,7 @@ def run_beta_tracking_v2(
         "r2s_mean": r2s_mean,
         "linearity_postcrossover": linearity_result,
     }
-    with open(os.path.join(out_dir, "result.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result.json"), 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4)
 
     print(f"  Saved to {out_dir}")

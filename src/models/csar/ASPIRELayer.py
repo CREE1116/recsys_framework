@@ -777,7 +777,7 @@ class ChebyASPIRELayer(nn.Module):
                 "max":  float(np.max(np.abs(fit_err))),
             },
         }
-        with open(os.path.join(save_dir, "cheby_aspire_metrics.json"), "w") as f:
+        with open(os.path.join(save_dir, "cheby_aspire_metrics.json"), "w", encoding='utf-8') as f:
             json.dump(metrics, f, indent=4)
 
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))

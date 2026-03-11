@@ -41,27 +41,28 @@ class PureSVD(BaseModel):
         user_item_matrix = sp.csr_matrix(
             (data, (rows, cols)),
             shape=(self.n_users, self.n_items),
-            dtype=float
+            dtype=np.float32
         )
         
-        # Check rank limits
+        # Check rank limits safely without modifying config class-wide state unnecessarily
         min_dim = min(user_item_matrix.shape)
+        k = min(self.embedding_dim, min_dim - 1)
         if self.embedding_dim >= min_dim:
-            self._log(f"Warning: embedding_dim={self.embedding_dim} >= min_dim={min_dim}. Capping to {min_dim - 1}.")
-            self.embedding_dim = min_dim - 1
+            self._log(f"Warning: requested embedding_dim={self.embedding_dim} >= min_dim={min_dim}. Using k={k}.")
 
         # SVDCacheManager: 캐싱 + MPS 가속 자동 지원
         dataset_name = self.config.get('dataset_name', 'unknown')
         u, s, v, energy = self.svd_manager.get_svd(
-            user_item_matrix, k=self.embedding_dim, dataset_name=dataset_name
+            user_item_matrix, k=k, dataset_name=dataset_name
         )
         
-        self.register_buffer('user_factors', u.to(self.device).float())
-        self.register_buffer('sigma', s.to(self.device).float())
-        self.register_buffer('item_factors', v.to(self.device).float())
+        # 안전한 버퍼 덮어쓰기 (재등록 방지)
+        self.user_factors = u.to(self.device).float()
+        self.sigma = s.to(self.device).float()
+        self.item_factors = v.to(self.device).float()
         
         # Pre-compute U * Sigma for efficiency
-        self.register_buffer('user_factors_scaled', self.user_factors * self.sigma.unsqueeze(0))
+        self.user_factors_scaled = self.user_factors * self.sigma.unsqueeze(0)
         
         self._log(f"Fitted. Energy captured: {energy:.4f}")
 
@@ -74,8 +75,7 @@ class PureSVD(BaseModel):
         batch_users_scaled = self.user_factors_scaled[users] # (batch, k)
         
         # item_factors is (n_items, k)
-        # scores = batch_users_scaled @ item_factors.T
-        scores = torch.matmul(batch_users_scaled, self.item_factors.transpose(0, 1))
+        scores = batch_users_scaled @ self.item_factors.T
         
         return scores
 
@@ -92,12 +92,9 @@ class PureSVD(BaseModel):
     def get_final_item_embeddings(self):
         """
         Return item embeddings for visualization.
-        For SVD, this is V^T * Sigma? Or just V^T?
         Usually PureSVD represents items as V^T (or V * Sigma).
-        We'll returns V^T (stored as item_factors).
+        We'll return V^T (stored as item_factors).
         """
-        if self.item_factors is None:
-            return torch.zeros((self.n_items, self.embedding_dim), device=self.device)
         return self.item_factors
 
     def calc_loss(self, batch_data):

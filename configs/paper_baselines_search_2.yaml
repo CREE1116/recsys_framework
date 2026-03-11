@@ -2,7 +2,7 @@
 # 실행: uv run python scripts/run_all_smart_searches.py --config configs/paper_baselines_search.yaml --output_dir output/paper_baselines
 
 datasets:
-  - "configs/dataset/ml100k.yaml"
+  # - "configs/dataset/ml100k.yaml"
   - "configs/dataset/ml1m.yaml"
   - "configs/dataset/ml20m.yaml"
   - "configs/dataset/steam.yaml"
@@ -64,18 +64,30 @@ searches:
     params:
       - name: "model.reg_lambda"
         type: "float"
-        range: "1e-5 10000.0"
+        range: "1e-4 100.0"
         log: true
       - name: "model.alpha"
         type: "float"
-        range: "1.0 10000.0"
+        range: "1.0 200.0"
         log: true
       - name: "model.embedding_dim"
         type: "categorical"
-        range: "32 64 128 256 512"
+        range: "32 64 128 256"
     n_trials: 60
     patience: 20
     metric: "NDCG@20"
+
+  - name: "ItemKNN"
+    method: "bayesian"
+    model_config: "configs/model/general/item_knn.yaml"
+    params:
+      - name: "model.k"
+        type: "int"
+        range: "10 500"
+    n_trials: 60
+    patience: 20
+    metric: "NDCG@20"
+
   # # ============================================================
   # # Baselines: Spectral / SVD
   # # ============================================================

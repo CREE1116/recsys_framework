@@ -166,7 +166,7 @@ def run_beta_tracking(dataset_name, target_energy=0.95, noise_levels=None):
         "betas": [float(b) for b in betas],
         "r2s": [float(r) for r in r2s],
     }
-    with open(os.path.join(out_dir, "result_v3.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result_v3.json"), 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4)
 
     print(f"  Saved to {out_dir}")

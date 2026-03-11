@@ -51,7 +51,7 @@ def run_slp(dataset_name, target_energy=0.95):
         "rank_k": int(V.shape[1]),
         "m_shape": M.shape
     }
-    with open(os.path.join(out_dir, "result.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result.json"), 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4)
         
     print(f"  SLP Epsilon: {epsilon:.4f}")

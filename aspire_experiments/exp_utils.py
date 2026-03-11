@@ -23,7 +23,7 @@ def load_config(dataset_name):
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
         
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # model name and evaluation config are required by DataLoader/Evaluation

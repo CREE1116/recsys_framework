@@ -363,7 +363,8 @@ class SVDCacheManager(GlobalCacheManager):
         if X_sparse is None:
             raise RuntimeError(f"SVD Cache NOT found for {dataset_name} and X_sparse is None. Cannot compute.")
 
-        compute_k = k or (min(M, N) // 10 if target_energy else 128)
+        # 시작 사이즈를 크게 상향 (기존 min_dim // 10 → min_dim // 4)
+        compute_k = k or (min(M, N) // 4 if target_energy else 256)
         compute_k = min(compute_k, min(M, N) - 1)
         total_energy = float(np.sum(X_sparse.data ** 2))
         
@@ -394,7 +395,8 @@ class SVDCacheManager(GlobalCacheManager):
                     print(f"[SVD] Reached max rank k={compute_k}, energy={cum_energy[-1].item()*100:.1f}%")
                     break
                 else:
-                    new_k = min(min_dim - 1, compute_k * 2)
+                    # 스텝 점프도 기존 * 2 에서 더 급격하게 키움 (* 3)
+                    new_k = min(min_dim - 1, int(compute_k * 3))
                     print(f"[SVD] Energy not met ({cum_energy[-1].item()*100:.1f}%), expanding k: {compute_k} -> {new_k}")
                     compute_k = new_k
             else:

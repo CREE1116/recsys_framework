@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import argparse
 import pandas as pd
 from scipy.sparse import csr_matrix
+from scipy.stats import theilslopes
 from sklearn.linear_model import LinearRegression
 
 sys.path.append(os.getcwd())
@@ -143,8 +144,8 @@ def estimate_beta_ols_trimmed(s, p_tilde, trim=0.05):
 
 # ── 메인 실험 ────────────────────────────────────────────────────────────────
 
-def run_ablation(dataset_name, target_energy=0.95):
-    print(f"\n{'='*60}\nRunning Ablation (v6: Bayesian) on {dataset_name}\n{'='*60}")
+def run_ablation(dataset_name, target_energy=0.95, seeds=[42]):
+    print(f"\n{'='*60}\nRunning Ablation (v6: Bayesian) on {dataset_name} with seeds {seeds}\n{'='*60}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
 
@@ -156,12 +157,13 @@ def run_ablation(dataset_name, target_energy=0.95):
     out_dir = ensure_dir(f"aspire_experiments/output/ablation/{dataset_label}")
     hpo_dir  = ensure_dir(os.path.join(out_dir, "hpo"))
 
-    R_train_tensor = torch.from_numpy(R.todense()).float().to(device)
+    print(f"[HPO] Pre-computing Latent Projections (XV)...")
+    # Avoid R.todense() to prevent massive OOM on large datasets (e.g., ml-20m)
+    XV_np = R.dot(V.cpu().numpy())
+    XV_tensor = torch.from_numpy(XV_np).float().to(device)
+    
     S_tensor = S.to(device)
     V_tensor = V.to(device)
-
-    print(f"[HPO] Pre-computing Latent Projections (XV)...")
-    XV_tensor = torch.mm(R_train_tensor, V_tensor)
 
     # 2. Validation Data Preparation (ONCE)
     print(f"[HPO] Collecting Validation Data...")
@@ -204,9 +206,6 @@ def run_ablation(dataset_name, target_energy=0.95):
     # Mapping name to estimator_type for R2 retrieval
     name_to_type = {
         "SPP+Huber (sklearn)": "huber",
-        "SPP+OLS": "ols",
-        "SPP+Theil-Sen": "theil_sen",
-        "SPP+Huber (Fixed)": "huber_fixed",
         "SPP+Huber (MAD)": "huber_mad",
         "SPP+LAD": "lad",
         "Slope ratio": "slope_ratio",
@@ -214,11 +213,53 @@ def run_ablation(dataset_name, target_energy=0.95):
         "β=HPO (Joint)": "huber", # or just use a default
     }
 
+    # ------------------------------------------------------------------
+    # Legacy Estimators (Moved from beta_estimators.py for ablation only)
+    # ------------------------------------------------------------------
+    def _local_beta_ols(sigma_k, p_tilde_k):
+        x, y = beta_estimators._log_xy(sigma_k, p_tilde_k)
+        if len(x) < 2: return 0.5, 0.0
+        A = np.column_stack([x, np.ones_like(x)])
+        coef, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
+        slope, intercept = coef[0], coef[1]
+        r2 = beta_estimators._compute_r2(x, y, slope, intercept)
+        return float(np.clip(slope / 2, 0, 1)), float(r2)
+
+    def _local_beta_theil_sen(sigma_k, p_tilde_k):
+        x, y = beta_estimators._log_xy(sigma_k, p_tilde_k)
+        if len(x) < 2: return 0.5, 0.0
+        result = theilslopes(y, x)
+        slope, intercept = result.slope, result.intercept
+        r2 = beta_estimators._compute_r2(x, y, slope, intercept)
+        return float(np.clip(slope / 2, 0, 1)), float(r2)
+
+    def _local_beta_huber_fixed(sigma_k, p_tilde_k, delta_h=1.35):
+        x, y = beta_estimators._log_xy(sigma_k, p_tilde_k)
+        if len(x) < 2: return 0.5, 0.0
+        A = np.column_stack([x, np.ones_like(x)])
+        coef = np.linalg.lstsq(A, y, rcond=None)[0]
+        for _ in range(100):
+            resid = y - A @ coef
+            w = np.where(np.abs(resid) <= delta_h, 1.0, delta_h / np.clip(np.abs(resid), 1e-9, None))
+            W = np.diag(w)
+            coef_new = np.linalg.lstsq(A.T @ W @ A, A.T @ W @ y, rcond=None)[0]
+            if np.max(np.abs(coef_new - coef)) < 1e-8: break
+            coef = coef_new
+        slope, intercept = coef[0], coef[1]
+        r2 = beta_estimators._compute_r2(x, y, slope, intercept)
+        return float(np.clip(slope / 2, 0, 1)), float(r2)
+
+    # Note: SPP+OLS, Theil-Sen, Huber (Fixed) do not have corresponding R2 extraction logic in run_ablation
+    # anymore since they are removed from the global name_to_type mapping.
+    # They are kept here just for the NDCG ablation evaluation.
+
+    S_tensor_np = S_tensor.detach().cpu().numpy()
+
     betas = {
         "SPP+Huber (sklearn)": beta_huber,
-        "SPP+OLS":   beta_ols,
-        "SPP+Theil-Sen": AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="theil_sen")[0],
-        "SPP+Huber (Fixed)": AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="huber_fixed")[0],
+        "SPP+OLS":           _local_beta_ols(S_tensor_np, p_tilde)[0],
+        "SPP+Theil-Sen":     _local_beta_theil_sen(S_tensor_np, p_tilde)[0],
+        "SPP+Huber (Fixed)": _local_beta_huber_fixed(S_tensor_np, p_tilde)[0],
         "SPP+Huber (MAD)":   AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="huber_mad")[0],
         "SPP+LAD":           AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="lad")[0],
         "Slope ratio":       beta_slope,
@@ -226,51 +267,81 @@ def run_ablation(dataset_name, target_energy=0.95):
         "β=HPO (Joint)":     best_beta_hpo,
     }
 
-    # 5. Final Evaluation
+    # 5. Final Evaluation across multiple seeds
     eval_config = loader.config.copy()
     eval_config['metrics'] = ['NDCG', 'HeadNDCG', 'LongTailNDCG', 'Coverage']
     eval_config['top_k'] = [10]
     eval_config['long_tail_percent'] = 0.8
-
     test_loader = loader.get_full_test_loader(batch_size=2048)
+
     results_table = []
-
-    print("\n[Evaluation] Running Final Test and Bayesian Alpha Fitting for each method...")
+    
+    print(f"\n[Evaluation] Running Final Test across {len(seeds)} seeds: {seeds}")
+    
     for name, beta in betas.items():
-        if name == "(5) β=HPO":
-            alpha = best_alpha_hpo
-        else:
-            print(f"  Fitting Alpha for {name} (Beta={beta:.3f})...")
-            safe_name = name.replace(' ', '_').replace('(', '').replace(')', '').replace('+', '_')
-            alpha_params, _ = find_best_params_bayesian(
-                XV_val, S_tensor, V_tensor, val_gt, val_history, device,
-                beta_val=beta, n_trials=40, patience=20, seed=42,
-                study_name=f"Alpha_{safe_name}",
-                out_dir=os.path.join(hpo_dir, f"Alpha_{safe_name}"),
-            )
-            alpha = alpha_params['alpha']
+        seed_results = []
+        for seed in seeds:
+            print(f"  Fitting Alpha for {name} (Beta={beta:.3f}, Seed={seed})...")
+            
+            if name == "β=HPO (Joint)":
+                # For Joint HPO, we already found the best alpha/beta above using seed=42 (or first seed).
+                # To be rigorous, we could re-run joint HPO per seed, but for ablation, reusing the best joint
+                # params and just re-evaluating is faster, or we re-run alpha fit with the best joint beta.
+                # Let's re-run only alpha fitting using the fixed best Joint beta to be consistent with others.
+                alpha_params, _ = find_best_params_bayesian(
+                    XV_val, S_tensor, V_tensor, val_gt, val_history, device,
+                    beta_val=best_beta_hpo, n_trials=40, patience=20, seed=seed,
+                    study_name=f"Alpha_Joint_HPO_{seed}",
+                    out_dir=os.path.join(hpo_dir, f"Alpha_Joint_HPO_{seed}"),
+                )
+                alpha = alpha_params['alpha']
+            else:
+                safe_name = name.replace(' ', '_').replace('(', '').replace(')', '').replace('+', '_')
+                alpha_params, _ = find_best_params_bayesian(
+                    XV_val, S_tensor, V_tensor, val_gt, val_history, device,
+                    beta_val=beta, n_trials=40, patience=20, seed=seed,
+                    study_name=f"Alpha_{safe_name}_{seed}",
+                    out_dir=os.path.join(hpo_dir, f"Alpha_{safe_name}_{seed}"),
+                )
+                alpha = alpha_params['alpha']
 
-        h = AspireEngine.apply_filter(S_tensor, alpha, beta).to(device)
-        model = ASPIREAblationModel(V_tensor, h, XV=XV_tensor)
-        res = evaluate_metrics(model, loader, eval_config, device, test_loader, is_final=True)
-
+            h = AspireEngine.apply_filter(S_tensor, alpha, beta).to(device)
+            model = ASPIREAblationModel(V_tensor, h, XV=XV_tensor)
+            res = evaluate_metrics(model, loader, eval_config, device, test_loader, is_final=True)
+            
+            seed_results.append({
+                "alpha": float(alpha),
+                "ndcg_all":  res.get('NDCG@10', 0.0),
+                "ndcg_head": res.get('HeadNDCG@10', 0.0),
+                "ndcg_tail": res.get('LongTailNDCG@10', 0.0),
+                "coverage":  res.get('Coverage@10', 0.0)
+            })
+            
+        # Average results over seeds
+        avg_alpha = np.mean([r["alpha"] for r in seed_results])
+        avg_ndcg_all = np.mean([r["ndcg_all"] for r in seed_results])
+        avg_ndcg_head = np.mean([r["ndcg_head"] for r in seed_results])
+        avg_ndcg_tail = np.mean([r["ndcg_tail"] for r in seed_results])
+        avg_coverage = np.mean([r["coverage"] for r in seed_results])
+        
         # Get Fit Diagnostics (R2)
         _, r2 = AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type=name_to_type.get(name, "huber"))
 
         row = {
-            "method": name, "beta": float(beta), "alpha": float(alpha), "r2": float(r2),
-            "ndcg_all":  res.get('NDCG@10', 0.0),
-            "ndcg_head": res.get('HeadNDCG@10', 0.0),
-            "ndcg_tail": res.get('LongTailNDCG@10', 0.0),
-            "coverage":  res.get('Coverage@10', 0.0),
+            "method": name, "beta": float(beta), "alpha": float(avg_alpha), "r2": float(r2),
+            "ndcg_all":  float(avg_ndcg_all),
+            "ndcg_head": float(avg_ndcg_head),
+            "ndcg_tail": float(avg_ndcg_tail),
+            "coverage":  float(avg_coverage),
+            "seeds": seeds,
         }
         results_table.append(row)
-        print(f"  {name:<15} | b={beta:.3f} a={alpha:.2f} | NDCG: {row['ndcg_all']:.4f} "
+        print(f"  > {name:<15} | b={beta:.3f} avg_a={avg_alpha:.2f} | avg_NDCG: {row['ndcg_all']:.4f} "
               f"(H:{row['ndcg_head']:.4f}/T:{row['ndcg_tail']:.4f}) | Cov: {row['coverage']:.3f}")
 
     # 6. Output & Visualization
-    with open(os.path.join(out_dir, "result_per_method_bayesian.json"), 'w') as f:
-        json.dump({"dataset": dataset_label, "methods": results_table, "k": int(V.shape[1])}, f, indent=4)
+    with open(os.path.join(out_dir, "result_per_method_bayesian.json"), 'w', encoding='utf-8') as f:
+        json.dump({"dataset": dataset_label, "seeds": seeds, "methods": results_table, "k": int(V.shape[1])}, f, indent=4)
 
     plt.figure(figsize=(12, 6))
     m = [r['method'] for r in results_table]
@@ -288,5 +359,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, nargs="+", default=["ml100k"])
     parser.add_argument("--energy", type=float, default=0.95)
+    parser.add_argument("--seeds", type=int, nargs="+", default=[42], help="List of random seeds to use (e.g. 42 43 44)")
     args = parser.parse_args()
-    for ds in args.dataset: run_ablation(ds, args.energy)
+    for ds in args.dataset: run_ablation(ds, args.energy, args.seeds)

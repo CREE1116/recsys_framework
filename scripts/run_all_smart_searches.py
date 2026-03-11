@@ -14,6 +14,7 @@ from config_utils import merge_all_configs
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.utils.gpu_accel import SVDCacheManager, GramEigenCacheManager
 from src.models.general.slim import SLIMMatrixCacheManager
+from src.models.general.item_knn import ItemKNNSimCacheManager
 
 class Args:
     """Helper class to convert dictionary to object with attributes"""
@@ -169,6 +170,16 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                     # Accumulate for average
                     for k, v in final_metrics.items():
                         all_seed_metrics[k].append(v)
+                        
+                    # ── 캐시 정리 (메모리 누수 방지) ──
+                    print("   --- Cleaning up in-memory global caches to prevent OOM ---")
+                    try:
+                        # NOTE: SVDCacheManager().invalidate()는 디스크의 파일을 삭제하므로 호출하지 않음
+                        GramEigenCacheManager.clear()
+                        SLIMMatrixCacheManager.clear()
+                        ItemKNNSimCacheManager.clear()
+                    except Exception as e:
+                        print(f"   [Warning] Cache cleanup error: {e}")
                 
                 # After all seeds, compute average
                 aggregated_metrics = {}

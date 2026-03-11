@@ -62,62 +62,6 @@ def beta_slope_ratio(item_freq, sigma_k):
     return float(np.clip(beta, 0, 1)), 0.0 # Slope ratio doesn't have a single R2
 
 
-# ------------------------------------------------------------------
-# 2. OLS
-# ------------------------------------------------------------------
-def beta_ols(sigma_k, p_tilde_k):
-    """
-    log p̃_k = 2β · log σ_k + C  →  OLS
-    """
-    x, y = _log_xy(sigma_k, p_tilde_k)
-    if len(x) < 2: return 0.5
-    A = np.column_stack([x, np.ones_like(x)])
-    coef, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
-    slope, intercept = coef[0], coef[1]
-    r2 = _compute_r2(x, y, slope, intercept)
-    return float(np.clip(slope / 2, 0, 1)), float(r2)
-
-
-# ------------------------------------------------------------------
-# 3. Theil-Sen (중앙값 기울기, O(K²))
-# ------------------------------------------------------------------
-def beta_theil_sen(sigma_k, p_tilde_k):
-    """
-    모든 쌍의 기울기 중앙값. 파라미터 없음, breakdown point 29%
-    """
-    x, y = _log_xy(sigma_k, p_tilde_k)
-    if len(x) < 2: return 0.5
-    result = theilslopes(y, x)
-    slope, intercept = result.slope, result.intercept
-    r2 = _compute_r2(x, y, slope, intercept)
-    return float(np.clip(slope / 2, 0, 1)), float(r2)
-
-
-# ------------------------------------------------------------------
-# 4. Huber (δ_H = 1.35 고정)
-# ------------------------------------------------------------------
-def beta_huber_fixed(sigma_k, p_tilde_k, delta_h=1.35):
-    """
-    Huber M-추정, δ_H = 1.35 (Gaussian 기준 고정값)
-    """
-    x, y = _log_xy(sigma_k, p_tilde_k)
-    if len(x) < 2: return 0.5
-    A = np.column_stack([x, np.ones_like(x)])
-
-    # IRLS: Huber loss 직접 최소화
-    coef = np.linalg.lstsq(A, y, rcond=None)[0]  # OLS 초기값
-    for _ in range(100):
-        resid = y - A @ coef
-        w = np.where(np.abs(resid) <= delta_h, 1.0, delta_h / np.clip(np.abs(resid), 1e-9, None))
-        W = np.diag(w)
-        coef_new = np.linalg.lstsq(A.T @ W @ A, A.T @ W @ y, rcond=None)[0]
-        if np.max(np.abs(coef_new - coef)) < 1e-8:
-            break
-        coef = coef_new
-
-    slope, intercept = coef[0], coef[1]
-    r2 = _compute_r2(x, y, slope, intercept)
-    return float(np.clip(slope / 2, 0, 1)), float(r2)
 
 
 # ------------------------------------------------------------------
@@ -194,7 +138,7 @@ def beta_lad(sigma_k, p_tilde_k):
         r2 = _compute_r2(x, y, 2 * beta, intercept)
         return float(np.clip(beta, 0, 1)), float(r2)
     else:
-        return beta_ols(sigma_k, p_tilde_k)
+        return 0.5, 0.0
 
 
 # ------------------------------------------------------------------
@@ -233,7 +177,7 @@ def beta_spp_lad(V, p_i, sigma_k):
         r2 = _compute_r2(x, y, 2 * beta, intercept)
         return float(np.clip(beta, 0, 1)), float(r2)
     else:
-        return beta_ols(sigma_k, p_tilde)
+        return 0.5, 0.0
 
 
 # ------------------------------------------------------------------
@@ -245,9 +189,6 @@ def beta_fixed(sigma_k=None, p_tilde_k=None, value=0.5):
 
 def estimate_all(sigma_k, p_tilde_k, item_freq=None, V=None, p_i=None):
     results = {
-        "ols":           beta_ols(sigma_k, p_tilde_k),
-        "theil_sen":     beta_theil_sen(sigma_k, p_tilde_k),
-        "huber_fixed":   beta_huber_fixed(sigma_k, p_tilde_k),
         "huber_mad":     beta_huber_mad(sigma_k, p_tilde_k),
         "lad":           beta_lad(sigma_k, p_tilde_k),
         "fixed_0.5":     beta_fixed(),

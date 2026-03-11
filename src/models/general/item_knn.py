@@ -6,6 +6,41 @@ from tqdm import tqdm
 from sklearn.metrics.pairwise import cosine_similarity
 
 from ..base_model import BaseModel
+from ...utils.cache_manager import GlobalCacheManager
+
+class ItemKNNSimCacheManager(GlobalCacheManager):
+    """
+    Module-level cache for ItemKNN similarity matrices. Global scope.
+    Keyed by (n_users, n_items, similarity_metric) to identify the same dataset/metric config.
+    """
+    _cache = {}  # key -> similarity_matrix
+    
+    @classmethod
+    def get(cls, key):
+        return cls._cache.get(key)
+    
+    @classmethod
+    def put(cls, key, matrix):
+        cls._cache[key] = matrix
+        # Logging rough size depending on sparse/dense
+        if hasattr(matrix, 'data'):
+            size_mb = matrix.data.nbytes / 1024**2
+        else:
+            size_mb = matrix.nbytes / 1024**2
+        print(f"[ItemKNN] Similarity matrix cached (metric={key[2]}, ~{size_mb:.1f} MB)")
+    
+    @classmethod
+    def clear(cls):
+        cls._cache.clear()
+
+    def summary(self):
+        total_bytes = 0
+        for m in self._cache.values():
+            total_bytes += m.data.nbytes if hasattr(m, 'data') else m.nbytes
+        return {"type": "ItemKNNSim", "entries": len(self._cache), "size_mb": round(total_bytes / 1e6, 1)}
+
+    def invalidate(self, key=None):
+        self._cache.clear()
 
 class ItemKNN(BaseModel):
     """
@@ -30,6 +65,9 @@ class ItemKNN(BaseModel):
         self.ui_shape = (self.n_users, self.n_items)
         self.sim_shape = (self.n_items, self.n_items)
         
+        # Register cache manager for proper lifecycle management (clear on dataset change)
+        self.register_cache_manager('ItemKNNSim', ItemKNNSimCacheManager())
+        
         self._log(f"Initialized (k={self.k})")
 
     def fit(self, data_loader):
@@ -46,50 +84,65 @@ class ItemKNN(BaseModel):
         )
         
         self._log(f"Calculating similarity ({self.similarity_metric})...")
-        if self.similarity_metric == 'jaccard':
-            # Manual Jaccard Calculation using Sparse Matrix Multiplication
-            X = self.user_item_matrix.T  # (Items x Users)
-            X.data = np.ones_like(X.data)  # Ensure binary
-            
-            self._log("Calculating intersection (X @ X.T)...")
-            intersection = X @ X.T 
-
-            item_counts = np.array(X.sum(axis=1)).flatten()
-            self._log("Calculating union...")
-            count_matrix = item_counts[:, None] + item_counts[None, :]
-            
-            intersection_dense = intersection.toarray()
-            union_dense = count_matrix - intersection_dense
-            
-            valid_mask = union_dense > 0
-            self.item_similarity_matrix = np.zeros_like(intersection_dense, dtype=np.float32)
-            self.item_similarity_matrix[valid_mask] = intersection_dense[valid_mask] / union_dense[valid_mask]
-            
-        elif self.similarity_metric == 'cosine':
-            try:
-                # Try sparse output if possible (requires scikit-learn >= 0.24 approx?)
-                # dense_output=False is not always supported by cosine_similarity in older versions?
-                # It's better to check matrix size.
-                if self.n_items > 10000:
-                    self._log(f"Warning: n_items={self.n_items} is large. Cosine similarity might OOM.")
-                
-                self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T, dense_output=False)
-            except TypeError:
-                # Fallback if dense_output param not supported
-                self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T)
-            except (MemoryError, RuntimeError) as e:
-                self._log(f"OOM during cosine_similarity: {e}")
-                raise e
+        
+        # 캐시 키 생성: (데이터셋 이름, 데이터셋 형태, 기준 거리)
+        dataset_name = self.config.get('dataset_name', 'default')
+        cache_key = (dataset_name, self.n_users, self.n_items, self.similarity_metric)
+        cached_matrix = ItemKNNSimCacheManager.get(cache_key)
+        
+        if cached_matrix is not None:
+            self._log("Found precomputed similarity matrix in GlobalCacheManager!")
+            # 캐시된 원본 행렬을 가져와서 재사용 (복사는 하지 않음, 어차피 아래에서 가지치기만 함)
+            self.item_similarity_matrix = cached_matrix.copy() if hasattr(cached_matrix, 'copy') else cached_matrix
         else:
-            raise ValueError(f"Unsupported similarity metric: {self.similarity_metric}")
+            if self.similarity_metric == 'jaccard':
+                # Manual Jaccard Calculation using Sparse Matrix Multiplication
+                X = self.user_item_matrix.T  # (Items x Users)
+                X.data = np.ones_like(X.data)  # Ensure binary
+                
+                self._log("Calculating intersection (X @ X.T)...")
+                intersection = X @ X.T 
+    
+                item_counts = np.array(X.sum(axis=1)).flatten()
+                self._log("Calculating union...")
+                count_matrix = item_counts[:, None] + item_counts[None, :]
+                
+                intersection_dense = intersection.toarray()
+                union_dense = count_matrix - intersection_dense
+                
+                valid_mask = union_dense > 0
+                self.item_similarity_matrix = np.zeros_like(intersection_dense, dtype=np.float32)
+                self.item_similarity_matrix[valid_mask] = intersection_dense[valid_mask] / union_dense[valid_mask]
+                
+            elif self.similarity_metric == 'cosine':
+                try:
+                    if self.n_items > 10000:
+                        self._log(f"Warning: n_items={self.n_items} is large. Cosine similarity might OOM.")
+                    
+                    self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T, dense_output=False)
+                except TypeError:
+                    self.item_similarity_matrix = cosine_similarity(self.user_item_matrix.T)
+                except (MemoryError, RuntimeError) as e:
+                    self._log(f"OOM during cosine_similarity: {e}")
+                    raise e
+            else:
+                raise ValueError(f"Unsupported similarity metric: {self.similarity_metric}")
+                
+            # 캐시에 원본 저장 (이후 Top-K Pruning에서 수정될 수 있으므로 복사본을 넘겨서 가지치기 하도록)
+            cache_copy = self.item_similarity_matrix.copy() if hasattr(self.item_similarity_matrix, 'copy') else self.item_similarity_matrix
+            ItemKNNSimCacheManager.put(cache_key, cache_copy)
+            
+        # --- Self-similarity 제거 ---
+        self._log("Removing self-similarity (S_{ii} = 0)...")
+        if not sp.issparse(self.item_similarity_matrix):
+            self.item_similarity_matrix = sp.csr_matrix(self.item_similarity_matrix)
+        
+        self.item_similarity_matrix.setdiag(0)
+        self.item_similarity_matrix.eliminate_zeros()
             
         # --- Top-K Pruning ---
         self._log(f"Top-{self.k} pruning...")
         
-        # Convert to CSR if not already (sklean cosine_similarity might return dense or csr)
-        if not sp.issparse(self.item_similarity_matrix):
-            self.item_similarity_matrix = sp.csr_matrix(self.item_similarity_matrix)
-            
         # Row-wise top-k selection
         n_items = self.item_similarity_matrix.shape[0]
         
@@ -152,6 +205,9 @@ class ItemKNN(BaseModel):
                 new_indices.extend(top_indices)
                 new_indptr.append(new_indptr[-1] + self.k)
                 
+        # Apply pruning results to actual sparse matrix
+        self.item_similarity_matrix = sp.csr_matrix((new_data, new_indices, new_indptr), shape=(n_items, n_items))
+                
         # Convert to Torch Sparse and register as buffers
         self.item_similarity_matrix = self.item_similarity_matrix.tocoo()
         self.register_buffer('sim_indices', torch.LongTensor([self.item_similarity_matrix.row, self.item_similarity_matrix.col]))
@@ -176,20 +232,10 @@ class ItemKNN(BaseModel):
         [Optimization] GPU-accelerated Sparse ItemKNN Score Calculation
         score = X @ S (where X is user history multi-hot, S is item-item similarity)
         """
-        # Build user history batch (Dense for small batches, or Sparse if huge)
-        batch_size = users.size(0)
-        user_input = torch.zeros(batch_size, self.n_items, device=self.device)
-        
-        # User history is stored in buffers
-        # We need a way to efficiently get batch user history on GPU
-        # If we use sparse tensors: batch_users = self.user_item_matrix[users]
-        # Torch sparse indexing isn't great. Let's use the loader's history if needed or dense batch.
-        
+        # Build user history batch efficiently using CSR matrix slicing
         users_np = users.cpu().numpy()
-        for i, u_id in enumerate(users_np):
-            hist = list(self.data_loader.train_user_history.get(int(u_id), []))
-            if hist:
-                user_input[i, hist] = 1.0
+        batch_user_hist = self.user_item_matrix[users_np].toarray()
+        user_input = torch.tensor(batch_user_hist, dtype=torch.float32, device=self.device)
         
         # S = similarity matrix (Sparse)
         S = torch.sparse_coo_tensor(self.sim_indices, self.sim_values, self.sim_shape, device=self.device)

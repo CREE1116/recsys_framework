@@ -203,7 +203,7 @@ def run_corollary2(dataset_names, target_energy=0.95):
         for r in records
     ]
     result = {"experiments": clean_records}
-    with open(os.path.join(out_dir, "result.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result.json"), 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4, ensure_ascii=False)
 
     print(f"\n  Saved to {out_dir}")

@@ -52,7 +52,7 @@ def run_power_law(dataset_name, target_energy=0.95):
         "beta": float(beta),
         "r2": float(r2),
     }
-    with open(os.path.join(out_dir, "result.json"), 'w') as f:
+    with open(os.path.join(out_dir, "result.json"), 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4)
         
     print(f"  Estimated Beta: {beta:.4f}, R²: {r2:.4f}")

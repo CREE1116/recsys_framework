@@ -55,8 +55,14 @@ class GF_CF(BaseModel):
         user_sums = np.array(R.sum(axis=1)).flatten()
         item_sums = np.array(R.sum(axis=0)).flatten()
         
-        user_inv_w = np.power(user_sums, -weight, where=user_sums > 0)
-        item_inv_w = np.power(item_sums, -weight, where=item_sums > 0)
+        # 안전한 역수 거듭제곱 연산
+        user_inv_w = np.zeros_like(user_sums)
+        u_mask = user_sums > 0
+        user_inv_w[u_mask] = np.power(user_sums[u_mask], -weight)
+        
+        item_inv_w = np.zeros_like(item_sums)
+        i_mask = item_sums > 0
+        item_inv_w[i_mask] = np.power(item_sums[i_mask], -weight)
         
         # D_u^-w @ R
         R_norm = sp.diags(user_inv_w) @ R
@@ -75,23 +81,27 @@ class GF_CF(BaseModel):
         R = sp.csr_matrix(
             (data, (rows, cols)),
             shape=(self.n_users, self.n_items),
-            dtype=float
+            dtype=np.float32
         )
         
         # Apply Generalized Normalization
         R_norm = self._normalize_matrix(R, self.norm_weight)
         
+        # SVD Rank 제한 설정 (행렬 차원을 넘을 수 없음)
+        min_dim = min(R_norm.shape)
+        k = min(self.k, min_dim - 1)
+        
         # Perform SVD using SVDManager
-        # NOTE: dataset_name must include norm_weight to avoid cache collision if normalization changes
+        # NOTE: cache key must include k and norm_weight
         dataset_name = self.config.get('dataset_name', 'unknown_gfcf')
-        cache_suffix = f"_w{self.norm_weight:.2f}"
+        cache_suffix = f"_k{k}_w{self.norm_weight:.2f}"
         
-        u, s, v, _ = self.svd_manager.get_svd(R_norm, k=self.k, dataset_name=f"{dataset_name}{cache_suffix}")
+        u, s, v, _ = self.svd_manager.get_svd(R_norm, k=k, dataset_name=f"{dataset_name}{cache_suffix}")
         
-        # Move factors to device
-        self.register_buffer('user_factors', u.to(self.device).float())
-        self.register_buffer('item_factors', v.to(self.device).float())
-        self.register_buffer('sigma', s.to(self.device).float())
+        # 안전한 버퍼 변수 덮어쓰기
+        self.user_factors = u.to(self.device).float()
+        self.item_factors = v.to(self.device).float()
+        self.sigma = s.to(self.device).float()
         
         # Apply alpha scaling to singular values
         # Score = U * Sig^alpha * V^T
@@ -99,7 +109,7 @@ class GF_CF(BaseModel):
         scaled_sigma = torch.pow(self.sigma, self.alpha)
         
         # Final User Factors = U * Sigma^alpha
-        self.register_buffer('user_factors_scaled', self.user_factors * scaled_sigma.unsqueeze(0))
+        self.user_factors_scaled = self.user_factors * scaled_sigma.unsqueeze(0)
         
         self._log(f"Fitted. user_factors: {self.user_factors_scaled.shape}, item_factors: {self.item_factors.shape}")
 
@@ -116,8 +126,6 @@ class GF_CF(BaseModel):
         return torch.sum(u_embeds * i_embeds, dim=1)
 
     def get_final_item_embeddings(self):
-        if self.item_factors is None:
-            return torch.zeros((self.n_items, self.k), device=self.device)
         return self.item_factors
 
     def calc_loss(self, batch_data):

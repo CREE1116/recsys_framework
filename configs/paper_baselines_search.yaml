@@ -208,6 +208,17 @@ searches:
   #   patience: 20
   #   metric: "NDCG@20"
 
+  - name: "ItemKNN"
+    method: "bayesian"
+    model_config: "configs/model/general/item_knn.yaml"
+    params:
+      - name: "model.k"
+        type: "int"
+        range: "10 500"
+    n_trials: 30
+    patience: 10
+    metric: "NDCG@20"
+
   # - name: "SANSA"
   #   method: "bayesian"
   #   model_config: "configs/model/general/sansa.yaml"

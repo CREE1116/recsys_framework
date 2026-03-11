@@ -5,4 +5,5 @@ model:
   alpha: 40
   max_iter: 30
   cg_steps: 3
+  patience: 5
 device: auto
