@@ -1,3 +1,4 @@
+# --extra-index-url https://download.pytorch.org/whl/cu121
 # Core Dependencies
 torch>=2.0
 numpy

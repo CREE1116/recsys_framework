@@ -2,7 +2,7 @@
 # 실행: uv run python scripts/run_all_smart_searches.py --config configs/paper_baselines_search.yaml --output_dir output/paper_baselines
 
 datasets:
-  # - "configs/dataset/ml100k.yaml"
+  - "configs/dataset/ml100k.yaml"
   - "configs/dataset/ml1m.yaml"
   - "configs/dataset/ml20m.yaml"
   - "configs/dataset/steam.yaml"
@@ -13,7 +13,7 @@ datasets:
   # - "configs/dataset/amazon_electronics.yaml"
   # - "configs/dataset/amazon_books.yaml"
 
-seeds: [42, 43, 44, 45, 46]
+seeds: [42, 43, 44]
 # seeds: [42]
 
 # 데이터셋 요약 시 표시할 메트릭 (target metric은 항상 포함)
@@ -46,17 +46,17 @@ searches:
   # Baselines: Linear / Closed-form
   # ============================================================
 
-  # - name: "EASE"
-  #   method: "bayesian"
-  #   model_config: "configs/model/general/ease.yaml"
-  #   params:
-  #     - name: "model.reg_lambda"
-  #       type: "float"
-  #       range: "0.1 100000"
-  #       log: true
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"
+  - name: "EASE"
+    method: "bayesian"
+    model_config: "configs/model/general/ease.yaml"
+    params:
+      - name: "model.reg_lambda"
+        type: "float"
+        range: "0.1 100000"
+        log: true
+    n_trials: 60
+    patience: 20
+    metric: "NDCG@20"
 
   - name: "iALS"
     method: "bayesian"
