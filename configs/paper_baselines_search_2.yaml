@@ -46,17 +46,17 @@ searches:
   # Baselines: Linear / Closed-form
   # ============================================================
 
-  - name: "EASE"
-    method: "bayesian"
-    model_config: "configs/model/general/ease.yaml"
-    params:
-      - name: "model.reg_lambda"
-        type: "float"
-        range: "0.1 100000"
-        log: true
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "EASE"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/ease.yaml"
+  #   params:
+  #     - name: "model.reg_lambda"
+  #       type: "float"
+  #       range: "0.1 100000"
+  #       log: true
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
   - name: "iALS"
     method: "bayesian"

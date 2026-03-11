@@ -262,7 +262,7 @@ def run_ablation(dataset_name, target_energy=0.95, seeds=[42]):
         "SPP+Huber (Fixed)": _local_beta_huber_fixed(S_tensor_np, p_tilde)[0],
         "SPP+Huber (MAD)":   AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="huber_mad")[0],
         "SPP+LAD":           AspireEngine.estimate_beta(S_tensor, p_tilde, estimator_type="lad")[0],
-        "Slope ratio":       beta_slope,
+        # "Slope ratio":       beta_slope,
         "β=0.5 fixed":       beta_fixed,
         "β=HPO (Joint)":     best_beta_hpo,
     }
@@ -290,7 +290,7 @@ def run_ablation(dataset_name, target_energy=0.95, seeds=[42]):
                 # Let's re-run only alpha fitting using the fixed best Joint beta to be consistent with others.
                 alpha_params, _ = find_best_params_bayesian(
                     XV_val, S_tensor, V_tensor, val_gt, val_history, device,
-                    beta_val=best_beta_hpo, n_trials=40, patience=20, seed=seed,
+                    beta_val=best_beta_hpo, n_trials=60, patience=20, seed=seed,
                     study_name=f"Alpha_Joint_HPO_{seed}",
                     out_dir=os.path.join(hpo_dir, f"Alpha_Joint_HPO_{seed}"),
                 )
@@ -299,7 +299,7 @@ def run_ablation(dataset_name, target_energy=0.95, seeds=[42]):
                 safe_name = name.replace(' ', '_').replace('(', '').replace(')', '').replace('+', '_')
                 alpha_params, _ = find_best_params_bayesian(
                     XV_val, S_tensor, V_tensor, val_gt, val_history, device,
-                    beta_val=beta, n_trials=40, patience=20, seed=seed,
+                    beta_val=beta, n_trials=60, patience=20, seed=seed,
                     study_name=f"Alpha_{safe_name}_{seed}",
                     out_dir=os.path.join(hpo_dir, f"Alpha_{safe_name}_{seed}"),
                 )
@@ -343,14 +343,49 @@ def run_ablation(dataset_name, target_energy=0.95, seeds=[42]):
     with open(os.path.join(out_dir, "result_per_method_bayesian.json"), 'w', encoding='utf-8') as f:
         json.dump({"dataset": dataset_label, "seeds": seeds, "methods": results_table, "k": int(V.shape[1])}, f, indent=4)
 
-    plt.figure(figsize=(12, 6))
     m = [r['method'] for r in results_table]
-    x = np.arange(len(m)); width = 0.25
-    plt.bar(x - width, [r['ndcg_head'] for r in results_table], width, label='Head NDCG', color='lightcoral')
-    plt.bar(x, [r['ndcg_all'] for r in results_table], width, label='Overall NDCG', color='skyblue')
-    plt.bar(x + width, [r['ndcg_tail'] for r in results_table], width, label='Tail NDCG', color='lightgreen')
-    plt.xticks(x, m, rotation=15, ha='right'); plt.ylabel("NDCG@10"); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, "ablation_breakdown_bayesian.png"), dpi=150); plt.close()
+    x = np.arange(len(m))
+    head_vals = [r['ndcg_head'] for r in results_table]
+    all_vals  = [r['ndcg_all'] for r in results_table]
+    tail_vals = [r['ndcg_tail'] for r in results_table]
+
+    # 3개의 완전히 분리된 서브플롯 생성
+    fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    fig.subplots_adjust(hspace=0.2)
+
+    # 1. Overall NDCG
+    axes[0].bar(x, all_vals, color='skyblue', edgecolor='black')
+    axes[0].set_title('Overall NDCG@10', fontsize=12, pad=10)
+    axes[0].set_ylabel('NDCG')
+    axes[0].grid(axis='y', linestyle='--', alpha=0.6)
+    axes[0].set_ylim([max(0, min(all_vals) * 0.9), max(all_vals) * 1.05])
+
+    # 2. Head NDCG
+    axes[1].bar(x, head_vals, color='lightcoral', edgecolor='black')
+    axes[1].set_title('Head NDCG@10', fontsize=12, pad=10)
+    axes[1].set_ylabel('NDCG')
+    axes[1].grid(axis='y', linestyle='--', alpha=0.6)
+    axes[1].set_ylim([max(0, min(head_vals) * 0.9), max(head_vals) * 1.05])
+
+    # 3. Tail NDCG
+    axes[2].bar(x, tail_vals, color='lightgreen', edgecolor='black')
+    axes[2].set_title('Long-Tail NDCG@10', fontsize=12, pad=10)
+    axes[2].set_ylabel('NDCG')
+    axes[2].grid(axis='y', linestyle='--', alpha=0.6)
+    
+    # 꼬리(Tail) 값들은 편차가 작고 0에 가깝기 때문에 하한을 0에 맞추거나 타이트하게 조정
+    t_min = min(tail_vals)
+    t_max = max(tail_vals)
+    y_margin = (t_max - t_min) * 0.15 if t_max > t_min else t_max * 0.1
+    axes[2].set_ylim([max(0, t_min - y_margin), t_max + y_margin])
+
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(m, rotation=30, ha='right', fontsize=10)
+
+    # 전체 타이틀 및 마무리
+    fig.suptitle(f'Ablation Study Results ({dataset_label})', fontsize=14, y=0.96)
+    plt.savefig(os.path.join(out_dir, "ablation_breakdown_bayesian.png"), dpi=150, bbox_inches='tight')
+    plt.close()
 
     return results_table
 

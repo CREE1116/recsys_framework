@@ -1,187 +1,111 @@
+import os
+# [Mac 환경 최적화] 라이브러리 로드 전 OpenMP 스레드 수를 강제 할당하여 
+# 싱글 코어로 도는 현상 방지 (사용 중인 Mac의 성능에 따라 8~10 정도로 조절 가능)
+# os.environ['OPENBLAS_NUM_THREADS'] = '8'
+# os.environ['OMP_NUM_THREADS'] = '8'
+
 import torch
 import torch.nn as nn
 import numpy as np
 import scipy.sparse as sp
+import implicit
+from implicit.gpu.als import AlternatingLeastSquares as GPU_ALS
+from implicit.cpu.als import AlternatingLeastSquares as CPU_ALS
 from ..base_model import BaseModel
 from ...utils.gpu_accel import get_device
-from tqdm import tqdm
 import time
 
-
 class iALS(BaseModel):
-
     def __init__(self, config, data_loader):
         super().__init__(config, data_loader)
 
         self.embedding_dim = config['model'].get('embedding_dim', 128)
         self.reg_lambda = config['model'].get('reg_lambda', 0.01)
-        self.alpha = config['model'].get('alpha', 40)
+        self.alpha = config['model'].get('alpha', 40.0)
         self.max_iter = config['model'].get('max_iter', 15)
+        self.seed = config['model'].get('seed', 42)
 
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
 
+        self.device = get_device('auto')
+
+        # PyTorch 생태계(추론, 평가 등)와의 완벽한 호환성을 위한 껍데기 Embedding
         self.user_embedding = nn.Embedding(self.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.n_items, self.embedding_dim)
 
-        nn.init.normal_(self.user_embedding.weight, std=0.01)
-        nn.init.normal_(self.item_embedding.weight, std=0.01)
+        # Device에 따른 엔진 라우팅 
+        # (MPS는 C++ backend에서 지원하지 않으므로 무조건 CPU로 빠지게 설정)
+        if self.device.type == 'cuda':
+            self.use_gpu = True
+            ALS_Engine = GPU_ALS
+        else:
+            self.use_gpu = False
+            ALS_Engine = CPU_ALS
 
-        # Automatic optimal device selection (MPS/CUDA/CPU)
-        self.device = get_device('auto')
-        self.batch_users = config['model'].get('batch_users', 1024)
-
-    # --------------------------------------------------------
-    # Batched GPU ALS Update
-    # --------------------------------------------------------
-
-    def _update_batched(self, Target, Fixed, FixedTFixed, indptr, indices):
-        """
-        Fully vectorized, loopless GPU batched update.
-        Replaces slow CPU loops with batched Cholesky solves.
-        """
-        N, d = Target.shape
-        device = self.device
-
-        alpha = float(self.alpha)
-        reg = float(self.reg_lambda)
-
-        # Precompute base: P = F^T F + lambda * I  (d x d) — shared across all rows
-        P = FixedTFixed + reg * torch.eye(d, device=device)  # (d, d)
-
-        for batch_start in range(0, N, self.batch_users):
-            batch_end = min(batch_start + self.batch_users, N)
-            B = batch_end - batch_start
-
-            start_idx = indptr[batch_start].item()
-            end_idx = indptr[batch_end].item()
-            
-            zero_mask = (indptr[batch_start:batch_end] == indptr[batch_start+1:batch_end+1])
-            lens = indptr[batch_start+1:batch_end+1] - indptr[batch_start:batch_end]
-            max_len = lens.max().item()
-
-            if max_len > 0:
-                # Build padding mask (B, max_len)
-                mask = torch.arange(max_len, device=device).unsqueeze(0) < lens.unsqueeze(1)
-                
-                # Fetch indices - default to 0 for padding to avoid out-of-bounds
-                padded_idx = torch.zeros((B, max_len), dtype=torch.long, device=device)
-                batch_indices = indices[start_idx:end_idx]
-                padded_idx[mask] = batch_indices
-                
-                # Gather and mask embeddings
-                V_u_padded = Fixed[padded_idx] * mask.unsqueeze(-1).float() # (B, max_len, d)
-                
-                # Batched matrix multiplication (highly efficient on GPU)
-                A_u_batch = torch.bmm(V_u_padded.transpose(1, 2), V_u_padded) # (B, d, d)
-                b_batch = (1.0 + alpha) * V_u_padded.sum(dim=1) # (B, d)
-                
-                A_batch = P.unsqueeze(0) + alpha * A_u_batch
-            else:
-                A_batch = P.unsqueeze(0).repeat(B, 1, 1)
-                b_batch = torch.zeros((B, d), dtype=torch.float32, device=device)
-
-            # Batched GPU Solve
-            # CUDA fully supports batched Cholesky and is extremely fast.
-            # MPS (Apple Silicon) struggles with batched Cholesky, so we use a CPU fallback for it.
-            if device.type == 'cuda':
-                try:
-                    L = torch.linalg.cholesky(A_batch)
-                    x_t = torch.cholesky_solve(b_batch.unsqueeze(-1), L).squeeze(-1)   # (B, d)
-                except RuntimeError:
-                    # Fallback to general solver if Cholesky fails on CUDA (e.g. numerical instability)
-                    x_t = torch.linalg.solve(A_batch, b_batch.unsqueeze(-1)).squeeze(-1)
-            else:
-                # Move minimal data to CPU for batched Cholesky
-                # PyTorch's native CPU batched cholesky uses optimized ATen/OpenMP backend
-                A_cpu = A_batch.cpu()
-                b_cpu = b_batch.cpu().unsqueeze(-1)
-                
-                try:
-                    L_cpu = torch.linalg.cholesky(A_cpu)
-                    x_cpu = torch.cholesky_solve(b_cpu, L_cpu).squeeze(-1)
-                except RuntimeError:
-                    x_cpu = torch.linalg.solve(A_cpu, b_cpu).squeeze(-1)
-
-                x_t = x_cpu.to(device)
-
-            # Zero out users with no interactions
-            x_t.masked_fill_(zero_mask.unsqueeze(-1), 0.0)
-
-            Target[batch_start:batch_end] = x_t
-
-    # --------------------------------------------------------
-    # training
-    # --------------------------------------------------------
+        # [핵심 수정] calculate_training_loss=False 로 변경 완료.
+        # 이 옵션이 꺼져 있어야 매 이터레이션마다 극심한 연산 오버헤드가 발생하지 않음.
+        self.engine = ALS_Engine(
+            factors=self.embedding_dim,
+            regularization=self.reg_lambda,
+            alpha=self.alpha,
+            iterations=self.max_iter,
+            calculate_training_loss=False,  
+            random_state=self.seed
+        )
 
     def fit(self, data_loader):
-
         train_df = data_loader.train_df
-
         rows = train_df['user_id'].values
         cols = train_df['item_id'].values
-
+        
+        # implicit 라이브러리 입력 형식에 맞춘 가중치 (기본 상호작용은 1.0)
         values = np.ones(len(train_df), dtype=np.float32)
 
+        # (n_users x n_items) 크기의 CSR Matrix 생성
         X = sp.csr_matrix(
             (values, (rows, cols)),
             shape=(self.n_users, self.n_items),
             dtype=np.float32
         )
 
-        Xt = X.T.tocsr()
+        backend_name = 'CUDA GPU' if self.use_gpu else 'CPU (OpenMP)'
+        print(f"[iALS] Training started using {backend_name} backend...")
+        start_time = time.time()
+        
+        # 최적화된 백엔드 연산 수행 (show_progress=True로 설정하면 내부적으로 tqdm 바 생성됨)
+        self.engine.fit(X, show_progress=True)
+        
+        print(f"[iALS] total training time: {time.time() - start_time:.4f}s")
 
+        # --- 훈련 완료 후 임베딩 동기화 ---
+        u_factors = self.engine.user_factors
+        i_factors = self.engine.item_factors
+
+        # CUDA 환경일 경우 CuPy 배열로 나올 수 있으므로 안전하게 Numpy로 내리기
+        if hasattr(u_factors, 'get'):
+            u_factors = u_factors.get()
+        if hasattr(i_factors, 'get'):
+            i_factors = i_factors.get()
+
+        # PyTorch Parameter로 복사
+        with torch.no_grad():
+            self.user_embedding.weight.copy_(torch.from_numpy(u_factors))
+            self.item_embedding.weight.copy_(torch.from_numpy(i_factors))
+            
         self.user_embedding = self.user_embedding.to(self.device)
         self.item_embedding = self.item_embedding.to(self.device)
 
-        U = self.user_embedding.weight.data
-        V = self.item_embedding.weight.data
-        
-        # Move pointers and indices to device for GPU scatter logic
-        X_indptr = torch.from_numpy(X.indptr).long().to(self.device)
-        X_indices = torch.from_numpy(X.indices).long().to(self.device)
-        
-        Xt_indptr = torch.from_numpy(Xt.indptr).long().to(self.device)
-        Xt_indices = torch.from_numpy(Xt.indices).long().to(self.device)
-
-        start_time = time.time()
-
-        pbar = tqdm(range(self.max_iter), desc="[iALS]")
-
-        for it in pbar:
-            t0 = time.time()
-
-            VtV = V.t() @ V
-            self._update_batched(U, V, VtV, X_indptr, X_indices)
-
-            UtU = U.t() @ U
-            self._update_batched(V, U, UtU, Xt_indptr, Xt_indices)
-
-            pbar.set_postfix(
-                t=f"{time.time()-t0:.2f}s"
-            )
-
-        print("training time:", time.time() - start_time)
-
-
-    # --------------------------------------------------------
-    # inference
-    # --------------------------------------------------------
-
     def forward(self, user_ids, item_ids=None):
-
         if not isinstance(user_ids, torch.Tensor):
             user_ids = torch.tensor(user_ids, device=self.device)
 
         users = self.user_embedding(user_ids)
 
         if item_ids is not None:
-
             if not isinstance(item_ids, torch.Tensor):
                 item_ids = torch.tensor(item_ids, device=self.device)
-
             items = self.item_embedding(item_ids)
-
             return (users * items).sum(dim=-1)
 
         return users @ self.item_embedding.weight.t()
