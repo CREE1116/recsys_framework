@@ -76,8 +76,8 @@ class BayesianOptimizer:
         # Clamp Rank/K parameters if type is 'int_min_dim'
         for param in self.params_list:
             if param['type'] == 'int_min_dim':
-                # 하드 캡: SVD/임베딩 차원은 2048 이상에서 수확 체감
-                MAX_DIM_CAP = 2048
+                # 하드 캡: SVD/임베딩 차원은 너무 높으면 계산 비용 급증
+                MAX_DIM_CAP = 4096
                 effective_max = min(max_dim, MAX_DIM_CAP)
                 
                 if 'range' not in param:
