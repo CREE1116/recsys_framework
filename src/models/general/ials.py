@@ -129,6 +129,7 @@ class iALS(BaseModel):
     # Training
     # --------------------------------------------------------
     def fit(self, data_loader):
+        self.device = self.user_embedding.weight.device
         self._log(f"Fitting with d={self.embedding_dim}, lambda={self.reg_lambda}, alpha={self.alpha}, iter={self.max_iter}, batch_users={self.batch_users}")
         self._log(f"Device: {self.device}")
 
@@ -188,6 +189,22 @@ class iALS(BaseModel):
 
             iter_time = time.time() - t0
             pbar.set_postfix(loss=f"{total_loss:.4e}", t=f"{iter_time:.1f}s")
+            
+            # --- Early Stopping (based on training loss) ---
+            patience = self.config.get('train', {}).get('patience', 5)
+            tol = 1e-4
+            if it == 0:
+                best_loss = total_loss
+                wait = 0
+            else:
+                if total_loss < best_loss - tol:
+                    best_loss = total_loss
+                    wait = 0
+                else:
+                    wait += 1
+                    if wait >= patience:
+                        self._log(f"Early stopping triggered at iteration {it+1} (loss did not improve for {patience} iters).")
+                        break
 
 
         elapsed = time.time() - start_time
@@ -221,6 +238,7 @@ class iALS(BaseModel):
     # Inference
     # --------------------------------------------------------
     def forward(self, user_ids, item_ids=None):
+        self.device = self.user_embedding.weight.device
         if not isinstance(user_ids, torch.Tensor):
             user_ids = torch.tensor(user_ids, device=self.device)
 
@@ -238,6 +256,7 @@ class iALS(BaseModel):
         return self.forward(user_ids, item_ids)
 
     def calc_loss(self, batch_data):
+        self.device = self.user_embedding.weight.device
         return torch.tensor(0.0, device=self.device), None
 
     def get_final_item_embeddings(self):

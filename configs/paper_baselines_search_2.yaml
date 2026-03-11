@@ -5,7 +5,7 @@ datasets:
   - "configs/dataset/ml100k.yaml"
   - "configs/dataset/ml1m.yaml"
   - "configs/dataset/ml20m.yaml"
-  # - "configs/dataset/steam.yaml"
+  - "configs/dataset/steam.yaml"
   # - "configs/dataset/lastfm_2k.yaml"
   # - "configs/dataset/amazon_music.yaml"
   # - "configs/dataset/gowalla.yaml"
@@ -22,20 +22,25 @@ summary_metrics:
   - "Recall@10"
   - "HitRate@10"
   - "Coverage@10"
-  - "HeadHitRate@10"
-  - "HeadNDCG@10"
   - "LongTailCoverage@10"
+  - "LongTailRecall@10"
   - "LongTailHitRate@10"
   - "LongTailNDCG@10"
+  - "HeadRecall@10"
+  - "HeadHitRate@10"
+  - "HeadNDCG@10"
+
   - "NDCG@20"
   - "Recall@20"
   - "HitRate@20"
   - "Coverage@20"
+  - "LongTailCoverage@20"
+  - "LongTailRecall@20"
+  - "LongTailNDCG@20"
+  - "HeadRecall@20"
   - "HeadHitRate@20"
   - "HeadNDCG@20"
-  - "LongTailCoverage@20"
-  - "LongTailHitRate@20"
-  - "LongTailNDCG@20"
+
 searches:
   # ============================================================
   # Baselines: Linear / Closed-form
@@ -65,6 +70,9 @@ searches:
         type: "float"
         range: "1.0 10000.0"
         log: true
+      - name: "model.embedding_dim"
+        type: "categorical"
+        range: "32 64 128 256 512"
     n_trials: 60
     patience: 20
     metric: "NDCG@20"
@@ -199,9 +207,6 @@ searches:
         type: "float"
         range: "0.1 100000.0"
         log: true
-      # - name: "model.target_energy"
-      #   type: "categorical"
-      #   range: "0.95 0.96 0.97 0.98 0.99"
     n_trials: 60
     patience: 20
     metric: "NDCG@20"
