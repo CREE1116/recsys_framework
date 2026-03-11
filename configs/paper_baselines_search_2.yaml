@@ -4,7 +4,7 @@
 datasets:
   - "configs/dataset/ml100k.yaml"
   - "configs/dataset/ml1m.yaml"
-  # - "configs/dataset/ml20m.yaml"
+  - "configs/dataset/ml20m.yaml"
   # - "configs/dataset/steam.yaml"
   # - "configs/dataset/lastfm_2k.yaml"
   # - "configs/dataset/amazon_music.yaml"
@@ -20,57 +20,63 @@ seeds: [42, 43, 44, 45, 46]
 summary_metrics:
   - "NDCG@10"
   - "Recall@10"
+  - "HitRate@10"
   - "Coverage@10"
+  - "HeadHitRate@10"
+  - "HeadNDCG@10"
   - "LongTailCoverage@10"
-  - "LongTailRecall@10"
+  - "LongTailHitRate@10"
   - "LongTailNDCG@10"
   - "NDCG@20"
   - "Recall@20"
+  - "HitRate@20"
   - "Coverage@20"
+  - "HeadHitRate@20"
+  - "HeadNDCG@20"
   - "LongTailCoverage@20"
-  - "LongTailRecall@20"
+  - "LongTailHitRate@20"
   - "LongTailNDCG@20"
 searches:
-  - name: "LightGCN"
-    method: "bayesian"
-    model_config: "configs/model/general/lightgcn.yaml"
-    params:
-      - name: "model.n_layers"
-        type: "int"
-        range: "1 3"
-      - name: "train.lr"
-        type: "float"
-        range: "0.00001 0.01"
-      - name: "train.embedding_l2"
-        type: "float"
-        range: "0.00001 0.01"
-      - name: "model.embedding_dim"
-        type: "int"
-        range: "64 128"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "LightGCN"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/lightgcn.yaml"
+  #   params:
+  #     - name: "model.n_layers"
+  #       type: "int"
+  #       range: "1 3"
+  #     - name: "train.lr"
+  #       type: "float"
+  #       range: "0.00001 0.01"
+  #     - name: "train.embedding_l2"
+  #       type: "float"
+  #       range: "0.00001 0.01"
+  #     - name: "model.embedding_dim"
+  #       type: "int"
+  #       range: "64 128"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
-  # ============================================================
-  # Baselines: Matrix Factorization
-  # ============================================================
+  # # ============================================================
+  # # Baselines: Matrix Factorization
+  # # ============================================================
 
-  - name: "mf"
-    method: "bayesian"
-    model_config: "configs/model/general/mf.yaml"
-    params:
-      - name: "train.lr"
-        type: "float"
-        range: "0.00001 0.01"
-      - name: "train.embedding_l2"
-        type: "float"
-        range: "0.00001 0.01"
-      - name: "model.embedding_dim"
-        type: "int"
-        range: "64 128"
-    n_trials: 60
-    patience: 20
-    metric: "NDCG@20"
+  # - name: "mf"
+  #   method: "bayesian"
+  #   model_config: "configs/model/general/mf.yaml"
+  #   params:
+  #     - name: "train.lr"
+  #       type: "float"
+  #       range: "0.00001 0.01"
+  #     - name: "train.embedding_l2"
+  #       type: "float"
+  #       range: "0.00001 0.01"
+  #     - name: "model.embedding_dim"
+  #       type: "int"
+  #       range: "64 128"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
   # ============================================================
   # Baselines: Linear / Closed-form
@@ -241,20 +247,20 @@ searches:
   #   patience: 20
   #   metric: "NDCG@20"
 
-  # - name: "ASPIRE"
-  #   method: "bayesian"
-  #   model_config: "configs/model/csar/aspire.yaml"
-  #   params:
-  #     - name: "model.alpha"
-  #       type: "float"
-  #       range: "0.1 100000.0"
-  #       log: true
-  #     # - name: "model.target_energy"
-  #     #   type: "categorical"
-  #     #   range: "0.95 0.96 0.97 0.98 0.99"
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"
+  - name: "ASPIRE"
+    method: "bayesian"
+    model_config: "configs/model/csar/aspire.yaml"
+    params:
+      - name: "model.alpha"
+        type: "float"
+        range: "0.1 100000.0"
+        log: true
+      # - name: "model.target_energy"
+      #   type: "categorical"
+      #   range: "0.95 0.96 0.97 0.98 0.99"
+    n_trials: 60
+    patience: 20
+    metric: "NDCG@20"
 
   # - name: "ChebyASPIRE"
   #   method: "bayesian"

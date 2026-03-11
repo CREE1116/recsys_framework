@@ -302,7 +302,7 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
         mean_pop = np.mean(all_pops)
     
     tail_item_set = None
-    need_tail_metrics = any(m in metrics_list for m in ['LongTailHitRate', 'LongTailNDCG', 'HeadHitRate', 'HeadNDCG'])
+    need_tail_metrics = any(m in metrics_list for m in ['LongTailHitRate', 'LongTailNDCG', 'LongTailRecall', 'HeadHitRate', 'HeadNDCG', 'HeadRecall'])
     if need_tail_metrics and item_popularity is not None:
         tail_item_set = get_long_tail_item_set(item_popularity, head_volume_percent=long_tail_percent)
 
@@ -374,6 +374,8 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
                                 results[f'LongTailHitRate@{k}'].append(get_hit_rate(pred_list_k, tail_gt))
                             if 'LongTailNDCG' in metrics_list:
                                 results[f'LongTailNDCG@{k}'].append(get_ndcg(pred_list_k, tail_gt))
+                            if 'LongTailRecall' in metrics_list:
+                                results[f'LongTailRecall@{k}'].append(get_recall(pred_list_k, tail_gt))
                         
                         # Head Items Metrics
                         head_gt = [it for it in ground_truth if it not in tail_item_set]
@@ -382,6 +384,8 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
                                 results[f'HeadHitRate@{k}'].append(get_hit_rate(pred_list_k, head_gt))
                             if 'HeadNDCG' in metrics_list:
                                 results[f'HeadNDCG@{k}'].append(get_ndcg(pred_list_k, head_gt))
+                            if 'HeadRecall' in metrics_list:
+                                results[f'HeadRecall@{k}'].append(get_recall(pred_list_k, head_gt))
                     
                     # PopRatio
                     if 'PopRatio' in metrics_list and mean_pop is not None:
@@ -472,7 +476,7 @@ def evaluate_metrics(model, data_loader, eval_config, device, test_loader, is_fi
         # [RecBole Alignment] Validation 시에는 train 마스킹, Test 시에는 train+valid 마스킹
         history_to_use = data_loader.eval_user_history if is_final else data_loader.train_user_history
         # PopRatio, LongTail 지표 계산을 위해 item_popularity 전달
-        need_pop = any(m in metrics_list for m in ['PopRatio', 'LongTailHitRate', 'LongTailNDCG', 'HeadHitRate', 'HeadNDCG', 'Recall'])
+        need_pop = any(m in metrics_list for m in ['PopRatio', 'LongTailHitRate', 'LongTailNDCG', 'LongTailRecall', 'HeadHitRate', 'HeadNDCG', 'HeadRecall', 'Recall'])
         item_pop = data_loader.item_popularity if need_pop else None
         
         lt_percent = eval_config.get('long_tail_percent', 0.8)
