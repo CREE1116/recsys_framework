@@ -1,11 +1,14 @@
 model:
   name: "aspire"
-  alpha: 500.0
-
   # Beta: MCAR 기준선(a=0.5)으로부터의 스펙트럼 이탈량
-  # 'auto': β = max(0, 2a - 1), SWLS로 a 추정
+  # 'auto': β를 데이터(E-WLS)로부터 자동 추정
   beta: "auto"
-  estimator_type: "lad"
+  estimator_type: "slope_ratio"
+  # estimator_type: "lad"
+  weight_mode: "normal"
+
+  # Direct SPP: null 설정 시 기존 ASPIRE 멱법칙 필터 사용
+  spp_pow: null
+
   target_energy: 0.95
-  visualize: true
-# Adaptive Spectral Popularity-aware Intrinsic REgularization
+  visualize: true# Adaptive Spectral Popularity-aware Intrinsic REgularization
