@@ -24,18 +24,22 @@ class ASPIRE(BaseModel):
         self.k = model_config.get('k', 128)
         self.visualize = model_config.get('visualize', True)
         self.estimator_type = model_config.get('estimator_type', 'huber')
+        self.spp_pow = model_config.get('spp_pow', None)
+        self.weight_mode = model_config.get('weight_mode', 'normal')
         
         # ASPIRE Layer
         self.lira_layer = ASPIRELayer(
             k=self.k,
             alpha=self.alpha,
             beta=self.beta,
+            spp_pow=self.spp_pow,
+            weight_mode=self.weight_mode,
             target_energy=self.target_energy,
             estimator_type=self.estimator_type
         )
         self.lira_layer.to(self.device)
         
-        self._log(f"Initialized (k={self.k}, α={self.alpha}, β={self.beta}, method={self.estimator_type})")
+        self._log(f"Initialized (k={self.k}, α={self.alpha}, β={self.beta}, spp_pow={self.spp_pow}, method={self.estimator_type})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)

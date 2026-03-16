@@ -63,6 +63,38 @@ def ensure_dir(path):
     return path
 
 
+def get_eval_config(loader, override: dict = None) -> dict:
+    """
+    configs/evaluation.yaml 기준으로 eval_config를 구성한다.
+    loader.config에 dataset 고유 설정이 있으면 우선 적용하고,
+    override dict로 추가 덮어씌우기 가능.
+
+    Returns a dict compatible with evaluate_metrics().
+    """
+    eval_yaml_path = "configs/evaluation.yaml"
+    eval_cfg = {}
+    if os.path.exists(eval_yaml_path):
+        with open(eval_yaml_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        eval_cfg = raw.get("evaluation", {})
+
+    # loader.config의 evaluation 섹션이 있으면 덮어씌움
+    loader_eval = loader.config.get("evaluation", {})
+    eval_cfg.update(loader_eval)
+
+    # 전체 config 병합 (evaluate_metrics가 loader.config 기반으로 동작)
+    config = loader.config.copy()
+    config["metrics"]           = eval_cfg.get("metrics",
+                                                ["NDCG", "Recall", "Coverage"])
+    config["top_k"]             = eval_cfg.get("top_k", [10])
+    config["long_tail_percent"] = eval_cfg.get("long_tail_percent", 0.8)
+
+    if override:
+        config.update(override)
+
+    return config
+
+
 class AspireHPO:
     """
     프레임워크의 BayesianOptimizer(scripts/bayesian_opt.py) 패턴을 따르는 경량 HPO 클래스.

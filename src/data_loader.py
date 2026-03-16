@@ -283,6 +283,10 @@ class DataLoader:
                 df = df[pd.to_numeric(df[rating_col], errors='coerce').fillna(0) >= self.config['rating_threshold']]
             print(f"[DataLoader] After threshold filtering: {len(df)}")
 
+        # 중복 제거 (필터링 전에 수행하여 유니크한 인터랙션 기준으로 k-core 적용)
+        if self.config.get('dedup', True):
+            df = dedup_interactions(df, 'timestamp' in df.columns)
+
         # K-core 필터링
         df = filter_interactions(
             df,
@@ -290,10 +294,6 @@ class DataLoader:
             self.config['min_item_interactions']
         )
         print(f"[DataLoader] After k-core filtering: {len(df)}")
-
-        # 중복 제거
-        if self.config.get('dedup', True):
-            df = dedup_interactions(df, 'timestamp' in df.columns)
 
         # ID 리매핑
         df, self.user_map, self.item_map, self.n_users, self.n_items, self.item_popularity = remap_ids(df)

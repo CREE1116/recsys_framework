@@ -403,12 +403,14 @@ class SVDCacheManager(GlobalCacheManager):
                             return u[:, :final_k], s[:final_k], v[:, :final_k], total_energy
                         else:
                             if k is None:
+                                # Recompute loop로 진입하기 위해 여기서 return하지 않음.
                                 print(f"[SVD] Cache k={len(s)} insufficient for target energy. Recomputing...")
                             else:
-                                return u, s, v, total_energy # Return what we have if k was also fixed
-                    
-                    # [Fixed] Always return if we found a best_file and it wasn't filtered out by energy check
-                    return u, s, v, total_energy
+                                # 사용자가 k를 명시적으로 요청한 경우, 에너지가 부족하더라도 캐시된 k만큼은 반환.
+                                return u, s, v, total_energy 
+                    else:
+                        # target_energy가 지정되지 않은 경우, 찾은 캐시를 즉시 반환.
+                        return u, s, v, total_energy
                 
         # 2. Computation needed (with Energy Target Loop)
         if X_sparse is None:

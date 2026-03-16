@@ -215,6 +215,86 @@ class LIRAVisualizer:
         print(f"[LIRAVisualizer] Spectral Tikhonov Visualizations saved to {save_dir}")
 
     @staticmethod
+    def visualize_scaling_unified(singular_values, filter_diag, beta, lambda_reg, c, X_sparse=None, save_dir=None, file_prefix='scaling_unified'):
+        if not save_dir:
+            return
+            
+        os.makedirs(save_dir, exist_ok=True)
+        metrics = {}
+        
+        s_vals = singular_values.detach().cpu().numpy()
+        s2 = s_vals**2
+        
+        # Reference Wiener Filter (for comparison)
+        # Traditionally alpha=500 is used as baseline in this framework
+        alpha_ref = 500.0
+        wiener_ref = s2 / (s2 + alpha_ref)
+        
+        cum_energy = np.cumsum(s2)
+        filter_w = filter_diag.detach().cpu().numpy()
+        
+        metrics['SingularValues'] = {"mean": float(s_vals.mean()), "std": float(s_vals.std())}
+        metrics['Filter_Scaling'] = {
+            "mean": float(filter_w.mean()),
+            "std": float(filter_w.std()),
+            "beta": float(beta),
+            "lambda_reg": float(lambda_reg),
+            "scaling_c": float(c)
+        }
+        
+        if X_sparse is not None:
+            total_energy = X_sparse.power(2).sum()
+            metrics['SVD_Energy'] = {
+                "captured_energy": float(cum_energy[-1]),
+                "total_energy": float(total_energy),
+                "ratio": float(cum_energy[-1] / (total_energy + 1e-9))
+            }
+            cum_energy_ratio = cum_energy / (total_energy + 1e-9)
+        else:
+            cum_energy_ratio = cum_energy / (cum_energy[-1] + 1e-9)
+            
+        with open(os.path.join(save_dir, f'{file_prefix}_metrics.json'), 'w', encoding='utf-8') as f:
+            json.dump(metrics, f, indent=4)
+
+        plt.figure(figsize=(18, 5))
+        
+        # 1. Spectrum (Log Scale)
+        plt.subplot(1, 3, 1)
+        plt.plot(s_vals, label=r'$\sigma_k$')
+        plt.yscale('log')
+        plt.title("Spectrum (Log Scale)")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        
+        # 2. Unified Filter Shape
+        plt.subplot(1, 3, 2)
+        plt.plot(s_vals, wiener_ref + 1e-12, color='blue', linestyle='--', label='Ref Wiener (α=500)')
+        plt.plot(s_vals, filter_w + 1e-12, color='red', label='Unified (Proposed)')
+        plt.yscale('log')
+        plt.gca().invert_xaxis()
+        plt.title(fr"Unified Filter ($\beta={beta:.2f}, \lambda_{{reg}}={lambda_reg:.1f}$)")
+        plt.xlabel(r"$\sigma$ (Head $\rightarrow$ Tail)")
+        plt.ylabel(r"$h(\sigma)$")
+        plt.grid(True, which="both", ls="-", alpha=0.2)
+        plt.legend()
+        
+        # 3. Energy CumSum
+        plt.subplot(1, 3, 3)
+        plt.plot(cum_energy_ratio, color='green', label='Cumulative Energy')
+        plt.axhline(0.95, color='gray', linestyle=':', label='95%')
+        plt.title(f"Captured Energy: {cum_energy_ratio[-1]*100:.1f}%")
+        plt.xlabel("Rank k")
+        plt.ylabel("Ratio")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, f'{file_prefix}_analysis.png'))
+        plt.close()
+        
+        print(f"[LIRAVisualizer] Scaling Unified Visualizations saved to {save_dir}")
+
+    @staticmethod
     def visualize_sparse_lira(S_sparse, save_dir=None, title_suffix=''):
         if not save_dir:
             return

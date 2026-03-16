@@ -1,0 +1,127 @@
+# Usage: uv run python aspire_experiments/exp13_theory_unification.py --datasets ml1m ml100k steam
+import os
+import sys
+import json
+import argparse
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+sys.path.append(os.getcwd())
+
+from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
+from src.models.csar.ASPIRELayer import AspireEngine
+from src.models.csar import beta_estimators
+
+def run_unification(dataset_name, target_energy=0.95):
+    print(f"\n[Unification] Analyzing {dataset_name}...")
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
+    
+    item_freq = np.array(R.sum(axis=0)).flatten().astype(float)
+    s_np = S.cpu().numpy()
+    p_tilde = AspireEngine.compute_spp(V, item_freq)
+    
+    # 1. Projection-based Beta (The standard SPP way)
+    # log p_k ~ (2β) log σ_k + C
+    beta_proj, r2_proj = beta_estimators.beta_lad(S, p_tilde)
+    
+    # 2. Direct Slope-Ratio (The 3-step pipeline)
+    # log σ_k ~ -α log k
+    # log n_i ~ -η log i
+    # β_direct = η / 2α
+    beta_direct, _ = beta_estimators.beta_slope_ratio(S, item_freq)
+    
+    # 3. Component Slopes for Analysis
+    def get_abs_slope(vals):
+        L = len(vals)
+        x = np.log(np.arange(1, L + 1))
+        y = np.log(np.clip(vals, 1e-12, None))
+        A = np.column_stack([x, np.ones_like(x)])
+        slope, _ = np.linalg.lstsq(A, y, rcond=None)[0]
+        return abs(float(slope))
+
+    alpha = get_abs_slope(s_np)
+    eta = get_abs_slope(np.sort(item_freq)[::-1])
+    
+    print(f"  Spectral  α: {alpha:.4f}")
+    print(f"  Frequency η: {eta:.4f}")
+    print(f"  β_direct (η/2α): {beta_direct:.4f}")
+    print(f"  β_proj   (SPP) : {beta_proj:.4f} (R²={r2_proj:.4f})")
+    print(f"  Difference     : {abs(beta_direct - beta_proj):.4f}")
+    
+    return {
+        "dataset": dataset_name,
+        "alpha": alpha,
+        "eta": eta,
+        "beta_direct": beta_direct,
+        "beta_proj": beta_proj,
+        "diff": abs(beta_direct - beta_proj),
+        "r2_proj": r2_proj
+    }
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--datasets", nargs="+", default=["ml100k", "ml1m", "steam"])
+    parser.add_argument("--energy", type=float, default=0.95)
+    args = parser.parse_args()
+    
+    results = []
+    for ds in args.datasets:
+        res = run_unification(ds, args.energy)
+        results.append(res)
+        
+    # Visualization
+    out_dir = ensure_dir("aspire_experiments/output/theory_unification")
+    
+    # Comparison Chart
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ds_names = [r["dataset"] for r in results]
+    b_direct = [r["beta_direct"] for r in results]
+    b_proj = [r["beta_proj"] for r in results]
+    
+    x = np.arange(len(ds_names))
+    width = 0.35
+    
+    ax.bar(x - width/2, b_direct, width, label='β_direct (η/2α)', color='skyblue', alpha=0.8)
+    ax.bar(x + width/2, b_proj, width, label='β_proj (SPP-LAD)', color='salmon', alpha=0.8)
+    
+    ax.set_ylabel('Beta Value')
+    ax.set_title('ASPIRE Unification: Direct vs Projection-based Beta')
+    ax.set_xticks(x)
+    ax.set_xticklabels(ds_names)
+    ax.legend()
+    ax.grid(True, axis='y', alpha=0.3)
+    
+    plt.savefig(os.path.join(out_dir, "beta_comparison.png"), dpi=150)
+    plt.close()
+    
+    # Ratio plot: η vs (2α * β_proj)
+    plt.figure(figsize=(7, 7))
+    etas = [r["eta"] for r in results]
+    denoms = [2.0 * r["alpha"] * r["beta_proj"] for r in results]
+    
+    plt.scatter(denoms, etas, s=100, color='purple', alpha=0.6)
+    for i, txt in enumerate(ds_names):
+        plt.annotate(txt, (denoms[i], etas[i]), xytext=(5, 5), textcoords='offset points')
+        
+    line_max = max(max(etas), max(denoms)) * 1.1
+    plt.plot([0, line_max], [0, line_max], 'k--', alpha=0.3, label='Theoretical Identity (η = 2αβ_proj)')
+    
+    plt.xlabel('2 * α * β_proj')
+    plt.ylabel('Observed η (Item Freq Decay)')
+    plt.title('Theory Validation: Coupling Consistency')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(out_dir, "consistency_scatter.png"), dpi=150)
+    plt.close()
+    
+    # [NEW] Save detailed summary items
+    import pandas as pd
+    pd.DataFrame(results).to_csv(os.path.join(out_dir, "unification_results.csv"), index=False)
+    with open(os.path.join(out_dir, "unification_results.json"), "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=4)
+    
+    print(f"\n[Done] Result plots and data saved to {out_dir}")
+
+if __name__ == "__main__":
+    main()

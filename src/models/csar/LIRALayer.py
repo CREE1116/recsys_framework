@@ -21,32 +21,45 @@ class LIRALayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse):
+        n_users, n_items = X_sparse.shape
         if torch.cuda.is_available(): dev = 'cuda'
         elif torch.backends.mps.is_available(): dev = 'mps'
         else: dev = 'cpu'
-        # [MPS FIX] Perform build on CPU for stability on Mac.
-        # Large matrix operations like linalg.solve often fail or are unstable on currently released MPS.
-        calc_dev = 'cpu' if dev == 'mps' else dev
         
-        # Convert to dense CPU for robust training build (ML-1M scale is fine for CPU memory)
-        X_dense = torch.from_numpy(X_sparse.toarray()).float().to(calc_dev)
+        calc_dev = dev
         
-        # K = X @ X^T (User-User Gram)
-        K = torch.mm(X_dense, X_dense.t())
-        
-        # (K + λI)
-        K.diagonal().add_(self.reg_lambda)
-        
-        # Solve for user-wise coefficients: CX = (K + λI)^-1 X
-        CX = torch.linalg.solve(K, X_dense)
-        del K
-        
-        # S = X^T @ CX (Item-Item Shift)
-        S = torch.mm(X_dense.t(), CX)
-        
+        # [OPTIMIZATION] Switch between Primal (Item-Item) and Dual (User-User) form
+        # chooses the smaller dimension for inversion to save O(N^3) time and O(N^2) memory.
+        if n_items <= n_users:
+            print(f"[{self.__class__.__name__}] Using Primal Form (Item-Item: {n_items}x{n_items}) since I <= U")
+            # Convert to dense (only items)
+            X_dense = torch.from_numpy(X_sparse.toarray()).float().to(calc_dev)
+            # G = X^T X
+            G = torch.mm(X_dense.t(), X_dense)
+            # G_reg = G + λI
+            G_target = G.clone() # Keep original G for the rhs
+            G.diagonal().add_(self.reg_lambda)
+            
+            from src.utils.gpu_accel import gpu_cholesky_solve
+            # S = (X^T X + λI)^-1 (X^T X)
+            S = gpu_cholesky_solve(G.cpu().numpy(), G_target.cpu().numpy(), device=calc_dev, return_tensor=True)
+            del X_dense, G, G_target
+        else:
+            print(f"[{self.__class__.__name__}] Using Dual Form (User-User: {n_users}x{n_users}) since U < I")
+            X_dense = torch.from_numpy(X_sparse.toarray()).float().to(calc_dev)
+            # K = X X^T
+            K = torch.mm(X_dense, X_dense.t())
+            # K_reg = K + λI
+            K.diagonal().add_(self.reg_lambda)
+            
+            from src.utils.gpu_accel import gpu_cholesky_solve
+            # CX = (X X^T + λI)^-1 X
+            CX = gpu_cholesky_solve(K.cpu().numpy(), X_dense.cpu().numpy(), device=calc_dev, return_tensor=True)
+            # S = X^T CX
+            S = torch.mm(X_dense.t(), CX)
+            del X_dense, K, CX
+
         self.register_buffer('S', S.to(dev))
-        del X_dense, CX
-        
         print(f"[{self.__class__.__name__}] Build complete. Calculation Device: {calc_dev}, Model Device: {dev}")
 
     @torch.no_grad()
@@ -93,7 +106,12 @@ class LightLIRALayer(nn.Module):
 
     @torch.no_grad()
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
-        LIRAVisualizer.visualize_svd_lira(self.singular_values, self.filter_diag, self.reg_lambda, X_sparse=X_sparse, save_dir=save_dir, file_prefix='lightlira')
+        # Upgrade to rich spectral visualization (shared with ASPIRE)
+        LIRAVisualizer.visualize_spectral_tikhonov(
+            self.singular_values, self.filter_diag, 
+            alpha=self.reg_lambda, beta=0.0, 
+            X_sparse=X_sparse, save_dir=save_dir, file_prefix='lightlira'
+        )
 
 
 
@@ -189,6 +207,13 @@ class SpectralPowerLIRALayer(nn.Module):
         self.register_buffer('V_raw', v.to(device))
         s2 = self.singular_values.pow(2)
         self.register_buffer('filter_diag', s2 / (s2 + self.reg_lambda))
+    def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
+        # Power-aware spectral visualization
+        LIRAVisualizer.visualize_spectral_tikhonov(
+            self.singular_values, self.filter_diag, 
+            alpha=self.reg_lambda, beta=0.0, a=self.power, 
+            X_sparse=X_sparse, save_dir=save_dir, file_prefix='specpower'
+        )
 
     @torch.no_grad()
     def forward(self, X_batch, user_ids=None):
