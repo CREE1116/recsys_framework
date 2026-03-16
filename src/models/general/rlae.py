@@ -49,7 +49,8 @@ class RLAE(BaseModel):
         
         # 2. Solve (X^TX + λI)^-1 on GPU
         from src.utils.gpu_accel import gpu_gram_solve
-        P = gpu_gram_solve(X, self.reg_lambda, device=self.device, return_tensor=True)
+        dataset_name = self.config.get('dataset_name', 'unknown')
+        P = gpu_gram_solve(X, self.reg_lambda, device=self.device, dataset_name=dataset_name, return_tensor=True)
         
         # 3. Compute diagonal terms on GPU
         P_diag = torch.diagonal(P).clone() # (M,)

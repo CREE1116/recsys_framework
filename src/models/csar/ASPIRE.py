@@ -26,6 +26,7 @@ class ASPIRE(BaseModel):
         self.estimator_type = model_config.get('estimator_type', 'huber')
         self.spp_pow = model_config.get('spp_pow', None)
         self.weight_mode = model_config.get('weight_mode', 'normal')
+        self.symmetric_norm = model_config.get('symmetric_norm', False)
         
         # ASPIRE Layer
         self.lira_layer = ASPIRELayer(
@@ -34,6 +35,7 @@ class ASPIRE(BaseModel):
             beta=self.beta,
             spp_pow=self.spp_pow,
             weight_mode=self.weight_mode,
+            symmetric_norm=self.symmetric_norm,
             target_energy=self.target_energy,
             estimator_type=self.estimator_type
         )
@@ -120,3 +122,14 @@ class ASPIRE(BaseModel):
     
     def calc_loss(self, batch_data):
         return (torch.tensor(0.0, device=self.device),), None
+
+class ASPIRE_Norm(ASPIRE):
+    """
+    ASPIRE with Symmetric Normalization enabled by default.
+    """
+    def __init__(self, config, data_loader):
+        # Enforce symmetric normalization
+        if 'model' not in config:
+            config['model'] = {}
+        config['model']['symmetric_norm'] = True
+        super(ASPIRE_Norm, self).__init__(config, data_loader)

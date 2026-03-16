@@ -52,7 +52,7 @@ from .csar.LightPowerLIRA import LightPowerLIRA
 from .csar.SpectralPowerLIRA import SpectralPowerLIRA
 from .csar.TaylorLIRA import TaylorLIRA
 from .csar.CGLIRA import CGLIRA
-from .csar.ASPIRE import ASPIRE
+from .csar.ASPIRE import ASPIRE, ASPIRE_Norm
 from .csar.ChebyASPIRE import ChebyASPIRE
 
 MODEL_REGISTRY = {
@@ -112,6 +112,7 @@ MODEL_REGISTRY = {
     'cg_lira': CGLIRA,
     'spectral_tikhonov_lira': ASPIRE,
     'aspire': ASPIRE,
+    'aspire_norm': ASPIRE_Norm,
     'cheby_aspire': ChebyASPIRE,
 }
 

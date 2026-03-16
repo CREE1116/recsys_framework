@@ -432,6 +432,7 @@ class ASPIRELayer(nn.Module):
         weight_mode: str = "normal",           # [NEW] E-WLS 가중치 모드 (normal | inverse)
         target_energy: float | list = 0.95,
         estimator_type: str = "slope_ratio",
+        symmetric_norm: bool = False,
     ):
         super().__init__()
         self.k             = int(k[0] if isinstance(k, (list, np.ndarray)) else k)
@@ -443,6 +444,7 @@ class ASPIRELayer(nn.Module):
             else target_energy
         )
         self.estimator_type = estimator_type
+        self.symmetric_norm = symmetric_norm
 
         self.beta          = 0.5
         self.r_squared     = 0.0
@@ -451,6 +453,8 @@ class ASPIRELayer(nn.Module):
         self.register_buffer("singular_values", torch.empty(0))
         self.register_buffer("V_raw",           torch.empty(0, 0))
         self.register_buffer("filter_diag",     torch.empty(0))
+        self.register_buffer("user_norm_weights", torch.empty(0))
+        self.register_buffer("item_norm_weights", torch.empty(0))
 
     @property
     def V_k(self) -> torch.Tensor:
@@ -462,21 +466,46 @@ class ASPIRELayer(nn.Module):
         dev     = next((p.device for p in self.parameters()), torch.device("cpu"))
         manager = SVDCacheManager(device=dev)
 
-        # ── 1. SVD ───────────────────────────────────────────────────────────
-        _, s, v, _ = manager.get_svd(
-            X_sparse, k=None,
-            target_energy=self.target_energy,
-            dataset_name=dataset_name,
-        )
+        # Get raw item frequencies for beta estimation (ASPIRE logic requires observed bias)
+        item_pops_raw = np.array(X_sparse.sum(axis=0)).flatten().astype(float)
+
+        if self.symmetric_norm:
+            print(f"[ASPIRELayer] Applying Symmetric Normalization (D_u^-0.5 X D_i^-0.5)...")
+            import scipy.sparse as sp
+            user_sums = np.array(X_sparse.sum(axis=1)).flatten()
+            item_sums = np.array(X_sparse.sum(axis=0)).flatten()
+            def get_inv_sqrt(sums):
+                inv_sqrt = np.zeros_like(sums)
+                mask = sums > 0
+                inv_sqrt[mask] = np.power(sums[mask], -0.5)
+                return inv_sqrt
+            w_u = get_inv_sqrt(user_sums)
+            w_i = get_inv_sqrt(item_sums)
+            self.register_buffer("user_norm_weights", torch.from_numpy(w_u).float().to(dev))
+            self.register_buffer("item_norm_weights", torch.from_numpy(w_i).float().to(dev))
+            
+            X_target = sp.diags(w_u) @ X_sparse @ sp.diags(w_i)
+            # Use _norm suffix for SVD cache to avoid contamination
+            svd_dataset_name = f"{dataset_name}_norm" if dataset_name else None
+            _, s, v, _ = manager.get_svd(X_target, k=None, target_energy=self.target_energy,
+                                         dataset_name=svd_dataset_name)
+            
+            # Use NORMALIZED frequencies for beta estimation to only correct RESIDUAL bias
+            item_pops = np.array(X_target.sum(axis=0)).flatten().astype(float)
+        else:
+            _, s, v, _ = manager.get_svd(X_sparse, k=None, target_energy=self.target_energy,
+                                         dataset_name=dataset_name)
+            item_pops = item_pops_raw
+            X_target = X_sparse
+
         self.k = len(s)
         self.register_buffer("singular_values", s.to(dev))
         self.register_buffer("V_raw", v.to(dev))
 
-        item_pops = np.array(X_sparse.sum(axis=0)).flatten().astype(float)
         V_np      = self.V_raw.cpu().numpy()
         s_np      = self.singular_values.cpu().numpy()
 
-        # ── 2. 진단 및 베타 추정 (EWLS 기본 사용) ──────────────────────────────
+        # ── 3. 진단 및 베타 추정 ─────────────────────────────────
         p_tilde = AspireEngine.compute_spp(V_np, item_pops)
         
         # [NEW] Direct Slope-Ratio (v3 Default) 또는 명시된 추정기 사용
@@ -512,8 +541,33 @@ class ASPIRELayer(nn.Module):
     def forward(self, X_batch: torch.Tensor, user_ids=None) -> torch.Tensor:
         if self.singular_values.numel() == 0:
             raise RuntimeError("ASPIRELayer.build()를 먼저 호출하세요.")
-        XV = torch.mm(X_batch, self.V_raw)
-        return torch.mm(XV * self.filter_diag, self.V_raw.t())
+        
+        X = X_batch
+        if self.symmetric_norm:
+            # Normalize User and Item side
+            if user_ids is not None:
+                # D_u^-0.5
+                u_w = self.user_norm_weights[user_ids].view(-1, 1)
+                X = X * u_w
+            # D_i^-0.5
+            X = X * self.item_norm_weights.view(1, -1)
+            
+        XV = torch.mm(X, self.V_raw)
+        scores = torch.mm(XV * self.filter_diag, self.V_raw.t())
+        
+        if self.symmetric_norm:
+            # Back to original scale? (GF-CF: often just predicts in norm space, 
+            # but to be truly symmetric in Gram: D_u^0.5 ... D_i^0.5)
+            # Actually, standard bipartite norm GF-CF ends with normalized factors.
+            # But let's re-normalize the output D_i^0.5 if we want to match interaction density.
+            # The user said "gram_matrix에 대칭정규화를 적용하는거지". 
+            # If G = D^-0.5 (X^T X) D^-0.5, then the filter is on this G.
+            # Prediction is x @ D^-0.5 G_filt D^0.5? No.
+            # Let's keep it simple: D_u^-0.5 X D_i^-0.5 -> h -> D_i^-0.5? 
+            # Usually we don't multiply back by D_u^-0.5 in output score.
+            pass
+            
+        return scores
 
     @torch.no_grad()
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
@@ -551,6 +605,7 @@ class ChebyASPIRELayer(nn.Module):
         lambda_max_estimate: float | str = "auto",
         threshold: float             = 1e-4,
         estimator_type: str          = "huber",
+        symmetric_norm: bool         = False,
     ):
         super().__init__()
         self.alpha               = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
@@ -559,6 +614,7 @@ class ChebyASPIRELayer(nn.Module):
         self.lambda_max_estimate = lambda_max_estimate
         self.threshold           = float(threshold)
         self.estimator_type      = estimator_type
+        self.symmetric_norm      = symmetric_norm
 
         self.beta            = 0.5
         self.alignment_slope = 0.0
@@ -568,6 +624,8 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer("t_mid",        torch.tensor(0.0))
         self.register_buffer("t_half",       torch.tensor(0.0))
         self.register_buffer("item_weights", torch.empty(0))
+        self.register_buffer("user_norm_weights", torch.empty(0))
+        self.register_buffer("item_norm_weights", torch.empty(0))
 
         self.X_torch_csr  = None
         self.Xt_torch_csr = None
@@ -609,6 +667,28 @@ class ChebyASPIRELayer(nn.Module):
         else:                               device = "cpu"
         self.sparse_device = torch.device("cpu" if "mps" in device else device)
 
+        # ── Symmetric Normalization (GF-CF style) ─────────────
+        if self.symmetric_norm:
+            print(f"[ChebyASPIRELayer] Applying Symmetric Normalization (D_u^-0.5 X D_i^-0.5)...")
+            import scipy.sparse as sp
+            user_sums = np.array(X_sparse.sum(axis=1)).flatten()
+            item_sums = np.array(X_sparse.sum(axis=0)).flatten()
+            
+            def get_inv_sqrt(sums):
+                inv_sqrt = np.zeros_like(sums)
+                mask = sums > 0
+                inv_sqrt[mask] = np.power(sums[mask], -0.5)
+                return inv_sqrt
+            
+            w_u = get_inv_sqrt(user_sums)
+            w_i = get_inv_sqrt(item_sums)
+            
+            self.register_buffer("user_norm_weights", torch.from_numpy(w_u).float().to(device))
+            self.register_buffer("item_norm_weights", torch.from_numpy(w_i).float().to(device))
+            
+            X_sparse = sp.diags(w_u) @ X_sparse @ sp.diags(w_i)
+            print(f"[ChebyASPIRELayer] Normalization applied to X_sparse.")
+
         # ── 희소 행렬 변환 ────────────────────────────────────────────────────
         X_coo   = X_sparse.tocoo()
         indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
@@ -634,7 +714,9 @@ class ChebyASPIRELayer(nn.Module):
             lambda_max = float(self.lambda_max_estimate)
 
         # β 결정
-        cache_key = f"{dataset_name}_cheby_v13_raw_p1.0" if dataset_name else None
+        # Update cache key for normalized case
+        actual_data_name = f"{dataset_name}_norm" if (dataset_name and self.symmetric_norm) else dataset_name
+        cache_key = f"{actual_data_name}_cheby_v13_raw_p1.0" if actual_data_name else None
         cached    = _MNARGammaCache.get(cache_key) if cache_key else None
 
         if isinstance(self.beta_config, str):  # "auto"
@@ -642,13 +724,14 @@ class ChebyASPIRELayer(nn.Module):
                 self.beta            = float(cached["beta"])
                 self.alignment_slope = float(cached.get("a", 0.0))
             else:
-                item_pops = np.array(X_sparse.sum(axis=0)).flatten()
+                # Use current X_sparse (might be normalized) and its item frequencies
+                curr_item_pops = np.array(X_sparse.sum(axis=0)).flatten()
                 self.beta, a = AspireEngine.estimate_beta_from_slope(
                     singular_values=None,
-                    item_frequencies=item_pops,
-                    X_sparse=X_sparse,
+                    item_frequencies=curr_item_pops, 
+                    X_sparse=X_sparse,          
                     verbose=True,
-                    dataset_name=dataset_name or "?",
+                    dataset_name=actual_data_name or "?",
                     estimator_type=self.estimator_type,
                 )
                 if cache_key:
@@ -710,9 +793,16 @@ class ChebyASPIRELayer(nn.Module):
     def forward(self, X_batch: torch.Tensor, user_ids=None) -> torch.Tensor:
         if self.X_torch_csr is None:
             raise RuntimeError("ChebyASPIRELayer.build()를 먼저 호출하세요.")
+            
+        X = X_batch
+        if self.symmetric_norm:
+            if user_ids is not None:
+                X = X * self.user_norm_weights[user_ids].view(-1, 1)
+            X = X * self.item_norm_weights.view(1, -1)
+            
         if self.item_weights.numel() > 0:
-            return torch.mm(X_batch, self.item_weights.to(X_batch.device))
-        return self._sparsemv_forward(X_batch)
+            return torch.mm(X, self.item_weights.to(X.device))
+        return self._sparsemv_forward(X)
 
     @torch.no_grad()
     def _sparsemv_forward(self, X_batch: torch.Tensor) -> torch.Tensor:

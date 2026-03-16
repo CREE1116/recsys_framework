@@ -13,10 +13,11 @@ class LIRALayer(nn.Module):
     """
     LIRA - Linear Interest covariance Ridge Analysis (Dual Ridge Regression)
     """
-    def __init__(self, reg_lambda=500.0, normalize=True):
+    def __init__(self, reg_lambda=500.0, normalize=True, dataset_name=None):
         super(LIRALayer, self).__init__()
         self.reg_lambda = reg_lambda[0] if isinstance(reg_lambda, (list, np.ndarray)) else reg_lambda
         self.normalize = normalize
+        self.dataset_name = dataset_name
         self.register_buffer('S', torch.empty(0))           
 
     @torch.no_grad()
@@ -42,7 +43,7 @@ class LIRALayer(nn.Module):
             
             from src.utils.gpu_accel import gpu_cholesky_solve
             # S = (X^T X + λI)^-1 (X^T X)
-            S = gpu_cholesky_solve(G.cpu().numpy(), G_target.cpu().numpy(), device=calc_dev, return_tensor=True)
+            S = gpu_cholesky_solve(G, G_target, device=calc_dev, dataset_name=self.dataset_name, return_tensor=True)
             del X_dense, G, G_target
         else:
             print(f"[{self.__class__.__name__}] Using Dual Form (User-User: {n_users}x{n_users}) since U < I")
@@ -54,7 +55,7 @@ class LIRALayer(nn.Module):
             
             from src.utils.gpu_accel import gpu_cholesky_solve
             # CX = (X X^T + λI)^-1 X
-            CX = gpu_cholesky_solve(K.cpu().numpy(), X_dense.cpu().numpy(), device=calc_dev, return_tensor=True)
+            CX = gpu_cholesky_solve(K, X_dense, device=calc_dev, dataset_name=self.dataset_name, return_tensor=True)
             # S = X^T CX
             S = torch.mm(X_dense.t(), CX)
             del X_dense, K, CX
@@ -132,7 +133,7 @@ class PowerLIRALayer(nn.Module):
         elif torch.backends.mps.is_available(): device = 'mps'
         else: device = 'cpu'
         from src.utils.gpu_accel import gpu_gram_solve
-        P_np = gpu_gram_solve(X_sparse, self.reg_lambda)
+        P_np = gpu_gram_solve(X_sparse, self.reg_lambda, dataset_name=dataset_name)
         S_np = -self.reg_lambda * P_np
         np.fill_diagonal(S_np, S_np.diagonal() + 1.0)
         del P_np

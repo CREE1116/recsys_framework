@@ -37,28 +37,69 @@ def get_device(preference='auto'):
 # GPU-Accelerated Cholesky Solver
 # ============================================================
 
-def gpu_cholesky_solve(G_np, rhs_np=None, device='auto', return_tensor=False):
+def gpu_cholesky_solve(G_np, rhs_np=None, device='auto', dataset_name=None, return_tensor=False):
     """
     Solve G @ X = rhs via Cholesky.
     Args:
-        G_np: (M, M) numpy array
-        rhs_np: (M, K) numpy array
+        G_np: (M, M) numpy array or torch.Tensor on device
+        rhs_np: (M, K) numpy array or torch.Tensor on device
+        dataset_name: Optional string to enable persistent caching of the L factor.
         return_tensor: If True, returns torch.Tensor on device.
     """
     dev = get_device(device)
-    M = G_np.shape[0]
     
+    # 1. Handle Tensor input (from other gpu_accel functions)
+    if torch.is_tensor(G_np):
+        G_t = G_np.float().to(dev)
+        M = G_t.shape[0]
+        G_np_for_hash = None # We'll skip hash if it's already a tensor and no dataset_name
+    else:
+        M = G_np.shape[0]
+        G_np_for_hash = G_np
+
+    # 2. Check Cache
+    if dataset_name:
+        L_cached = CholeskyCacheManager.get(G_np_for_hash if G_np_for_hash is not None else G_t, dataset_name, device=dev)
+        if L_cached is not None:
+            t0 = time.time()
+            try:
+                if rhs_np is None:
+                    I = torch.eye(M, device=dev, dtype=torch.float32)
+                    X_t = torch.cholesky_solve(I, L_cached)
+                    del I
+                else:
+                    rhs_t = torch.from_numpy(rhs_np).float().to(dev) if isinstance(rhs_np, np.ndarray) else rhs_np.to(dev)
+                    X_t = torch.cholesky_solve(rhs_t, L_cached)
+                
+                print(f"[gpu_accel] {dev.type.upper()} Cholesky Cache Hit ({M}x{M}): {time.time()-t0:.2f}s")
+                return X_t if return_tensor else X_t.cpu().numpy()
+            except Exception as e:
+                print(f"[gpu_accel] {dev.type.upper()} cholesky_solve failed ({e}), fallback to CPU...")
+                # L_cached is on device, but we need CPU L for scipy fallback
+                # Actually _cpu_cholesky expects G_np. Let's just fall through to compute or CPU.
+                # Since we already have the cache but cannot use it on this device, 
+                # we'll proceed to the official fallback section below.
+                pass
+
+    # 3. Compute
     if dev.type in ('mps', 'cuda'):
         try:
             t0 = time.time()
-            G_t = torch.from_numpy(G_np).float().to(dev)
+            if not torch.is_tensor(G_np):
+                G_t = torch.from_numpy(G_np).float().to(dev)
+            
             L = torch.linalg.cholesky(G_t)
+            
+            # Save to Cache if dataset_name is provided
+            if dataset_name:
+                CholeskyCacheManager.put(G_np_for_hash if G_np_for_hash is not None else G_t, L, dataset_name)
+
             if rhs_np is None:
                 I = torch.eye(M, device=dev, dtype=torch.float32)
                 X_t = torch.cholesky_solve(I, L)
                 del I
             else:
-                rhs_t = torch.from_numpy(rhs_np).float().to(dev)
+                rhs_t = torch.from_numpy(rhs_np).float().to(dev) if isinstance(rhs_np, np.ndarray) else rhs_np.to(dev)
                 X_t = torch.cholesky_solve(rhs_t, L)
             del L, G_t
             
@@ -72,7 +113,10 @@ def gpu_cholesky_solve(G_np, rhs_np=None, device='auto', return_tensor=False):
         except RuntimeError as e:
             print(f"[gpu_accel] {dev.type.upper()} cholesky OOM ({e}), CPU fallback...")
     
-    res_np = _cpu_cholesky(G_np, rhs_np)
+    # Fallback to CPU if GPU failed or not available
+    G_np_eval = G_np if isinstance(G_np, np.ndarray) else G_np.cpu().numpy()
+    rhs_np_eval = rhs_np if (rhs_np is None or isinstance(rhs_np, np.ndarray)) else rhs_np.cpu().numpy()
+    res_np = _cpu_cholesky(G_np_eval, rhs_np_eval)
     return torch.from_numpy(res_np).float().to(dev) if return_tensor else res_np
 
 
@@ -109,155 +153,374 @@ def _cpu_cholesky(G_np, rhs_np, block_size=2000):
     return result
 
 
-def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', return_tensor=False):
+def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=None, return_tensor=False):
     """
     Compute (X^T X + λI)^-1 @ rhs.
+
+    캐싱 전략:
+    - M <= EIGEN_THRESHOLD: eigendecomposition 캐시 (_GramEigenCache). λ-agnostic.
+    - M >  EIGEN_THRESHOLD: Gram matrix G=X^TX 캐시 (_GramMatrixCache) + Cholesky.
+      G는 λ-agnostic하게 메모리 캐싱되며, Cholesky는 매번 새로 실행된다.
     """
     M = X_sparse.shape[1]
     EIGEN_THRESHOLD = 15000
     dev = get_device(device)
-    
+
     # 1. Check eigen cache
-    cache = _GramEigenCache.get(X_sparse)
+    cache = _GramEigenCache.get(X_sparse, dataset_name, device=dev)
     if cache is not None:
-        V_np, eigvals_np = cache
+        V, eigvals = cache
         t0 = time.time()
-        if return_tensor and dev.type in ('cuda', 'mps'):
-            V = torch.from_numpy(V_np).float().to(dev)
-            eigvals = torch.from_numpy(eigvals_np).float().to(dev)
-            inv_eig = 1.0 / (eigvals + reg_lambda)
-            if rhs is None:
-                P = (V * inv_eig.unsqueeze(0)) @ V.t()
-            else:
-                rhs_t = torch.from_numpy(rhs).float().to(dev) if isinstance(rhs, np.ndarray) else rhs.to(dev)
-                P = (V * inv_eig.unsqueeze(0)) @ (V.t() @ rhs_t)
-            print(f"[gpu_accel] Eigen solve [Tensor] on {dev}: {time.time()-t0:.2f}s")
-            return P
+
+        inv_eig = 1.0 / (eigvals + reg_lambda)
+        if rhs is None:
+            P = (V * inv_eig.unsqueeze(0)) @ V.t()
         else:
-            inv_eigvals = (1.0 / (eigvals_np + reg_lambda)).astype(np.float32)
-            if rhs is None:
-                P = (V_np * inv_eigvals[None, :]) @ V_np.T
-            else:
-                P = (V_np * inv_eigvals[None, :]) @ (V_np.T @ rhs.astype(np.float32))
-            print(f"[gpu_accel] Eigen solve [NumPy] on CPU: {time.time()-t0:.2f}s")
-            return torch.from_numpy(P).float().to(dev) if return_tensor else P
+            rhs_t = torch.from_numpy(rhs).float().to(dev) if isinstance(rhs, np.ndarray) else rhs.to(dev)
+            P = (V * inv_eig.unsqueeze(0)) @ (V.t() @ rhs_t)
+
+        print(f"[gpu_accel] Eigen solve [Tensor] Cache Hit on {dev}: {time.time()-t0:.2f}s")
+        return P if return_tensor else P.cpu().numpy()
 
     # 2. Eigen Path
     if M <= EIGEN_THRESHOLD:
         print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition (first call) on {dev.type}...")
         t0 = time.time()
-        
-        # Optimization: compute Gram matrix directly.
-        # If CUDA/MPS, do it on device to massively speed up X^T * X and Eigendecomposition.
+
         if dev.type in ('cuda', 'mps'):
             try:
                 if isinstance(X_sparse, csr_matrix):
-                    # For sparse, we can convert to dense if small enough, or use sparse mm.
-                    # Since M <= 15000, M*M is up to 225M floats (~900MB), which easily fits.
                     X_torch_dense = torch.from_numpy(X_sparse.toarray()).float().to(dev)
                     G_t = torch.mm(X_torch_dense.t(), X_torch_dense)
                     del X_torch_dense
                 else:
-                    # Fallback if it's already a tensor or numpy
                     X_torch = torch.tensor(X_sparse, device=dev, dtype=torch.float32)
                     G_t = torch.mm(X_torch.t(), X_torch)
-                    
+
                 eigvals_t, V_t = torch.linalg.eigh(G_t)
                 del G_t
-                
-                # Cache as NumPy to save VRAM and keep cache manager agnostic
-                eigvals = eigvals_t.cpu().numpy()
-                V = V_t.cpu().numpy()
-                del eigvals_t, V_t
-                
+
+                _GramEigenCache.put(X_sparse, V_t, eigvals_t, dataset_name)
+
                 print(f"[gpu_accel] {dev.type.upper()} torch.linalg.eigh done: {time.time()-t0:.2f}s")
+                V, eigvals = V_t, eigvals_t
             except Exception as e:
                 print(f"[gpu_accel] {dev.type.upper()} Eigen failed ({e}), fallback to Scipy CPU...")
                 G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
                 from scipy.linalg import eigh
-                eigvals, V = eigh(G)
+                eigvals_np, V_np = eigh(G)
+                V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
+                _GramEigenCache.put(X_sparse, V, eigvals, dataset_name)
                 del G
         else:
-            # CPU Path
             G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
             from scipy.linalg import eigh
-            eigvals, V = eigh(G)
+            eigvals_np, V_np = eigh(G)
+            V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
+            _GramEigenCache.put(X_sparse, V, eigvals, dataset_name)
             del G
-            
-        _GramEigenCache.put(X_sparse, V.astype(np.float32), eigvals.astype(np.float32))
-        return gpu_gram_solve(X_sparse, reg_lambda, rhs, device, return_tensor)
 
-    # 3. Cholesky Path
-    print(f"[gpu_accel] Gram ({M}x{M}) + Exact Cholesky on {dev.type}...")
-    t0 = time.time()
-    
+        return gpu_gram_solve(X_sparse, reg_lambda, rhs, device, dataset_name, return_tensor)
+
+    # 3. Cholesky Path (M > EIGEN_THRESHOLD)
+    # G = X^T X를 λ-agnostic하게 캐싱.
+    # λ가 바뀌어도 X^T X 재계산을 생략하고, G_cached + λI 후 Cholesky만 수행.
     if dev.type in ('cuda', 'mps'):
         try:
-            if isinstance(X_sparse, csr_matrix):
-                X_torch_dense = torch.from_numpy(X_sparse.toarray()).float().to(dev)
-                G_t = torch.mm(X_torch_dense.t(), X_torch_dense)
-                del X_torch_dense
-            
-            # Diagonal shift for torch tensor
-            G_t.diagonal().add_(reg_lambda)
-            P = gpu_cholesky_solve(G_t.cpu().numpy(), rhs, device=device, return_tensor=return_tensor)
-            del G_t
+            G_t = _GramMatrixCache.get(X_sparse, dataset_name, device=dev)
+            if G_t is None:
+                print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on {dev.type}...")
+                t0 = time.time()
+                if isinstance(X_sparse, csr_matrix):
+                    X_torch_dense = torch.from_numpy(X_sparse.toarray()).float().to(dev)
+                    G_t = torch.mm(X_torch_dense.t(), X_torch_dense)
+                    del X_torch_dense
+                else:
+                    X_t = torch.from_numpy(X_sparse).float().to(dev) if isinstance(X_sparse, np.ndarray) else X_sparse.to(dev)
+                    G_t = torch.mm(X_t.t(), X_t)
+                _GramMatrixCache.put(X_sparse, G_t, dataset_name)
+                print(f"[gpu_accel] Gram X^T X cached ({time.time()-t0:.2f}s)")
+            else:
+                print(f"[gpu_accel] Gram ({M}x{M}) X^T X cache hit, Cholesky with λ={reg_lambda}")
+
+            # G + λI (clone해서 캐시된 G_t는 λ 없이 보존)
+            G_reg = G_t.clone()
+            G_reg.diagonal().add_(reg_lambda)
+            P = gpu_cholesky_solve(G_reg, rhs, device=device, dataset_name=None, return_tensor=return_tensor)
+            del G_reg
             return P
         except Exception as e:
             print(f"[gpu_accel] {dev.type.upper()} Gram+Cholesky prep failed ({e}), fallback to CPU...")
 
     # Fallback / CPU
-    G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
-    G[np.diag_indices(M)] += reg_lambda
-    
-    P = gpu_cholesky_solve(G, rhs, device=device, return_tensor=return_tensor)
-    del G
+    G_np = _GramMatrixCache.get_numpy(X_sparse, dataset_name)
+    if G_np is None:
+        print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on CPU...")
+        t0 = time.time()
+        G_np = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
+        _GramMatrixCache.put_numpy(X_sparse, G_np, dataset_name)
+        print(f"[gpu_accel] Gram X^T X cached ({time.time()-t0:.2f}s)")
+    else:
+        print(f"[gpu_accel] Gram ({M}x{M}) X^T X cache hit (CPU), Cholesky with λ={reg_lambda}")
+
+    G_reg = G_np.copy()
+    G_reg[np.diag_indices(M)] += reg_lambda
+    P = gpu_cholesky_solve(G_reg, rhs, device=device, dataset_name=None, return_tensor=return_tensor)
+    del G_reg
     return P
 
 
 class GramEigenCacheManager(GlobalCacheManager):
     """
-    Module-level cache for Gram matrix eigendecomposition. Global scope.
-    Keyed by (shape, nnz, data_checksum) to identify the same dataset.
+    Persistent cache for Gram matrix eigendecomposition.
+    Keyed by (dataset_name, matrix_checksum).
     """
-    _cache = {}  # key -> (V, eigvals)
+    _mem_cache = {}  # key -> (V, eigvals)
+    _cache_dir = 'data_cache'
     
     @classmethod
-    def _key(cls, X_sparse):
-        d = X_sparse.data
-        idx = X_sparse.indices
-        ptr = X_sparse.indptr
-        checksum = hash((X_sparse.shape, X_sparse.nnz, 
-                        d[:10].tobytes() if len(d) >= 10 else d.tobytes(),
-                        idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
-                        ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
+    def _checksum(cls, X):
+        if isinstance(X, csr_matrix):
+            d = X.data
+            idx = X.indices
+            ptr = X.indptr
+            checksum = hash((X.shape, X.nnz, 
+                            d[:10].tobytes() if len(d) >= 10 else d.tobytes(),
+                            idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
+                            ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
+        else:
+            # For dense or tensor
+            X_np = X.cpu().numpy() if torch.is_tensor(X) else X
+            checksum = hash((X_np.shape, X_np.flatten()[:100].tobytes()))
         return checksum
     
     @classmethod
-    def get(cls, X_sparse):
-        key = cls._key(X_sparse)
-        return cls._cache.get(key)
+    def get(cls, X, dataset_name=None, device='cpu'):
+        if not dataset_name: return None
+        checksum = cls._checksum(X)
+        key = f"eigen_{dataset_name}_{checksum}"
+        
+        # 1. Memory cache
+        if key in cls._mem_cache:
+            V, e = cls._mem_cache[key]
+            return V.to(device), e.to(device)
+            
+        # 2. Disk cache
+        path = os.path.join(cls._cache_dir, f"{key}.pt")
+        if os.path.exists(path):
+            try:
+                cp = torch.load(path, map_location='cpu')
+                V, e = cp['V'], cp['eigvals']
+                cls._mem_cache[key] = (V, e)
+                return V.to(device), e.to(device)
+            except Exception: pass
+        return None
     
     @classmethod
-    def put(cls, X_sparse, V, eigvals):
-        key = cls._key(X_sparse)
-        cls._cache[key] = (V, eigvals)
-        print(f"[gpu_accel] Gram eigen cached (M={V.shape[0]}, {V.nbytes/1024**2:.0f} MB)")
+    def put(cls, X, V, eigvals, dataset_name=None):
+        if not dataset_name: return
+        os.makedirs(cls._cache_dir, exist_ok=True)
+        checksum = cls._checksum(X)
+        key = f"eigen_{dataset_name}_{checksum}"
+        
+        V_cpu, e_cpu = V.cpu(), eigvals.cpu()
+        cls._mem_cache[key] = (V_cpu, e_cpu)
+        
+        path = os.path.join(cls._cache_dir, f"{key}.pt")
+        torch.save({'V': V_cpu, 'eigvals': e_cpu}, path)
+        print(f"[gpu_accel] Eigen cached to disk: {os.path.basename(path)}")
     
-    @classmethod
-    def clear(cls):
-        cls._cache.clear()
-
-    # --- CacheManager Interface ---
     def summary(self):
-        total_bytes = sum(v.nbytes + e.nbytes for v, e in self._cache.values()) if self._cache else 0
-        return {"type": "GramEigen", "entries": len(self._cache), "size_mb": round(total_bytes / 1e6, 1)}
+        import glob
+        files = glob.glob(os.path.join(self._cache_dir, "eigen_*.pt"))
+        total_bytes = sum(os.path.getsize(f) for f in files) if files else 0
+        return {"type": "GramEigen", "files": len(files), "size_mb": round(total_bytes / 1e6, 1)}
 
     def invalidate(self, key=None):
-        self._cache.clear()
+        import glob
+        pattern = f"eigen_{key}*.pt" if key else "eigen_*.pt"
+        for f in glob.glob(os.path.join(self._cache_dir, pattern)):
+            os.remove(f)
+        self._mem_cache.clear()
 
-# Backward compat
+    @classmethod
+    def clear(cls):
+        """메모리 캐시만 비움 (디스크는 유지). HPO trial 사이 OOM 방지용."""
+        cls._mem_cache.clear()
+
 _GramEigenCache = GramEigenCacheManager
+
+
+class GramMatrixCacheManager(GlobalCacheManager):
+    """
+    λ-agnostic Gram matrix G = X^T X 캐시 (디스크 + 메모리).
+    λ가 바뀌어도 X^T X 재계산 없이 재사용 가능.
+
+    - 디스크: gram_{dataset}_{checksum}.pt 로 영속 저장
+    - 메모리: 가장 최근 1개만 보관 (M×M dense는 수백MB이므로 여러 개 쌓이면 OOM 위험)
+    """
+    _mem_cache = {}   # key -> G (CPU tensor), 최대 1개
+    _np_cache  = {}   # key -> G (numpy), 최대 1개
+    _cache_dir = 'data_cache'
+
+    @classmethod
+    def _checksum(cls, X):
+        if isinstance(X, csr_matrix):
+            d, idx, ptr = X.data, X.indices, X.indptr
+            return hash((X.shape, X.nnz,
+                         d[:10].tobytes()   if len(d)   >= 10 else d.tobytes(),
+                         idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
+                         ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
+        X_np = X.cpu().numpy() if torch.is_tensor(X) else X
+        return hash((X_np.shape, X_np.flatten()[:100].tobytes()))
+
+    @classmethod
+    def _key(cls, X, dataset_name):
+        return f"gram_{dataset_name}_{cls._checksum(X)}"
+
+    @classmethod
+    def get(cls, X, dataset_name=None, device='cpu'):
+        if not dataset_name: return None
+        key = cls._key(X, dataset_name)
+
+        # 1. 메모리 캐시
+        if key in cls._mem_cache:
+            return cls._mem_cache[key].to(device)
+
+        # 2. 디스크 캐시
+        path = os.path.join(cls._cache_dir, f"{key}.pt")
+        if os.path.exists(path):
+            try:
+                G = torch.load(path, map_location='cpu', weights_only=True)
+                cls._mem_cache = {key: G}   # 메모리는 최근 1개만
+                print(f"[gpu_accel] Gram disk cache loaded: {os.path.basename(path)}")
+                return G.to(device)
+            except Exception:
+                pass
+        return None
+
+    @classmethod
+    def put(cls, X, G, dataset_name=None):
+        if not dataset_name: return
+        os.makedirs(cls._cache_dir, exist_ok=True)
+        key = cls._key(X, dataset_name)
+        G_cpu = G.cpu()
+        cls._mem_cache = {key: G_cpu}   # 메모리는 최근 1개만 유지
+        path = os.path.join(cls._cache_dir, f"{key}.pt")
+        torch.save(G_cpu, path)
+        print(f"[gpu_accel] Gram X^T X saved to disk: {os.path.basename(path)}")
+
+    @classmethod
+    def get_numpy(cls, X, dataset_name=None):
+        if not dataset_name: return None
+        key = cls._key(X, dataset_name)
+
+        # 1. 메모리 캐시
+        if key in cls._np_cache:
+            return cls._np_cache[key]
+
+        # 2. 디스크 캐시 (tensor → numpy 변환)
+        path = os.path.join(cls._cache_dir, f"{key}.pt")
+        if os.path.exists(path):
+            try:
+                G_np = torch.load(path, map_location='cpu', weights_only=True).numpy()
+                cls._np_cache = {key: G_np}
+                print(f"[gpu_accel] Gram disk cache loaded (numpy): {os.path.basename(path)}")
+                return G_np
+            except Exception:
+                pass
+        return None
+
+    @classmethod
+    def put_numpy(cls, X, G_np, dataset_name=None):
+        if not dataset_name: return
+        os.makedirs(cls._cache_dir, exist_ok=True)
+        key = cls._key(X, dataset_name)
+        cls._np_cache = {key: G_np}
+        path = os.path.join(cls._cache_dir, f"{key}.pt")
+        torch.save(torch.from_numpy(G_np), path)
+        print(f"[gpu_accel] Gram X^T X saved to disk: {os.path.basename(path)}")
+
+    def summary(self):
+        import glob
+        files = glob.glob(os.path.join(self._cache_dir, "gram_*.pt"))
+        total_bytes = sum(os.path.getsize(f) for f in files) if files else 0
+        return {"type": "GramMatrix", "files": len(files), "size_mb": round(total_bytes / 1e6, 1)}
+
+    def invalidate(self, key=None):
+        import glob
+        pattern = f"gram_{key}*.pt" if key else "gram_*.pt"
+        for f in glob.glob(os.path.join(self._cache_dir, pattern)):
+            os.remove(f)
+        self._mem_cache.clear()
+        self._np_cache.clear()
+
+    @classmethod
+    def clear(cls):
+        """메모리 캐시만 비움 (디스크는 유지). HPO trial 사이 OOM 방지용."""
+        cls._mem_cache.clear()
+        cls._np_cache.clear()
+
+_GramMatrixCache = GramMatrixCacheManager
+
+
+class CholeskyCacheManager(GlobalCacheManager):
+    """
+    Persistent cache for Cholesky L factors.
+    Keyed by (dataset_name, matrix_checksum).
+    """
+    _mem_cache = {}
+    _cache_dir = 'data_cache'
+
+    @classmethod
+    def _checksum(cls, X):
+        # Similar to GramEigen but for dense matrices usually used in Cholesky
+        X_np = X.cpu().numpy() if torch.is_tensor(X) else X
+        return hash((X_np.shape, X_np.flatten()[:100].tobytes())) if X_np is not None else 0
+
+    @classmethod
+    def get(cls, X, dataset_name=None, device='cpu'):
+        if not dataset_name: return None
+        checksum = cls._checksum(X)
+        key = f"chol_{dataset_name}_{checksum}"
+        
+        if key in cls._mem_cache:
+            return cls._mem_cache[key].to(device)
+            
+        path = os.path.join(cls._cache_dir, f"{key}.pt")
+        if os.path.exists(path):
+            try:
+                L = torch.load(path, map_location='cpu')
+                cls._mem_cache[key] = L
+                return L.to(device)
+            except Exception: pass
+        return None
+
+    @classmethod
+    def put(cls, X, L, dataset_name=None):
+        if not dataset_name: return
+        os.makedirs(cls._cache_dir, exist_ok=True)
+        checksum = cls._checksum(X)
+        key = f"chol_{dataset_name}_{checksum}"
+        
+        L_cpu = L.cpu()
+        cls._mem_cache[key] = L_cpu
+        path = os.path.join(cls._cache_dir, f"{key}.pt")
+        torch.save(L_cpu, path)
+        print(f"[gpu_accel] Cholesky L cached to disk: {os.path.basename(path)}")
+
+    def summary(self):
+        import glob
+        files = glob.glob(os.path.join(self._cache_dir, "chol_*.pt"))
+        total_bytes = sum(os.path.getsize(f) for f in files) if files else 0
+        return {"type": "Cholesky", "files": len(files), "size_mb": round(total_bytes / 1e6, 1)}
+
+    def invalidate(self, key=None):
+        import glob
+        pattern = f"chol_{key}*.pt" if key else "chol_*.pt"
+        for f in glob.glob(os.path.join(self._cache_dir, pattern)):
+            os.remove(f)
+        self._mem_cache.clear()
 
 
 
@@ -388,9 +651,11 @@ class SVDCacheManager(GlobalCacheManager):
                         total_energy = cp.get('total_energy', 1.0) # Fallback if missing
                     
                     # Truncate if k is specified
+                    is_full_use = True
                     if k is not None and len(s) > k:
                         print(f"[SVD] Truncating: k={len(s)} -> k={k}")
                         u, s, v = u[:, :k], s[:k], v[:, :k]
+                        is_full_use = False
                     
                     # Check energy if target_energy is specified
                     if target_energy is not None:
@@ -457,9 +722,21 @@ class SVDCacheManager(GlobalCacheManager):
                 break
             
             
-        # 3. Save Cache
+        # 3. Save Cache & Cleanup smaller k
         save_k = len(s)
         cache_path = os.path.join(self.cache_dir, f"svd_{dataset_name}_{matrix_id}_k{save_k}.pt")
+        
+        # Cleanup smaller k files for this matrix/dataset
+        import glob
+        pattern = os.path.join(self.cache_dir, f"svd_{dataset_name}_{matrix_id}_k*.pt")
+        for f in glob.glob(pattern):
+            try:
+                f_k = int(f.split("_k")[-1].replace(".pt", ""))
+                if f_k < save_k:
+                    os.remove(f)
+                    print(f"[SVD] Consolidating cache: removed smaller k={f_k}")
+            except Exception: pass
+
         torch.save({'u': u, 's': s, 'v': v, 'total_energy': total_energy}, cache_path)
             
         return u, s, v, total_energy

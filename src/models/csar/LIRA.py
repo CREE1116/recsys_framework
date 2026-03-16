@@ -22,7 +22,8 @@ class LIRA(BaseModel):
         
         # LIRA Layer
         self.lira_layer = LIRALayer( 
-            reg_lambda=self.reg_lambda
+            reg_lambda=self.reg_lambda,
+            dataset_name=config.get('dataset_name', 'unknown')
         )
         self.lira_layer.to(self.device)
         

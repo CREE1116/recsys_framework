@@ -37,7 +37,8 @@ class EASE(BaseModel):
         # 1. Solve (X^T X + λI)^-1 via GPU Cholesky/Eigen
         # Now returns a PyTorch tensor directly on the target device
         from src.utils.gpu_accel import gpu_gram_solve
-        P = gpu_gram_solve(X, self.reg_lambda, device=self.device, return_tensor=True)
+        dataset_name = self.config.get('dataset_name', 'unknown')
+        P = gpu_gram_solve(X, self.reg_lambda, device=self.device, dataset_name=dataset_name, return_tensor=True)
         
         # 2. Post-process B = -P / diag(P) on GPU
         # shape P: (M, M)

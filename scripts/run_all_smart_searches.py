@@ -12,7 +12,7 @@ from config_utils import merge_all_configs
 
 # Add project root to sys.path to import src modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from src.utils.gpu_accel import SVDCacheManager, GramEigenCacheManager
+from src.utils.gpu_accel import SVDCacheManager, GramEigenCacheManager, GramMatrixCacheManager
 from src.models.general.slim import SLIMMatrixCacheManager
 from src.models.general.item_knn import ItemKNNSimCacheManager
 
@@ -176,6 +176,7 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                     try:
                         # NOTE: SVDCacheManager().invalidate()는 디스크의 파일을 삭제하므로 호출하지 않음
                         GramEigenCacheManager.clear()
+                        GramMatrixCacheManager.clear()
                         SLIMMatrixCacheManager.clear()
                         ItemKNNSimCacheManager.clear()
                     except Exception as e:
@@ -254,6 +255,7 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
             try:
                 print("\n[Resource Cleanup] Clearing GPU/Eigen memory and SVD disk caches...")
                 GramEigenCacheManager.clear()
+                GramMatrixCacheManager.clear()
                 SLIMMatrixCacheManager.clear()
                 # SVDCacheManager clears the default 'data_cache' directory svd_*.pt files
                 SVDCacheManager().clear_cache(dataset_name=dataset_name)
