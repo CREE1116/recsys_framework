@@ -417,7 +417,7 @@ class ASPIRELayer(nn.Module):
         beta: float | str | list = "auto",
         spp_pow: float | list | None = None,  # [Direct SPP] 인기도(SPP)를 편향으로 믿는 정도 (0~1)
         weight_mode: str = "normal",           # [NEW] E-WLS 가중치 모드 (normal | inverse)
-        target_energy: float | list = 1.0,
+        target_energy: float | list = 1.0, # Kept for backward compat in config, but EVD is always full
         estimator_type: str = "slope_ratio",
         symmetric_norm: bool = False,
     ):
@@ -426,10 +426,7 @@ class ASPIRELayer(nn.Module):
         self.alpha         = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
         self.beta_config   = beta[0] if isinstance(beta, (list, np.ndarray)) else beta
         self.spp_pow       = float(spp_pow[0] if isinstance(spp_pow, (list, np.ndarray)) else spp_pow) if spp_pow is not None else None
-        self.target_energy = float(
-            target_energy[0] if isinstance(target_energy, (list, np.ndarray))
-            else target_energy
-        )
+        self.target_energy = 1.0 # Force full
         self.estimator_type = estimator_type
         self.symmetric_norm = symmetric_norm
 
@@ -474,14 +471,12 @@ class ASPIRELayer(nn.Module):
             X_target = sp.diags(w_u) @ X_sparse @ sp.diags(w_i)
             # Use _norm suffix for SVD cache to avoid contamination
             svd_dataset_name = f"{dataset_name}_norm" if dataset_name else None
-            _, s, v, _ = manager.get_evd(X_target, k=None, target_energy=1.0,
-                                         dataset_name=svd_dataset_name)
+            _, s, v, _ = manager.get_evd(X_target, dataset_name=svd_dataset_name)
             
             # Use NORMALIZED frequencies for beta estimation to only correct RESIDUAL bias
             item_pops = np.array(X_target.sum(axis=0)).flatten().astype(float)
         else:
-            _, s, v, _ = manager.get_evd(X_sparse, k=None, target_energy=self.target_energy,
-                                         dataset_name=dataset_name)
+            _, s, v, _ = manager.get_evd(X_sparse, dataset_name=dataset_name)
             item_pops = item_pops_raw
             X_target = X_sparse
 

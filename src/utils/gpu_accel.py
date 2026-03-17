@@ -567,9 +567,10 @@ class EVDCacheManager(GlobalCacheManager):
         h.update(idx)
         return h.hexdigest()[:12]
 
-    def get_evd(self, X_sparse, k=None, target_energy=None, dataset_name=None, force_recompute=False):
+    def get_evd(self, X_sparse, dataset_name=None, force_recompute=False):
         """
-        Compute or load Eigen-decomposition based SVD.
+        Compute or load Full Eigen-decomposition based SVD.
+        Always returns full spectral components.
         """
         matrix_id = self._generate_matrix_id(X_sparse)
         dataset_name = dataset_name or "unknown"
@@ -577,78 +578,30 @@ class EVDCacheManager(GlobalCacheManager):
         # 1. Cache Search
         if not force_recompute:
             import glob
-            # We look for ANY k that satisfied the request previously. 
-            # EVD path usually saves high k or target_energy k.
-            pattern = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_k*.pt")
-            cache_files = glob.glob(pattern)
-            if cache_files:
-                candidates = []
-                for f in cache_files:
-                    try:
-                        f_k = int(f.split("_k")[-1].replace(".pt", ""))
-                        candidates.append((f_k, f))
-                    except ValueError: continue
-                candidates.sort()
-                
-                # If target_energy is specified, we need the largest one or check energy
-                best_file = None
-                if target_energy is not None:
-                    best_file = candidates[-1] # Largest k
-                elif k is not None:
-                    for f_k, f_path in candidates:
-                        if f_k >= k:
-                            best_file = (f_k, f_path)
-                            break
-                else:
-                    best_file = candidates[-1]
-
-                if best_file:
-                    f_k, f_path = best_file
-                    print(f"[EVD] Cache hit (k={f_k}, dataset={dataset_name})")
-                    cp = torch.load(f_path, map_location='cpu')
-                    u, s, v = cp['u'], cp['s'], cp['v']
-                    total_energy = cp.get('total_energy', float(np.sum(X_sparse.data**2)))
-                    
-                    # Truncate if needed
-                    if target_energy is not None and target_energy < 1.0:
-                        s2 = s**2
-                        cum_e = torch.cumsum(s2, dim=0) / (total_energy + 1e-12)
-                        mask = (cum_e >= target_energy).nonzero()
-                        if len(mask) > 0:
-                            final_k = mask[0].item() + 1
-                            return u[:, :final_k].to(self.device), s[:final_k].to(self.device), v[:, :final_k].to(self.device), total_energy
-                    
-                    # Manual k truncate
-                    if k is not None and len(s) > k:
-                        return u[:, :k].to(self.device), s[:k].to(self.device), v[:, :k].to(self.device), total_energy
-                    
-                    return u.to(self.device), s.to(self.device), v.to(self.device), total_energy
+            # Pattern: evd_{dataset_name}_{matrix_id}_full.pt
+            cache_path = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_full.pt")
+            if os.path.exists(cache_path):
+                print(f"[EVD] Cache hit (Full, dataset={dataset_name})")
+                cp = torch.load(cache_path, map_location='cpu')
+                u, s, v = cp['u'], cp['s'], cp['v']
+                total_energy = cp.get('total_energy', float(np.sum(X_sparse.data**2)))
+                return u.to(self.device), s.to(self.device), v.to(self.device), total_energy
 
         # 2. Compute
-        u, s, v, k_final = self._compute_evd(X_sparse, k, target_energy)
+        u, s, v, k_final = self._compute_evd(X_sparse)
         
         # 3. Save Cache
-        save_k = len(s)
-        cache_path = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_k{save_k}.pt")
+        cache_path = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_full.pt")
         
-        # Cleanup smaller
-        import glob
-        pattern = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_k*.pt")
-        for f in glob.glob(pattern):
-            try:
-                f_k = int(f.split("_k")[-1].replace(".pt", ""))
-                if f_k < save_k: os.remove(f)
-            except Exception: pass
-
         total_energy = float(np.sum(X_sparse.data**2))
         torch.save({'u': u.cpu(), 's': s.cpu(), 'v': v.cpu(), 'total_energy': total_energy}, cache_path)
         return u, s, v, total_energy
 
     @torch.no_grad()
-    def _compute_evd(self, X_sparse, k_req=None, target_energy=None):
+    def _compute_evd(self, X_sparse):
         M, N = X_sparse.shape
         t0 = time.time()
-        print(f"[EVD-Manager] Path Start ({M}x{N}) on {self.device}...")
+        print(f"[EVD-Manager] Path Start Full ({M}x{N}) on {self.device}...")
         side = 'item' if N <= M else 'user'
         try:
             if isinstance(X_sparse, csr_matrix):
@@ -677,17 +630,10 @@ class EVDCacheManager(GlobalCacheManager):
         s = torch.sqrt(torch.clamp(eigvals, min=0.0))
         
         total_e = float(torch.sum(s**2))
-        if target_energy is not None:
-            cum_e = torch.cumsum(s**2, dim=0) / (total_e + 1e-12)
-            mask = (cum_e >= target_energy).nonzero()
-            k = mask[0].item() + 1 if len(mask) > 0 else len(s)
-            print(f"[EVD-Manager] Energy optimized k={k}/{len(s)} ({cum_e[k-1].item()*100:.2f}%)")
-        else:
-            k = k_req or len(s)
+        k = len(s)
         
-        k = min(k, len(s))
-        s_k = s[:k]
-        vecs_k = eigvecs[:, :k]
+        s_k = s
+        vecs_k = eigvecs
         s_inv = torch.where(s_k > 1e-12, 1.0 / s_k, torch.zeros_like(s_k))
         
         if side == 'item':
@@ -697,7 +643,7 @@ class EVDCacheManager(GlobalCacheManager):
             u_k = vecs_k
             v_k = torch.mm(X_t.t(), u_k) * s_inv.unsqueeze(0)
             
-        print(f"[EVD-Manager] Done in {time.time()-t0:.2f}s (Final k={k})")
+        print(f"[EVD-Manager] Done in {time.time()-t0:.2f}s (Full Components: {k})")
         return u_k, s_k, v_k, k
 
 

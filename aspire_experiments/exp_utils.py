@@ -41,7 +41,7 @@ def load_config(dataset_name):
     
     return config
 
-def get_loader_and_svd(dataset_name, k=None, target_energy=1.0):
+def get_loader_and_svd(dataset_name, k=None):
     """DataLoader와 SVD 데이터를 초기화합니다."""
     config = load_config(dataset_name)
     loader = DataLoader(config)
@@ -52,9 +52,9 @@ def get_loader_and_svd(dataset_name, k=None, target_energy=1.0):
     vals = np.ones(len(rows))
     R = csr_matrix((vals, (rows, cols)), shape=(loader.n_users, loader.n_items))
     
-    # EVD 계산 (ASPIRE용 고윳값 분해 경로)
+    # EVD 계산 (ASPIRE용 고윳값 분해 경로) - 항상 FULL
     manager = EVDCacheManager()
-    U, S, V, _ = manager.get_evd(R, k=k, target_energy=target_energy, dataset_name=config["dataset_name"])
+    U, S, V, _ = manager.get_evd(R, dataset_name=config["dataset_name"])
     
     return loader, R, S, V, config
 
