@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp10_popularity_restoration.py --dataset ml1m
+# Usage: uv run python aspire_experiments/exp10_popularity_restoration.py --dataset ml1m --energy 0.99
 import os
 import sys
 import json
@@ -14,7 +14,7 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_popularity_restoration(dataset_name, target_energy=0.95):
+def run_popularity_restoration(dataset_name, target_energy=0.99):
     print(f"\n[Exp 10] Theoretical Spectral Restoration Visualization on {dataset_name}...")
     
     loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
@@ -42,11 +42,9 @@ def run_popularity_restoration(dataset_name, target_energy=0.95):
     
     # We use the estimated beta to be more precise: 
     # log p = a*log sigma => log sigma = (1/a)*log p
-    # To decouple, we need sigma_rest = sigma / p^(1/a)
-    a_est = 1.0 + beta
-    rest_exponent = 1.0 / a_est
-    # But often in plots, we want to see the SHAPE restoration.
-    # We'll show the theoretical 'restored' singular values by dividing out the bias correlation.
+    # To decouple, we need sigma_rest = sigma / p^0.5
+    # (Since sigma_obs = sigma_true * p^0.5 under Assumption A)
+    rest_exponent = 0.5
     s_restored_decoupled = s_np / (np.power(p_tilde, rest_exponent) + 1e-12)
     s_restored_decoupled /= s_restored_decoupled.max()
     
@@ -68,7 +66,7 @@ def run_popularity_restoration(dataset_name, target_energy=0.95):
     # PLOT 1: De-coupling Analysis (Singular Value vs Spectral Propensity)
     ax = axes[0]
     ax.scatter(log_pt, log_s_orig, color='blue', alpha=0.3, s=15, label='Original (Biased Coupling)')
-    ax.scatter(log_pt, log_s_rest, color='green', alpha=0.3, s=15, label='Theoretical Decoupled ($\sigma/p^{1/a}$)')
+    ax.scatter(log_pt, log_s_rest, color='green', alpha=0.3, s=15, label='Theoretical Decoupled ($\sigma/p^{0.5}$)')
     
     # Linear Fit for original coupling
     mask = log_pt > np.percentile(log_pt, 10)
@@ -98,6 +96,7 @@ def run_popularity_restoration(dataset_name, target_energy=0.95):
     # Theoretical trend from Head (Head is usually less distorted relative to True index)
     head_k = max(20, len(s_np)//10)
     z_h = np.polyfit(log_r[:head_k], log_s_orig[:head_k], 1)
+    alpha_h = abs(z_h[0])
     ax.plot(log_r, np.poly1d(z_h)(log_r), "k--", alpha=0.5, label='Theoretical Power-law (Head Trend)')
     
     ax.set_xlabel("log10(Rank $k$)")
@@ -107,7 +106,7 @@ def run_popularity_restoration(dataset_name, target_energy=0.95):
     ax.grid(True, alpha=0.2)
     
     plt.suptitle(f"ASPIRE Theoretical Restoration Visualization ({dataset_name})\n"
-                 f"Bias Factor β={beta:.3f} | Restoration Exponent (1-β)={1-beta:.3f}")
+                 f"Bias Factor β={beta:.3f} | True Alpha ≈ {alpha_h/(1+beta):.3f}")
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "spectral_restoration_comparison.png"), dpi=150)
     plt.close()
@@ -135,7 +134,7 @@ def run_popularity_restoration(dataset_name, target_energy=0.95):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--energy", type=float, default=0.95)
+    parser.add_argument("--energy", type=float, default=0.99)
     args = parser.parse_args()
     
     run_popularity_restoration(args.dataset, args.energy)

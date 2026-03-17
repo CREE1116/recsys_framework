@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp08_beta_ablation.py --dataset ml1m
+# Usage: uv run python aspire_experiments/exp08_beta_ablation.py --dataset ml1m --energy 0.99
 import os
 import sys
 import json
@@ -47,7 +47,7 @@ def full_test_evaluation(XV_test, filter_diag, V_t, test_gt, test_hist, u_ids, k
     ndcgs = [get_ndcg(top_idx_np[idx].tolist(), test_gt[u_id]) for idx, u_id in enumerate(u_ids)]
     return float(np.mean(recalls)), float(np.mean(ndcgs))
 
-def run_beta_ablation(dataset_name, target_energy=0.95, n_trials=30):
+def run_beta_ablation(dataset_name, target_energy=0.99, n_trials=30):
     print(f"\n[Beta Ablation] Running Beta Range Scan on {dataset_name}...")
     
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
@@ -60,9 +60,8 @@ def run_beta_ablation(dataset_name, target_energy=0.95, n_trials=30):
     # 1. Estimate theoretical Betas
     beta_lad, _ = beta_estimators.beta_lad(s_np, p_tilde)
     beta_ols, _ = beta_estimators.beta_ols(s_np, p_tilde)
-    beta_ratio, _ = beta_estimators.beta_slope_ratio(s_np, item_pops)
     
-    print(f"Theory LAD: {beta_lad:.4f}, OLS: {beta_ols:.4f}, Ratio: {beta_ratio:.4f}")
+    print(f"Theory LAD: {beta_lad:.4f}, OLS: {beta_ols:.4f}")
     
     # Validation Setup
     val_gt = loader.valid_df.groupby("user_id")["item_id"].apply(list).to_dict()
@@ -86,7 +85,7 @@ def run_beta_ablation(dataset_name, target_energy=0.95, n_trials=30):
     # Define Beta scan points
     beta_points = list(np.arange(0.0, 1.51, 0.25))
     # Ensure theoretical points are evaluated exactly
-    for b in [beta_lad, beta_ratio]:
+    for b in [beta_lad]:
         if not any(np.isclose(b, bp, atol=0.05) for bp in beta_points):
             beta_points.append(float(b))
     beta_points = sorted(list(set(beta_points)))
@@ -129,7 +128,7 @@ def run_beta_ablation(dataset_name, target_energy=0.95, n_trials=30):
     plt.plot(df["beta"], df["test_recall20"], marker='o', linestyle='-', linewidth=2, color='royalblue', label="Recall@20")
     
     # Mark theoretical points
-    colors = {'LAD': ('green', beta_lad), 'Ratio': ('orange', beta_ratio)}
+    colors = {'LAD': ('green', beta_lad)}
     for name, (color, val) in colors.items():
         # Interpolate y value for the line
         y_val = np.interp(val, df["beta"], df["test_recall20"])
@@ -167,7 +166,7 @@ def run_beta_ablation(dataset_name, target_energy=0.95, n_trials=30):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--energy", type=float, default=0.95)
+    parser.add_argument("--energy", type=float, default=0.99)
     parser.add_argument("--trials", type=int, default=30)
     args = parser.parse_args()
     

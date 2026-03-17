@@ -1,180 +1,163 @@
 """
-Beta Estimators for ASPIRE (Clean Reset)
-이론적 정합성: 
-  p̃_k ∝ σ_k^{2β} 
-  log p̃_k = (2β) * log σ_k + C
-  slope = 2β  =>  β = slope / 2
+Beta Estimators for ASPIRE (v2 - 이론 정합성 수정)
+
+이론적 기반:
+  왜곡 모델: σ_obs = σ_true^{1+β}
+  Assumption A: p_i ∝ σ_true^{2β}
+  Corollary 1: p̃_k ∝ σ_obs^{2β/(1+β)}
+
+  → SPP 공간 회귀: log p̃_k = slope · log σ_obs + C
+    slope = 2β/(1+β)  →  β = slope / (2 - slope)  [기존 slope/2는 오류]
+
+  → slope_ratio: η = 2β·α_s/(1+β)
+    →  β = η / (2α_s - η)
 """
 
 import numpy as np
-import torch
 from scipy.optimize import linprog
+
 
 def _log_xy(sigma_k, p_tilde_k):
     """log 변환 및 유효 데이터 필터링"""
-    # sigma_k and p_tilde_k can be torch tensors
-    if torch.is_tensor(sigma_k): sigma_k = sigma_k.detach().cpu().numpy()
-    if torch.is_tensor(p_tilde_k): p_tilde_k = p_tilde_k.detach().cpu().numpy()
-    
+    try:
+        import torch
+        if torch.is_tensor(sigma_k):  sigma_k  = sigma_k.detach().cpu().numpy()
+        if torch.is_tensor(p_tilde_k): p_tilde_k = p_tilde_k.detach().cpu().numpy()
+    except ImportError:
+        pass
+
+    sigma_k   = np.asarray(sigma_k,   dtype=float)
+    p_tilde_k = np.asarray(p_tilde_k, dtype=float)
+
     mask = (sigma_k > 1e-12) & (p_tilde_k > 1e-12)
     if mask.sum() < 2:
         return np.array([0.0, 1.0]), np.array([0.0, 0.0])
-    
-    x = np.log(sigma_k[mask])
-    y = np.log(p_tilde_k[mask])
-    return x, y
+
+    return np.log(sigma_k[mask]), np.log(p_tilde_k[mask])
+
+
+def _slope_to_beta(slope):
+    """
+    Corollary 1 기준 역산:
+      slope = 2β/(1+β)  →  β = slope / (2 - slope)
+    slope ≥ 2이면 β → ∞ (이론 범위 초과, 클램프)
+    slope < 0이면 MCAR fallback β = 0
+    """
+    if slope <= 0:
+        return 0.0
+    if slope >= 2.0:
+        return 10.0  # 사실상 무한대, β > 10은 의미 없음
+    return slope / (2.0 - slope)
+
 
 def _compute_r2(x, y, beta):
-    """β 정의에 맞춘 R² 계산 (slope = 2β)"""
-    slope = 2.0 * beta
-    intercept = np.mean(y - slope * x)
+    """
+    Corollary 1 기준 R²:
+      y_pred = slope·x + C,  slope = 2β/(1+β)
+    """
+    slope = 2.0 * beta / (1.0 + beta)
+    intercept = np.mean(y) - slope * np.mean(x)
     y_pred = slope * x + intercept
     ss_res = np.sum((y - y_pred) ** 2)
     ss_tot = np.sum((y - np.mean(y)) ** 2)
-    return 1 - (ss_res / (ss_tot + 1e-12))
+    return float(1.0 - ss_res / (ss_tot + 1e-12))
+
+
+# ------------------------------------------------------------------
+# SPP 공간 추정량들 (slope → β = slope/(2-slope))
+# ------------------------------------------------------------------
 
 def beta_ols(sigma_k, p_tilde_k):
-    """OLS: Ordinary Least Squares (L2)"""
+    """OLS: slope = 2β/(1+β) → β = slope/(2-slope)"""
     x, y = _log_xy(sigma_k, p_tilde_k)
     A = np.column_stack([x, np.ones_like(x)])
     coef, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
-    
-    slope = coef[0]
-    beta = slope / 2.0
-    return float(beta), float(_compute_r2(x, y, beta))
+    beta = _slope_to_beta(coef[0])
+    return float(beta), _compute_r2(x, y, beta)
+
 
 def beta_lad(sigma_k, p_tilde_k):
-    """LAD: Least Absolute Deviations (L1 Robust)"""
+    """LAD: L1 robust, slope → β = slope/(2-slope)"""
     x, y = _log_xy(sigma_k, p_tilde_k)
     K = len(x)
-    # 변수: [slope, C, t_1, ..., t_K]
     n_vars = K + 2
     c = np.zeros(n_vars); c[2:] = 1.0
-    
-    A_ub = np.zeros((2*K, n_vars))
-    b_ub = np.zeros(2*K)
+
+    A_ub = np.zeros((2 * K, n_vars))
+    b_ub = np.zeros(2 * K)
     for i in range(K):
-        # slope*x + C - t_i <= y
-        # -slope*x - C - t_i <= -y
-        A_ub[i, 0] = x[i];   A_ub[i, 1] = 1.0;  A_ub[i, 2+i] = -1.0; b_ub[i] = y[i]
+        A_ub[i,   0] =  x[i]; A_ub[i,   1] =  1.0; A_ub[i,   2+i] = -1.0; b_ub[i]   =  y[i]
         A_ub[K+i, 0] = -x[i]; A_ub[K+i, 1] = -1.0; A_ub[K+i, 2+i] = -1.0; b_ub[K+i] = -y[i]
-        
+
     bounds = [(None, None), (None, None)] + [(0, None)] * K
     res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
-    
+
     if res.success:
-        slope = res.x[0]
-        beta = slope / 2.0
-        return float(beta), float(_compute_r2(x, y, beta))
-    return 0.5, 0.0
-
-
-def beta_spp_projection_shifted(sigma_k, p_tilde_k):
-    """
-    Shifted ASPIRE estimator (Anchored at pop=1.0)
-    이전 실험에서 '아름다운 보간'을 보여준 버전.
-    x축은 sigma_max를 0으로 맞추고, y축은 원본을 사용하여 (log sigma_max, 0) 지점을 관통하게 함.
-    """
-    x_raw, y_raw = _log_xy(sigma_k, p_tilde_k)
-    if len(x_raw) < 1: return 0.5, 0.0
-    
-    # x is shifted relative to first point, y is absolute pop-intensity
-    x = x_raw - x_raw[0]
-    y = y_raw
-
-    num = np.sum(x * y)
-    den = np.sum(x * x)
-
-    slope = num / (den + 1e-12)
-    beta = slope / 2.0
-
-    return float(beta), float(_compute_r2(x_raw, y_raw, beta))
-
-def beta_covariance(sigma_k, p_tilde_k):
-    """
-    β = 1/2 * Cov(log σ, log p̃) / Var(log σ)
-    """
-    x, y = _log_xy(sigma_k, p_tilde_k)
-
-    x_mean = x.mean()
-    y_mean = y.mean()
-
-    num = np.sum((x - x_mean) * (y - y_mean))
-    den = np.sum((x - x_mean) ** 2)
-
-    slope = num / (den + 1e-12)
-    beta = slope / 2.0
-
-    return float(beta), float(_compute_r2(x, y, beta))
+        beta = _slope_to_beta(res.x[0])
+        return float(beta), _compute_r2(x, y, beta)
+    return 0.0, 0.0
 
 
 def beta_pairwise_ratio(sigma_k, p_tilde_k):
-    """
-    Pairwise log-ratio estimator
-    """
+    """Theil-Sen 스타일: 쌍별 기울기 중앙값 → β = slope/(2-slope)"""
     x, y = _log_xy(sigma_k, p_tilde_k)
-
     K = len(x)
     if K < 2:
-        return 0.5, 0.0
+        return 0.0, 0.0
 
-    betas = []
+    slopes = []
     for i in range(K):
-        for j in range(i+1, K):
+        for j in range(i + 1, K):
             dx = x[i] - x[j]
             if abs(dx) < 1e-12:
                 continue
-            dy = y[i] - y[j]
-            slope = dy / dx
-            betas.append(slope / 2.0)
+            slopes.append((y[i] - y[j]) / dx)
 
-    if len(betas) == 0:
-        return 0.5, 0.0
+    if not slopes:
+        return 0.0, 0.0
 
-    beta = np.median(betas)
-    return float(beta), float(_compute_r2(x, y, beta))
+    beta = _slope_to_beta(float(np.median(slopes)))
+    return beta, _compute_r2(x, y, beta)
 
-def beta_slope_ratio(sigma_k, item_freq):
-    """
-    Direct Slope-Ratio Estimator (β_direct = η / 2α)
-    
-    Step 1. 스펙트럴 감쇠율(α) 직접 측정: log σ_k ~ -α log k
-    Step 2. 아이템 편향률(η) 직접 측정: log p_i ~ -η log i
-    Step 3. 냅다 나누기: β = η / 2α
-    """
-    s = np.sort(np.abs(sigma_k))[::-1]
-    n = np.sort(np.abs(item_freq))[::-1]
-    
-    def _get_abs_slope(vals):
-        L = len(vals)
-        if L < 2: return 1.0
-        x = np.log(np.arange(1, L + 1))
-        y = np.log(np.clip(vals, 1e-12, None))
-        
-        # Simple OLS for "Direct" method as requested
-        A = np.column_stack([x, np.ones_like(x)])
-        slope, intercept = np.linalg.lstsq(A, y, rcond=None)[0]
-        return abs(float(slope))
 
-    alpha = _get_abs_slope(s)
-    eta   = _get_abs_slope(n)
-    
-    if alpha < 1e-12:
-        return 0.5, 0.0
-        
-    beta = eta / (2.0 * alpha)
-    return float(beta), 1.0
+# ------------------------------------------------------------------
+# 전체 추정
+# ------------------------------------------------------------------
 
 def estimate_all(sigma_k, p_tilde_k, item_freq=None):
-    """가용한 모든 추정기 리스트링"""
     results = {
-        "ols": beta_ols(sigma_k, p_tilde_k),
-        "lad": beta_lad(sigma_k, p_tilde_k),
-        "spp_proj_shifted": beta_spp_projection_shifted(sigma_k, p_tilde_k),
-        "covariance": beta_covariance(sigma_k, p_tilde_k),
-        "pairwise": beta_pairwise_ratio(sigma_k, p_tilde_k),
+        "ols":              beta_ols(sigma_k, p_tilde_k),
+        "lad":              beta_lad(sigma_k, p_tilde_k),
+        "pairwise":         beta_pairwise_ratio(sigma_k, p_tilde_k),
     }
-    if item_freq is not None:
-        results["slope_ratio"] = beta_slope_ratio(sigma_k, item_freq)
-        
     return results
+
+
+# ------------------------------------------------------------------
+# 테스트
+# ------------------------------------------------------------------
+if __name__ == "__main__":
+    rng = np.random.default_rng(42)
+    K   = 300
+    true_beta = 0.8
+    alpha_s   = 0.5
+
+    # 왜곡 모델: σ_obs = σ_true^{1+β}
+    sigma_true = np.exp(-alpha_s * np.log(np.arange(1, K+1)))
+    sigma_obs  = sigma_true ** (1 + true_beta)
+
+    # Corollary 1: p̃_k ∝ σ_obs^{2β/(1+β)}
+    exp_corollary = 2 * true_beta / (1 + true_beta)
+    p_tilde = sigma_obs ** exp_corollary * np.exp(rng.normal(0, 0.05, K))
+    p_tilde = np.clip(p_tilde, 1e-12, None)
+
+    print(f"true β = {true_beta},  α_s = {alpha_s}")
+    print(f"기대 slope (Corollary 1) = 2β/(1+β) = {exp_corollary:.4f}\n")
+
+    print(f"{'방법':<22}  {'β_hat':>7}  {'err':>7}  {'R²':>6}")
+    print("-" * 50)
+    res = estimate_all(sigma_obs, p_tilde)
+    for name, val in res.items():
+        b, r2 = val
+        print(f"  {name:<20}  {b:7.4f}  {b-true_beta:+7.4f}  {r2:6.3f}")
+

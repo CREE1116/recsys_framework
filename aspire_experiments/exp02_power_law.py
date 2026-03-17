@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp2_power_law.py --dataset ml1m --energy 0.95
+# Usage: uv run python aspire_experiments/exp2_power_law.py --dataset ml1m --energy 0.99
 import os
 import sys
 import json
@@ -16,7 +16,7 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_power_law(dataset_name, target_energy=0.95):
+def run_power_law(dataset_name, target_energy=0.99):
     print(f"Running Experiment 2: Power-law Coupling on {dataset_name} (Energy={target_energy})...")
     loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
     
@@ -32,17 +32,8 @@ def run_power_law(dataset_name, target_energy=0.95):
     # 2. Pure LAD
     beta_lad, r2_lad = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="lad")
 
-    # 3. Spp-Projection (Shifted)
-    beta_spp_sh, r2_spp_sh = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="spp_proj_shifted")
-
-    # 4. Covariance
-    beta_cov, r2_cov = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="covariance")
-
-    # 5. Pairwise
+    # 3. Pairwise
     beta_pair, r2_pair = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="pairwise")
-
-    # 6. Slope-Ratio (V-free context)
-    beta_ratio, _ = beta_estimators.beta_slope_ratio(S, item_pops)
     
     # Data's raw OLS slope for reference (Global)
     raw_slope = np.linalg.lstsq(np.column_stack([np.log(s_np + 1e-12), np.ones_like(s_np)]), np.log(p_tilde + 1e-12), rcond=None)[0][0]
@@ -51,10 +42,7 @@ def run_power_law(dataset_name, target_energy=0.95):
     print(f"  Observed Slope: {raw_slope:.4f}")
     print(f"  OLS       : β={beta_ols:.4f}, R²={r2_ols:.4f}")
     print(f"  Pure LAD  : β={beta_lad:.4f}, R²={r2_lad:.4f}")
-    print(f"  Spp-Proj-S: β={beta_spp_sh:.4f}, R²={r2_spp_sh:.4f}")
-    print(f"  Covariance: β={beta_cov:.4f}, R²={r2_cov:.4f}")
     print(f"  Pairwise  : β={beta_pair:.4f}, R²={r2_pair:.4f}")
-    print(f"  Slope-Rat : β={beta_ratio:.4f}")
 
     x = np.log(s_np + 1e-9)
     y = np.log(p_tilde + 1e-9)
@@ -67,16 +55,15 @@ def run_power_law(dataset_name, target_energy=0.95):
     plt.scatter(x, y, alpha=0.3, s=10, label='Data points (Raw SPP)')
     
     def plot_line(b, x_vals, y_vals, color, label):
-        # Slope in log-log space is 2 * beta
-        slope = 2.0 * b
-        intercept = np.mean(y_vals) - slope * np.mean(x_vals) # Simple visual alignment
+        # Slope in log-log space is 2 * beta / (1 + beta)
+        # Using the Corollary 1 relation: slope = 2*beta / (1+beta)
+        slope = 2.0 * b / (1.0 + b)
+        intercept = np.mean(y_vals) - slope * np.mean(x_vals)
         plt.plot(x_vals, slope * x_vals + intercept, color=color, label=label)
 
     plot_line(beta_ols, x, y, 'blue', f'OLS (β={beta_ols:.3f}, R²={r2_ols:.3f})')
     plot_line(beta_lad, x, y, 'green', f'Pure LAD (β={beta_lad:.3f}, R²={r2_lad:.3f})')
-    plot_line(beta_spp_sh, x, y, 'cyan', f'Spp-Proj-S (β={beta_spp_sh:.3f})')
-    plot_line(beta_pair, x, y, 'orange', f'Pairwise (β={beta_pair:.3f})')
-    plot_line(beta_ratio, x, y, 'purple', f'Slope-Rat (β={beta_ratio:.3f})')
+    plot_line(beta_pair, x, y, 'orange', f'Pairwise (β={beta_pair:.3f}, R²={r2_pair:.3f})')
     
     plt.xlabel("log(σ_k)")
     plt.ylabel("log(p̃_k)")
@@ -93,9 +80,7 @@ def run_power_law(dataset_name, target_energy=0.95):
         "dataset": config['dataset_name'],
         "beta_ols": float(beta_ols),
         "beta_lad": float(beta_lad),
-        "beta_spp_shifted": float(beta_spp_sh),
         "beta_pair": float(beta_pair),
-        "beta_ratio": float(beta_ratio),
         "r2_ols": float(r2_ols),
         "r2_lad": float(r2_lad)
     }
@@ -111,13 +96,13 @@ def run_power_law(dataset_name, target_energy=0.95):
         "log_spp_ptilde": y
     }).to_csv(os.path.join(out_dir, "powerlaw_data.csv"), index=False)
         
-    print(f"  Estimated Beta: {beta_cov:.4f}, R²: {r2_cov:.4f}")
+    print(f"  Estimated Beta: {beta_ols:.4f}, R²: {r2_ols:.4f}")
     print(f"  Result saved to {out_dir}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml1m", help="Dataset name or path to yaml")
-    parser.add_argument("--energy", type=float, default=0.95, help="Target energy for SVD rank")
+    parser.add_argument("--energy", type=float, default=0.99, help="Target energy for SVD rank")
     args = parser.parse_args()
     
     run_power_law(args.dataset, args.energy)

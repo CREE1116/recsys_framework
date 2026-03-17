@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp13_theory_unification.py --datasets ml1m ml100k steam
+# Usage: uv run python aspire_experiments/exp03_unification.py --datasets ml1m ml100k steam --energy 0.99
 import os
 import sys
 import json
@@ -13,7 +13,7 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_unification(dataset_name, target_energy=0.95):
+def run_unification(dataset_name, target_energy=0.99):
     print(f"\n[Unification] Analyzing {dataset_name}...")
     loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
     
@@ -25,11 +25,25 @@ def run_unification(dataset_name, target_energy=0.95):
     # log p_k ~ (2β) log σ_k + C
     beta_proj, r2_proj = beta_estimators.beta_lad(S, p_tilde)
     
-    # 2. Direct Slope-Ratio (The 3-step pipeline)
+    # 2. Direct Slope-Ratio (Theoretical derivation)
     # log σ_k ~ -α log k
     # log n_i ~ -η log i
-    # β_direct = η / 2α
-    beta_direct, _ = beta_estimators.beta_slope_ratio(S, item_freq)
+    # β_direct = η / (2α - η)  [Derived by User]
+    def calculate_beta_theory(S_in, pops):
+        s_vals = S_in.cpu().numpy()
+        def get_slope(v):
+            L = len(v)
+            lx = np.log(np.arange(1, L + 1))
+            ly = np.log(np.clip(v, 1e-12, None))
+            return abs(np.polyfit(lx, ly, 1)[0])
+        
+        alpha_eff = get_slope(s_vals)
+        eta_eff = get_slope(np.sort(pops)[::-1])
+        denom = 2.0 * alpha_eff - eta_eff
+        if denom <= 0: return eta_eff / (2.0 * alpha_eff + 1e-9)
+        return eta_eff / denom
+
+    beta_direct = calculate_beta_theory(S, item_freq)
     
     # 3. Component Slopes for Analysis
     def get_abs_slope(vals):
@@ -62,7 +76,7 @@ def run_unification(dataset_name, target_energy=0.95):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--datasets", nargs="+", default=["ml100k", "ml1m", "steam"])
-    parser.add_argument("--energy", type=float, default=0.95)
+    parser.add_argument("--energy", type=float, default=0.99)
     args = parser.parse_args()
     
     results = []

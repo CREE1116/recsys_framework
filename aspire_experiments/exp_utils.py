@@ -41,7 +41,7 @@ def load_config(dataset_name):
     
     return config
 
-def get_loader_and_svd(dataset_name, k=None, target_energy=0.95):
+def get_loader_and_svd(dataset_name, k=None, target_energy=0.99):
     """DataLoader와 SVD 데이터를 초기화합니다."""
     config = load_config(dataset_name)
     loader = DataLoader(config)

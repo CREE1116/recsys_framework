@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp1_slp.py --dataset ml1m --energy 0.95
+# Usage: uv run python aspire_experiments/exp1_slp.py --dataset ml1m --energy 0.99
 import os
 import sys
 import json
@@ -14,7 +14,7 @@ sys.path.append(os.getcwd())
 
 from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 
-def run_slp(dataset_name, target_energy=0.95):
+def run_slp(dataset_name, target_energy=0.99):
     print(f"Running Experiment 1: SLP Verification on {dataset_name} (Energy={target_energy})...")
     loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
     
@@ -94,7 +94,7 @@ def run_slp(dataset_name, target_energy=0.95):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml1m", help="Dataset name or path to yaml")
-    parser.add_argument("--energy", type=float, default=0.95, help="Target energy for SVD rank")
+    parser.add_argument("--energy", type=float, default=0.99, help="Target energy for SVD rank")
     args = parser.parse_args()
     
     run_slp(args.dataset, args.energy)

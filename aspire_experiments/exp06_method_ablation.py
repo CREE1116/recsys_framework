@@ -74,7 +74,7 @@ def full_evaluation(XV_val, filter_diag, V_t, val_gt, val_hist, item_popularity,
             
     return final_results
 
-def run_method_ablation(dataset_name, target_energy=0.95, n_trials=30):
+def run_method_ablation(dataset_name, target_energy=0.99, n_trials=30):
     print(f"\n[Ablation] Comparing methods on {dataset_name} (Multi-Metric)...")
     
     # Load Evaluation Config
@@ -103,10 +103,8 @@ def run_method_ablation(dataset_name, target_energy=0.95, n_trials=30):
 
     # Estimators to compare
     methods = {
-        "Covariance (OLS)": lambda s, pt, pops: beta_estimators.beta_ols(s, pt)[0],
+        "OLS": lambda s, pt, pops: beta_estimators.beta_ols(s, pt)[0],
         "LAD": lambda s, pt, pops: beta_estimators.beta_lad(s, pt)[0],
-        "Direct-Ratio": lambda s, pt, pops: beta_estimators.beta_slope_ratio(s, pops)[0],
-        "Spp-Proj-S": lambda s, pt, pops: beta_estimators.beta_spp_projection_shifted(s, pt)[0],
         "Pairwise": lambda s, pt, pops: beta_estimators.beta_pairwise_ratio(s, pt)[0]
     }
     
@@ -184,6 +182,8 @@ def run_method_ablation(dataset_name, target_energy=0.95, n_trials=30):
     # 4. Save and Plot
     df = pd.DataFrame(detailed_results)
     df.to_csv(os.path.join(out_dir, "results_detailed.csv"), index=False)
+    with open(os.path.join(out_dir, "results.json"), 'w', encoding='utf-8') as f:
+        json.dump(detailed_results, f, indent=4)
     
     # Plotting Grouped Bar Charts
     top_ks = eval_cfg.get('top_k', [10, 20, 50])
@@ -224,7 +224,7 @@ def run_method_ablation(dataset_name, target_energy=0.95, n_trials=30):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--energy", type=float, default=0.95)
+    parser.add_argument("--energy", type=float, default=0.99)
     parser.add_argument("--trials", type=int, default=30)
     args = parser.parse_args()
     

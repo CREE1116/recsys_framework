@@ -228,25 +228,12 @@ class AspireEngine:
             beta, r2 = beta_estimators.beta_ols(s_, pt_)
         elif estimator_type == "lad":
             beta, r2 = beta_estimators.beta_lad(s_, pt_)
-        elif estimator_type == "spp_proj_shifted":
-            beta, r2 = beta_estimators.beta_spp_projection_shifted(s_, pt_)
-        elif estimator_type == "covariance":
-            beta, r2 = beta_estimators.beta_covariance(s_, pt_)
         elif estimator_type == "pairwise":
             beta, r2 = beta_estimators.beta_pairwise_ratio(s_, pt_)
-        elif estimator_type == "slope_ratio":
-            if item_freq is not None:
-                beta, r2 = beta_estimators.beta_slope_ratio(singular_values, item_freq)
-            else:
-                # Fallback to LAD if no item_freq provided
-                beta, r2 = beta_estimators.beta_lad(s_, pt_)
         elif estimator_type == "fixed_0.5":
             beta, r2 = 0.5, 1.0
-        else: # Default: Slope-Ratio
-            if item_freq is not None:
-                beta, r2 = beta_estimators.beta_slope_ratio(singular_values, item_freq)
-            else:
-                beta, r2 = beta_estimators.beta_lad(s_, pt_)
+        else: # Default: LAD
+            beta, r2 = beta_estimators.beta_lad(s_, pt_)
 
         if verbose:
             print(f"[ASPIRE] {dataset_name} ({estimator_type}): β={beta:.4f}  R²={r2:.4f}")
@@ -556,16 +543,7 @@ class ASPIRELayer(nn.Module):
         scores = torch.mm(XV * self.filter_diag, self.V_raw.t())
         
         if self.symmetric_norm:
-            # Back to original scale? (GF-CF: often just predicts in norm space, 
-            # but to be truly symmetric in Gram: D_u^0.5 ... D_i^0.5)
-            # Actually, standard bipartite norm GF-CF ends with normalized factors.
-            # But let's re-normalize the output D_i^0.5 if we want to match interaction density.
-            # The user said "gram_matrix에 대칭정규화를 적용하는거지". 
-            # If G = D^-0.5 (X^T X) D^-0.5, then the filter is on this G.
-            # Prediction is x @ D^-0.5 G_filt D^0.5? No.
-            # Let's keep it simple: D_u^-0.5 X D_i^-0.5 -> h -> D_i^-0.5? 
-            # Usually we don't multiply back by D_u^-0.5 in output score.
-            pass
+            scores = scores * self.item_norm_weights.view(1, -1)
             
         return scores
 

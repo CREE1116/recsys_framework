@@ -246,7 +246,8 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
             # G + λI (clone해서 캐시된 G_t는 λ 없이 보존)
             G_reg = G_t.clone()
             G_reg.diagonal().add_(reg_lambda)
-            P = gpu_cholesky_solve(G_reg, rhs, device=device, dataset_name=None, return_tensor=return_tensor)
+            # Pass dataset_name to allow caching the L factor for this specific lambda
+            P = gpu_cholesky_solve(G_reg, rhs, device=device, dataset_name=dataset_name, return_tensor=return_tensor)
             del G_reg
             return P
         except Exception as e:
@@ -367,12 +368,12 @@ class GramMatrixCacheManager(GlobalCacheManager):
     def _checksum(cls, X):
         if isinstance(X, csr_matrix):
             d, idx, ptr = X.data, X.indices, X.indptr
+            # Raw matrix hash
             return hash((X.shape, X.nnz,
-                         d[:10].tobytes()   if len(d)   >= 10 else d.tobytes(),
-                         idx[:10].tobytes() if len(idx) >= 10 else idx.tobytes(),
-                         ptr[:10].tobytes() if len(ptr) >= 10 else ptr.tobytes()))
+                         d[:200].tobytes()   if len(d)   >= 200 else d.tobytes(),
+                         idx[:200].tobytes() if len(idx) >= 200 else idx.tobytes()))
         X_np = X.cpu().numpy() if torch.is_tensor(X) else X
-        return hash((X_np.shape, X_np.flatten()[:100].tobytes()))
+        return hash((X_np.shape, X_np.flatten()[:200].tobytes()))
 
     @classmethod
     def _key(cls, X, dataset_name):
