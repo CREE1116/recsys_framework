@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 sys.path.append(os.getcwd())
 
-from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
+from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir, get_trimmed_data
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
@@ -46,8 +46,12 @@ def run_restoration(dataset_name, alpha_reg=500.0):
     out_dir = ensure_dir(f"aspire_experiments/output/spectral_restoration/{dataset_name}")
     
     plt.figure(figsize=(10, 7))
-    plt.scatter(log_ranks, log_s, color='gray', alpha=0.3, s=10, label='Original Spectrum (Observed)')
-    plt.scatter(log_ranks, log_s_restored, color='red', alpha=0.5, s=10, label=f'Restored Spectrum (β={beta:.3f}, γ={gamma:.3f})')
+    # Trimming for visualization
+    lr_trim, ls_trim = get_trimmed_data(log_ranks, log_s)
+    _, lsr_trim = get_trimmed_data(log_ranks, log_s_restored)
+    
+    plt.scatter(lr_trim, ls_trim, color='gray', alpha=0.3, s=10, label='Original Spectrum (Trimmed 5%)')
+    plt.scatter(lr_trim, lsr_trim, color='red', alpha=0.5, s=10, label=f'Restored Spectrum (β={beta:.3f}, γ={gamma:.3f})')
     
     # Fit line to head of original to show "ideal" (undistorted) trend
     head_k = max(20, k // 10)

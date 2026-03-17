@@ -12,7 +12,7 @@ import argparse
 # Framework root path
 sys.path.append(os.getcwd())
 
-from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
+from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir, get_trimmed_data
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
@@ -48,11 +48,14 @@ def run_power_law(dataset_name):
     y = np.log(p_tilde + 1e-9)
     log_s, log_pt = x, y
     
+    # Trimming for visualization (exclude 5% from both ends)
+    x_trim, y_trim = get_trimmed_data(log_s, log_pt)
+    
     # Output setup
     out_dir = ensure_dir(f"aspire_experiments/output/powerlaw/{config['dataset_name']}")
     
     plt.figure(figsize=(10, 7))
-    plt.scatter(x, y, alpha=0.3, s=10, label='Data points (Raw SPP)')
+    plt.scatter(x_trim, y_trim, alpha=0.3, s=10, label='Data points (Trimmed 5%)')
     
     def plot_line(b, x_vals, y_vals, color, label):
         # Slope in log-log space is 2 * beta / (1 + beta)
@@ -61,9 +64,9 @@ def run_power_law(dataset_name):
         intercept = np.mean(y_vals) - slope * np.mean(x_vals)
         plt.plot(x_vals, slope * x_vals + intercept, color=color, label=label)
 
-    plot_line(beta_ols, x, y, 'blue', f'OLS (β={beta_ols:.3f}, R²={r2_ols:.3f})')
-    plot_line(beta_lad, x, y, 'green', f'Pure LAD (β={beta_lad:.3f}, R²={r2_lad:.3f})')
-    plot_line(beta_pair, x, y, 'orange', f'Pairwise (β={beta_pair:.3f}, R²={r2_pair:.3f})')
+    plot_line(beta_ols, x_trim, y_trim, 'blue', f'OLS (β={beta_ols:.3f}, R²={r2_ols:.3f})')
+    plot_line(beta_lad, x_trim, y_trim, 'green', f'Pure LAD (β={beta_lad:.3f}, R²={r2_lad:.3f})')
+    plot_line(beta_pair, x_trim, y_trim, 'orange', f'Pairwise (β={beta_pair:.3f}, R²={r2_pair:.3f})')
     
     plt.xlabel("log(σ_k)")
     plt.ylabel("log(p̃_k)")

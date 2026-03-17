@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 sys.path.append(os.getcwd())
 
-from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
+from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir, get_trimmed_data
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
@@ -56,26 +56,35 @@ def run_popularity_restoration(dataset_name):
     # 3. Visualization
     out_dir = ensure_dir(f"aspire_experiments/output/popularity_restoration/{dataset_name}")
     
-    log_pt = np.log10(np.clip(p_tilde, 1e-12, None))
-    log_s_orig = np.log10(np.clip(s_norm, 1e-12, None))
-    log_s_rest = np.log10(np.clip(s_restored_decoupled, 1e-12, None))
-    log_s_aspire = np.log10(np.clip(s_aspire / s_aspire.max(), 1e-12, None))
+    # Trimming for visualization
+    # We trim based on the spectral index (rank)
+    ranks = np.arange(1, len(s_np)+1)
+    indices = np.arange(len(p_tilde))
+    t_idx, _ = get_trimmed_data(indices, indices)
+    
+    log_pt_trim = np.log10(np.clip(p_tilde[t_idx], 1e-12, None))
+    log_s_orig_trim = np.log10(np.clip(s_norm[t_idx], 1e-12, None))
+    log_s_rest_trim = np.log10(np.clip(s_restored_decoupled[t_idx], 1e-12, None))
+    log_s_aspire_trim = np.log10(np.clip(s_aspire[t_idx] / s_aspire.max(), 1e-12, None))
+    
+    ranks_trim = ranks[t_idx]
+    log_r_trim = np.log10(ranks_trim)
     
     fig, axes = plt.subplots(1, 2, figsize=(16, 7))
     
     # PLOT 1: De-coupling Analysis (Singular Value vs Spectral Propensity)
     ax = axes[0]
-    ax.scatter(log_pt, log_s_orig, color='blue', alpha=0.3, s=15, label='Original (Biased Coupling)')
-    ax.scatter(log_pt, log_s_rest, color='green', alpha=0.3, s=15, label='Theoretical Decoupled ($\sigma/p^{0.5}$)')
+    ax.scatter(log_pt_trim, log_s_orig_trim, color='blue', alpha=0.3, s=15, label='Original (Biased Coupling)')
+    ax.scatter(log_pt_trim, log_s_rest_trim, color='green', alpha=0.3, s=15, label='Theoretical Decoupled ($\sigma/p^{0.5}$)')
     
     # Linear Fit for original coupling
-    mask = log_pt > np.percentile(log_pt, 10)
-    z_o = np.polyfit(log_pt[mask], log_s_orig[mask], 1)
-    ax.plot(log_pt, np.poly1d(z_o)(log_pt), "b--", alpha=0.8, label=f'Orig Slope: {z_o[0]:.3f}')
+    mask = log_pt_trim > np.percentile(log_pt_trim, 10)
+    z_o = np.polyfit(log_pt_trim[mask], log_s_orig_trim[mask], 1)
+    ax.plot(log_pt_trim, np.poly1d(z_o)(log_pt_trim), "b--", alpha=0.8, label=f'Orig Slope: {z_o[0]:.3f}')
     
     # Linear Fit for restored coupling
-    z_r = np.polyfit(log_pt[mask], log_s_rest[mask], 1)
-    ax.plot(log_pt, np.poly1d(z_r)(log_pt), "g--", alpha=0.8, label=f'Decoupled Slope: {z_r[0]:.3f} (→0)')
+    z_r = np.polyfit(log_pt_trim[mask], log_s_rest_trim[mask], 1)
+    ax.plot(log_pt_trim, np.poly1d(z_r)(log_pt_trim), "g--", alpha=0.8, label=f'Decoupled Slope: {z_r[0]:.3f} (→0)')
     
     ax.set_xlabel(r"log10(Spectral Propensity $\tilde{p}_k$)")
     ax.set_ylabel(r"log10(Singular Value $\sigma_k$)")
@@ -85,19 +94,17 @@ def run_popularity_restoration(dataset_name):
     
     # PLOT 2: Power-law Restoration (Scree Plot: Rank vs Singular Value)
     ax = axes[1]
-    ranks = np.arange(1, len(s_np)+1)
-    log_r = np.log10(ranks)
     
     # Zipf-like plot
-    ax.plot(log_r, log_s_orig, color='blue', alpha=0.4, label='Observed (Distorted Tail)')
-    ax.plot(log_r, log_s_aspire, color='red', alpha=0.6, label='ASPIRE Filtered (Wiener Shrinkage)')
-    ax.plot(log_r, log_s_rest, color='green', alpha=0.8, label='Theoretical Restoration (Tail Lifted)')
+    ax.plot(log_r_trim, log_s_orig_trim, color='blue', alpha=0.4, label='Observed (Trimmed Tail)')
+    ax.plot(log_r_trim, log_s_aspire_trim, color='red', alpha=0.6, label='ASPIRE Filtered')
+    ax.plot(log_r_trim, log_s_rest_trim, color='green', alpha=0.8, label='Theoretical Restoration')
     
-    # Theoretical trend from Head (Head is usually less distorted relative to True index)
-    head_k = max(20, len(s_np)//10)
-    z_h = np.polyfit(log_r[:head_k], log_s_orig[:head_k], 1)
+    # Theoretical trend from Head
+    head_k = max(20, len(log_r_trim)//10)
+    z_h = np.polyfit(log_r_trim[:head_k], log_s_orig_trim[:head_k], 1)
     alpha_h = abs(z_h[0])
-    ax.plot(log_r, np.poly1d(z_h)(log_r), "k--", alpha=0.5, label='Theoretical Power-law (Head Trend)')
+    ax.plot(log_r_trim, np.poly1d(z_h)(log_r_trim), "k--", alpha=0.5, label='Theoretical Trend')
     
     ax.set_xlabel("log10(Rank $k$)")
     ax.set_ylabel(r"log10(Singular Value $\sigma_k$)")

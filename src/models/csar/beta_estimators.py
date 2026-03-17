@@ -17,8 +17,8 @@ import numpy as np
 from scipy.optimize import linprog
 
 
-def _log_xy(sigma_k, p_tilde_k):
-    """log 변환 및 유효 데이터 필터링"""
+def _log_xy(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
+    """log 변환 및 유효 데이터 필터링 + 트리밍(아웃라이어 제거)"""
     try:
         import torch
         if torch.is_tensor(sigma_k):  sigma_k  = sigma_k.detach().cpu().numpy()
@@ -30,10 +30,25 @@ def _log_xy(sigma_k, p_tilde_k):
     p_tilde_k = np.asarray(p_tilde_k, dtype=float)
 
     mask = (sigma_k > 1e-12) & (p_tilde_k > 1e-12)
-    if mask.sum() < 2:
+    x = np.log(sigma_k[mask])
+    y = np.log(p_tilde_k[mask])
+
+    if len(x) < 2:
         return np.array([0.0, 1.0]), np.array([0.0, 0.0])
 
-    return np.log(sigma_k[mask]), np.log(p_tilde_k[mask])
+    # Trimming: 아웃라이어 제거 (head/tail)
+    if any(r > 0 for r in trim_range):
+        low, high = trim_range
+        n = len(x)
+        start_idx = int(n * low)
+        end_idx = n - int(n * high)
+        if end_idx - start_idx >= 2:
+            # 멱법칙에서는 보통 큰 값(head)이 안정적이므로
+            # 기본 정렬(기존 sigma_k는 내림차순이었을 가능성 큼) 상태 유지
+            x = x[start_idx:end_idx]
+            y = y[start_idx:end_idx]
+
+    return x, y
 
 
 def _slope_to_beta(slope):
@@ -67,18 +82,18 @@ def _compute_r2(x, y, beta):
 # SPP 공간 추정량들 (slope → β = slope/(2-slope))
 # ------------------------------------------------------------------
 
-def beta_ols(sigma_k, p_tilde_k):
+def beta_ols(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
     """OLS: slope = 2β/(1+β) → β = slope/(2-slope)"""
-    x, y = _log_xy(sigma_k, p_tilde_k)
+    x, y = _log_xy(sigma_k, p_tilde_k, trim_range=trim_range)
     A = np.column_stack([x, np.ones_like(x)])
     coef, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
     beta = _slope_to_beta(coef[0])
     return float(beta), _compute_r2(x, y, beta)
 
 
-def beta_lad(sigma_k, p_tilde_k):
+def beta_lad(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
     """LAD: L1 robust, slope → β = slope/(2-slope)"""
-    x, y = _log_xy(sigma_k, p_tilde_k)
+    x, y = _log_xy(sigma_k, p_tilde_k, trim_range=trim_range)
     K = len(x)
     n_vars = K + 2
     c = np.zeros(n_vars); c[2:] = 1.0
@@ -98,9 +113,9 @@ def beta_lad(sigma_k, p_tilde_k):
     return 0.0, 0.0
 
 
-def beta_pairwise_ratio(sigma_k, p_tilde_k):
+def beta_pairwise_ratio(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
     """Theil-Sen 스타일: 쌍별 기울기 중앙값 → β = slope/(2-slope)"""
-    x, y = _log_xy(sigma_k, p_tilde_k)
+    x, y = _log_xy(sigma_k, p_tilde_k, trim_range=trim_range)
     K = len(x)
     if K < 2:
         return 0.0, 0.0
@@ -124,11 +139,11 @@ def beta_pairwise_ratio(sigma_k, p_tilde_k):
 # 전체 추정
 # ------------------------------------------------------------------
 
-def estimate_all(sigma_k, p_tilde_k, item_freq=None):
+def estimate_all(sigma_k, p_tilde_k, item_freq=None, trim_range=(0.05, 0.05)):
     results = {
-        "ols":              beta_ols(sigma_k, p_tilde_k),
-        "lad":              beta_lad(sigma_k, p_tilde_k),
-        "pairwise":         beta_pairwise_ratio(sigma_k, p_tilde_k),
+        "ols":              beta_ols(sigma_k, p_tilde_k, trim_range=trim_range),
+        "lad":              beta_lad(sigma_k, p_tilde_k, trim_range=trim_range),
+        "pairwise":         beta_pairwise_ratio(sigma_k, p_tilde_k, trim_range=trim_range),
     }
     return results
 

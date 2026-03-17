@@ -10,7 +10,13 @@ from scipy.sparse import csr_matrix
 sys.path.append(os.getcwd())
 
 from src.data_loader import DataLoader
-from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager
+from src.utils.gpu_accel import (
+    SVDCacheManager, 
+    EVDCacheManager, 
+    GramEigenCacheManager, 
+    GramMatrixCacheManager, 
+    CholeskyCacheManager
+)
 
 def load_config(dataset_name):
     """YAML 파일을 로드하여 설정을 반환합니다."""
@@ -41,8 +47,15 @@ def load_config(dataset_name):
     
     return config
 
-def get_loader_and_svd(dataset_name, k=None):
-    """DataLoader와 SVD 데이터를 초기화합니다."""
+def get_loader_and_svd(dataset_name, k=None, target_energy=None):
+    """DataLoader와 SVD 데이터를 초기화합니다. target_energy는 EVD 경로에서 무시됩니다."""
+    # Memory Management: 새로운 데이터셋 로드 전 기존 캐시 비움
+    EVDCacheManager.clear()
+    SVDCacheManager.clear()
+    # Actually, Cholesky and Eigen caches are the hungry ones.
+    GramEigenCacheManager.clear()
+    GramMatrixCacheManager.clear()
+    CholeskyCacheManager.clear()
     config = load_config(dataset_name)
     loader = DataLoader(config)
     
@@ -57,6 +70,16 @@ def get_loader_and_svd(dataset_name, k=None):
     U, S, V, _ = manager.get_evd(R, dataset_name=config["dataset_name"])
     
     return loader, R, S, V, config
+
+def get_trimmed_data(x, y, trim_range=(0.05, 0.05)):
+    """양끝 trim_range 만큼 데이터를 제거합니다."""
+    n = len(x)
+    low, high = trim_range
+    start_idx = int(n * low)
+    end_idx = n - int(n * high)
+    if end_idx - start_idx >= 2:
+        return x[start_idx:end_idx], y[start_idx:end_idx]
+    return x, y
 
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)

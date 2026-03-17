@@ -312,7 +312,7 @@ class GramEigenCacheManager(GlobalCacheManager):
             try:
                 cp = torch.load(path, map_location='cpu')
                 V, e = cp['V'], cp['eigvals']
-                cls._mem_cache[key] = (V, e)
+                cls._mem_cache = {key: (V, e)}  # Keep only recent
                 return V.to(device), e.to(device)
             except Exception: pass
         return None
@@ -325,7 +325,7 @@ class GramEigenCacheManager(GlobalCacheManager):
         key = f"eigen_{dataset_name}_{checksum}"
         
         V_cpu, e_cpu = V.cpu(), eigvals.cpu()
-        cls._mem_cache[key] = (V_cpu, e_cpu)
+        cls._mem_cache = {key: (V_cpu, e_cpu)}  # Keep only recent
         
         path = os.path.join(cls._cache_dir, f"{key}.pt")
         torch.save({'V': V_cpu, 'eigvals': e_cpu}, path)
@@ -492,7 +492,7 @@ class CholeskyCacheManager(GlobalCacheManager):
         if os.path.exists(path):
             try:
                 L = torch.load(path, map_location='cpu')
-                cls._mem_cache[key] = L
+                cls._mem_cache = {key: L} # Keep only recent
                 return L.to(device)
             except Exception: pass
         return None
@@ -505,10 +505,15 @@ class CholeskyCacheManager(GlobalCacheManager):
         key = f"chol_{dataset_name}_{checksum}"
         
         L_cpu = L.cpu()
-        cls._mem_cache[key] = L_cpu
+        cls._mem_cache = {key: L_cpu}  # Keep only recent
         path = os.path.join(cls._cache_dir, f"{key}.pt")
         torch.save(L_cpu, path)
         print(f"[gpu_accel] Cholesky L cached to disk: {os.path.basename(path)}")
+
+    @classmethod
+    def clear(cls):
+        """메모리 캐시만 비움."""
+        cls._mem_cache.clear()
 
     def summary(self):
         import glob
@@ -546,6 +551,11 @@ class EVDCacheManager(GlobalCacheManager):
         files = glob.glob(os.path.join(self.cache_dir, "evd_*.pt"))
         total_size = sum(os.path.getsize(f) for f in files) if files else 0
         return {"type": "EVD", "files": len(files), "size_mb": round(total_size / 1e6, 1)}
+
+    @classmethod
+    def clear(cls):
+        """메모리 내 보관 중인 데이터가 있다면 비움 (현재는 디스크 기반이나 인터페이스 유지를 위해 추가)"""
+        pass
 
     def invalidate(self, key=None):
         import glob
@@ -666,6 +676,11 @@ class SVDCacheManager(GlobalCacheManager):
         files = _glob.glob(os.path.join(self.cache_dir, "svd_*.pt"))
         total_size = sum(os.path.getsize(f) for f in files) if files else 0
         return {"type": "SVD", "files": len(files), "size_mb": round(total_size / 1e6, 1)}
+
+    @classmethod
+    def clear(cls):
+        """메모리 비움 (인터페이스 유지용)"""
+        pass
 
     def invalidate(self, key=None):
         import glob as _glob
@@ -805,8 +820,6 @@ class SVDCacheManager(GlobalCacheManager):
                     os.remove(f)
                     print(f"[SVD] Consolidating cache: removed smaller k={f_k}")
             except Exception: pass
-
-        return u_k, s_k, v_k, k
 
     def _cpu_svd(self, X_sparse, k):
         """CPU SVD: Dense for small, Sparse iterative for large."""
