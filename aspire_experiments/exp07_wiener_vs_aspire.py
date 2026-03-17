@@ -40,11 +40,11 @@ def fast_val_ndcg(XV_val, filter_diag, V_t, val_gt, val_hist, device, k=10):
     ndcgs = [get_ndcg(top_idx_np[idx].tolist(), val_gt[u_id]) for idx, u_id in enumerate(u_ids)]
     return float(np.mean(ndcgs))
 
-def run_filter_comparison(dataset_name, target_energy=0.99, n_trials=30):
-    print(f"\n[Comparison] HPO Comparison of Wiener vs ASPIRE on {dataset_name}...")
+def run_filter_comparison(dataset_name, n_trials=30):
+    print(f"\n[Comparison] HPO Comparison of Wiener vs ASPIRE on {dataset_name} (Full Spectrum)...")
     
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
+    loader, R, S, V, config = get_loader_and_svd(dataset_name)
     
     item_pops = np.array(R.sum(axis=0)).flatten()
     s_np = S.cpu().numpy()
@@ -182,10 +182,10 @@ def run_filter_comparison(dataset_name, target_energy=0.99, n_trials=30):
     
     return final_output
 
-def run_beta_sensitivity(dataset_name, target_energy=0.99, n_trials=30):
-    print(f"\n[Sensitivity] Analyzing Beta Sensitivity on {dataset_name}...")
+def run_beta_sensitivity(dataset_name, n_trials=30):
+    print(f"\n[Sensitivity] Analyzing Beta Sensitivity on {dataset_name} (Full Spectrum)...")
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
+    loader, R, S, V, config = get_loader_and_svd(dataset_name)
     
     # Simple validation setup using loader's internal data
     val_gt = loader.valid_df.groupby("user_id")["item_id"].apply(list).to_dict()
@@ -231,12 +231,11 @@ def run_beta_sensitivity(dataset_name, target_energy=0.99, n_trials=30):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--energy", type=float, default=0.99)
     parser.add_argument("--trials", type=int, default=60)
     parser.add_argument("--sensitivity", action="store_true", help="Run beta sensitivity analysis")
     args = parser.parse_args()
     
     if args.sensitivity:
-        run_beta_sensitivity(args.dataset, target_energy=args.energy, n_trials=args.trials)
+        run_beta_sensitivity(args.dataset, n_trials=args.trials)
     else:
-        run_filter_comparison(args.dataset, target_energy=args.energy, n_trials=args.trials)
+        run_filter_comparison(args.dataset, n_trials=args.trials)

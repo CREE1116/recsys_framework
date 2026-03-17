@@ -36,8 +36,7 @@ def main():
     )
     parser.add_argument("--datasets",  nargs="+",  default=["ml1m"],
                         help="Dataset names (e.g. ml1m ml100k)")
-    parser.add_argument("--energy",    type=float, default=0.99,
-                        help="Target energy for SVD rank")
+
     parser.add_argument("--seeds",     type=int,   nargs="+", default=[42],
                         help="Random seeds for sampling/reproducibility")
     parser.add_argument("--skip",      nargs="*",  default=[],
@@ -57,42 +56,42 @@ def main():
         # 01. SLP
         if "exp01" not in args.skip:
             print("\n[Exp 01] SLP Verification")
-            run_slp(dataset, target_energy=args.energy)
+            run_slp(dataset)
 
         # 02. Power-law Coupling
         if "exp02" not in args.skip:
             print("\n[Exp 02] Power-law Coupling (LAD/Ratio)")
-            run_power_law(dataset, target_energy=args.energy)
+            run_power_law(dataset)
 
         # 03. Theory Unification
         if "exp03" not in args.skip:
             print("\n[Exp 03] Theory Unification (Direct vs Projection)")
-            run_unification(dataset, target_energy=args.energy)
+            run_unification(dataset)
 
         # 04. Spectral Restoration
         if "exp04" not in args.skip:
             print("\n[Exp 04] Spectral Restoration Analysis")
-            run_restoration(dataset, target_energy=args.energy)
+            run_restoration(dataset)
 
         # 06. Method Ablation
         if "exp06" not in args.skip:
             print("\n[Exp 06] Method Ablation (NDCG Comparison)")
-            run_method_ablation(dataset, target_energy=args.energy, n_trials=args.trials)
+            run_method_ablation(dataset, n_trials=args.trials)
 
         # 07. Filter Comparison (Wiener vs ASPIRE)
         if "exp07" not in args.skip:
             print("\n[Exp 07] Wiener vs. ASPIRE Filter Comparison")
-            run_filter_comparison(dataset, target_energy=args.energy, n_trials=args.trials)
+            run_filter_comparison(dataset, n_trials=args.trials)
 
         # 08. Beta Ablation
         if "exp08" not in args.skip:
             print("\n[Exp 08] Beta Ablation (Recall Scan)")
-            run_beta_ablation(dataset, target_energy=args.energy, n_trials=args.trials)
+            run_beta_ablation(dataset, n_trials=args.trials)
 
         # 10. Popularity Restoration Visualization
         if "exp10" not in args.skip:
             print("\n[Exp 10] Popularity-Spectral Restoration Visualization")
-            run_popularity_restoration(dataset, target_energy=args.energy)
+            run_popularity_restoration(dataset)
 
         # 요약 데이터 수집
         try:

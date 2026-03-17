@@ -74,8 +74,8 @@ def full_evaluation(XV_val, filter_diag, V_t, val_gt, val_hist, item_popularity,
             
     return final_results
 
-def run_method_ablation(dataset_name, target_energy=0.99, n_trials=30):
-    print(f"\n[Ablation] Comparing methods on {dataset_name} (Multi-Metric)...")
+def run_method_ablation(dataset_name, n_trials=30):
+    print(f"\n[Ablation] Comparing methods on {dataset_name} (Full Spectrum, Multi-Metric)...")
     
     # Load Evaluation Config
     with open("configs/evaluation.yaml", "r", encoding="utf-8") as f:
@@ -85,7 +85,7 @@ def run_method_ablation(dataset_name, target_energy=0.99, n_trials=30):
     main_k = eval_cfg.get("main_metric_k", 20)
     
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
+    loader, R, S, V, config = get_loader_and_svd(dataset_name)
     
     item_pops = np.array(R.sum(axis=0)).flatten()
     s_np = S.cpu().numpy()
@@ -224,8 +224,7 @@ def run_method_ablation(dataset_name, target_energy=0.99, n_trials=30):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--energy", type=float, default=0.99)
     parser.add_argument("--trials", type=int, default=30)
     args = parser.parse_args()
     
-    run_method_ablation(args.dataset, args.energy, args.trials)
+    run_method_ablation(args.dataset, args.trials)

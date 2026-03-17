@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp10_popularity_restoration.py --dataset ml1m --energy 0.99
+# Usage: uv run python aspire_experiments/exp10_popularity_restoration.py --dataset ml1m
 import os
 import sys
 import json
@@ -14,10 +14,10 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_popularity_restoration(dataset_name, target_energy=0.99):
-    print(f"\n[Exp 10] Theoretical Spectral Restoration Visualization on {dataset_name}...")
+def run_popularity_restoration(dataset_name):
+    print(f"\n[Exp 10] Theoretical Spectral Restoration Visualization on {dataset_name} (Full Spectrum)...")
     
-    loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
+    loader, R, S, V, config = get_loader_and_svd(dataset_name)
     
     item_pops = np.array(R.sum(axis=0)).flatten().astype(float)
     # Normalize popularity to avoid extreme log values
@@ -134,7 +134,6 @@ def run_popularity_restoration(dataset_name, target_energy=0.99):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--energy", type=float, default=0.99)
     args = parser.parse_args()
     
-    run_popularity_restoration(args.dataset, args.energy)
+    run_popularity_restoration(args.dataset)

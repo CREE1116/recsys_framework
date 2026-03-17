@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp14_spectral_restoration.py --dataset ml1m --energy 0.99
+# Usage: uv run python aspire_experiments/exp14_spectral_restoration.py --dataset ml1m
 import os
 import sys
 import json
@@ -14,9 +14,9 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_restoration(dataset_name, target_energy=0.99, alpha_reg=500.0):
-    print(f"\n[Restoration] Analyzing {dataset_name}...")
-    loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
+def run_restoration(dataset_name, alpha_reg=500.0):
+    print(f"\n[Restoration] Analyzing {dataset_name} (Full Spectrum)...")
+    loader, R, S, V, config = get_loader_and_svd(dataset_name)
     
     item_freq = np.array(R.sum(axis=0)).flatten().astype(float)
     s_np = S.cpu().numpy()
@@ -110,11 +110,10 @@ def run_restoration(dataset_name, target_energy=0.99, alpha_reg=500.0):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml1m")
-    parser.add_argument("--energy", type=float, default=0.99)
     parser.add_argument("--alpha", type=float, default=590.0) # Approx best for ml1m
     args = parser.parse_args()
     
-    run_restoration(args.dataset, args.energy, args.alpha)
+    run_restoration(args.dataset, args.alpha)
 
 if __name__ == "__main__":
     main()

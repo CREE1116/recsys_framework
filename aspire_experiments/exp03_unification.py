@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp03_unification.py --datasets ml1m ml100k steam --energy 0.99
+# Usage: uv run python aspire_experiments/exp03_unification.py --datasets ml1m ml100k steam
 import os
 import sys
 import json
@@ -13,9 +13,9 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_unification(dataset_name, target_energy=0.99):
-    print(f"\n[Unification] Analyzing {dataset_name}...")
-    loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
+def run_unification(dataset_name):
+    print(f"\n[Unification] Analyzing {dataset_name} (Full Spectrum)...")
+    loader, R, S, V, config = get_loader_and_svd(dataset_name)
     
     item_freq = np.array(R.sum(axis=0)).flatten().astype(float)
     s_np = S.cpu().numpy()
@@ -76,12 +76,12 @@ def run_unification(dataset_name, target_energy=0.99):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--datasets", nargs="+", default=["ml100k", "ml1m", "steam"])
-    parser.add_argument("--energy", type=float, default=0.99)
+    parser.add_argument("--datasets", nargs="+", default=["ml100k", "ml1m", "steam"])
     args = parser.parse_args()
     
     results = []
     for ds in args.datasets:
-        res = run_unification(ds, args.energy)
+        res = run_unification(ds)
         results.append(res)
         
     # Visualization
