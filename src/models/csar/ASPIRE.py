@@ -5,7 +5,7 @@ import os
 from scipy.sparse import csr_matrix
 from src.models.base_model import BaseModel
 from src.models.csar.ASPIRELayer import ASPIRELayer, MNARGammaCacheManager
-from src.utils.gpu_accel import SVDCacheManager
+from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager
 
 class ASPIRE(BaseModel):
     """
@@ -52,7 +52,8 @@ class ASPIRE(BaseModel):
         self.lira_layer.to(self.device)
 
         # Cache managers 등록 (Trainer가 자동 관리)
-        self.register_cache_manager('svd', SVDCacheManager(device=self.device.type))
+        self.register_cache_manager('evd', EVDCacheManager(device=self.device.type))
+        self.register_cache_manager('svd', SVDCacheManager(device=self.device.type)) # Legacy if needed
         self.register_cache_manager('mnar_gamma', MNARGammaCacheManager())
 
     def _build_sparse_matrix(self, data_loader):

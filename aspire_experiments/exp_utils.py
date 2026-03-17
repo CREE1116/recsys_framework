@@ -10,7 +10,7 @@ from scipy.sparse import csr_matrix
 sys.path.append(os.getcwd())
 
 from src.data_loader import DataLoader
-from src.utils.gpu_accel import SVDCacheManager
+from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager
 
 def load_config(dataset_name):
     """YAML 파일을 로드하여 설정을 반환합니다."""
@@ -41,7 +41,7 @@ def load_config(dataset_name):
     
     return config
 
-def get_loader_and_svd(dataset_name, k=None, target_energy=0.99):
+def get_loader_and_svd(dataset_name, k=None, target_energy=1.0):
     """DataLoader와 SVD 데이터를 초기화합니다."""
     config = load_config(dataset_name)
     loader = DataLoader(config)
@@ -52,9 +52,9 @@ def get_loader_and_svd(dataset_name, k=None, target_energy=0.99):
     vals = np.ones(len(rows))
     R = csr_matrix((vals, (rows, cols)), shape=(loader.n_users, loader.n_items))
     
-    # SVD 계산 (target_energy 기준)
-    svd_manager = SVDCacheManager()
-    U, S, V, _ = svd_manager.get_svd(R, k=k, target_energy=target_energy, dataset_name=config["dataset_name"])
+    # EVD 계산 (ASPIRE용 고윳값 분해 경로)
+    manager = EVDCacheManager()
+    U, S, V, _ = manager.get_evd(R, k=k, target_energy=target_energy, dataset_name=config["dataset_name"])
     
     return loader, R, S, V, config
 

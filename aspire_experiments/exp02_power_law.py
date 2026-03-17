@@ -1,4 +1,4 @@
-# Usage: uv run python aspire_experiments/exp2_power_law.py --dataset ml1m --energy 0.99
+# Usage: uv run python aspire_experiments/exp2_power_law.py --dataset ml1m --energy 1.0
 import os
 import sys
 import json
@@ -16,7 +16,7 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_power_law(dataset_name, target_energy=0.99):
+def run_power_law(dataset_name, target_energy=1.0):
     print(f"Running Experiment 2: Power-law Coupling on {dataset_name} (Energy={target_energy})...")
     loader, R, S, V, config = get_loader_and_svd(dataset_name, target_energy=target_energy)
     
@@ -102,7 +102,7 @@ def run_power_law(dataset_name, target_energy=0.99):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml1m", help="Dataset name or path to yaml")
-    parser.add_argument("--energy", type=float, default=0.99, help="Target energy for SVD rank")
+    parser.add_argument("--energy", type=float, default=1.0, help="Target energy for SVD rank")
     args = parser.parse_args()
     
     run_power_law(args.dataset, args.energy)

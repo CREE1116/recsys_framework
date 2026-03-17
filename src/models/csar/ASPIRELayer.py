@@ -11,7 +11,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from sklearn.linear_model import HuberRegressor
 
-from src.utils.gpu_accel import SVDCacheManager
+from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager
 from src.models.csar.lira_visualizer import LIRAVisualizer
 from src.utils.cache_manager import GlobalCacheManager
 from src.models.csar import beta_estimators
@@ -417,7 +417,7 @@ class ASPIRELayer(nn.Module):
         beta: float | str | list = "auto",
         spp_pow: float | list | None = None,  # [Direct SPP] 인기도(SPP)를 편향으로 믿는 정도 (0~1)
         weight_mode: str = "normal",           # [NEW] E-WLS 가중치 모드 (normal | inverse)
-        target_energy: float | list = 0.95,
+        target_energy: float | list = 1.0,
         estimator_type: str = "slope_ratio",
         symmetric_norm: bool = False,
     ):
@@ -451,7 +451,7 @@ class ASPIRELayer(nn.Module):
     def build(self, X_sparse, dataset_name: str | None = None):
         """SVD → SPP → β → h."""
         dev     = next((p.device for p in self.parameters()), torch.device("cpu"))
-        manager = SVDCacheManager(device=dev)
+        manager = EVDCacheManager(device=dev)
 
         # Get raw item frequencies for beta estimation (ASPIRE logic requires observed bias)
         item_pops_raw = np.array(X_sparse.sum(axis=0)).flatten().astype(float)
@@ -474,13 +474,13 @@ class ASPIRELayer(nn.Module):
             X_target = sp.diags(w_u) @ X_sparse @ sp.diags(w_i)
             # Use _norm suffix for SVD cache to avoid contamination
             svd_dataset_name = f"{dataset_name}_norm" if dataset_name else None
-            _, s, v, _ = manager.get_svd(X_target, k=None, target_energy=self.target_energy,
+            _, s, v, _ = manager.get_evd(X_target, k=None, target_energy=1.0,
                                          dataset_name=svd_dataset_name)
             
             # Use NORMALIZED frequencies for beta estimation to only correct RESIDUAL bias
             item_pops = np.array(X_target.sum(axis=0)).flatten().astype(float)
         else:
-            _, s, v, _ = manager.get_svd(X_sparse, k=None, target_energy=self.target_energy,
+            _, s, v, _ = manager.get_evd(X_sparse, k=None, target_energy=self.target_energy,
                                          dataset_name=dataset_name)
             item_pops = item_pops_raw
             X_target = X_sparse
