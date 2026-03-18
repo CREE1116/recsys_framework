@@ -14,9 +14,9 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir, get_tri
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_restoration(dataset_name, alpha_reg=500.0):
-    print(f"\n[Restoration] Analyzing {dataset_name} (Full Spectrum)...")
-    loader, R, S, V, config = get_loader_and_svd(dataset_name)
+def run_restoration(dataset_name, alpha_reg=500.0, seed=42):
+    print(f"\n[Restoration] Analyzing {dataset_name} (Full Spectrum, seed={seed})...")
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, seed=seed)
     
     item_freq = np.array(R.sum(axis=0)).flatten().astype(float)
     s_np = S.cpu().numpy()
@@ -112,12 +112,10 @@ def run_restoration(dataset_name, alpha_reg=500.0):
     return result
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="ml1m")
-    parser.add_argument("--alpha", type=float, default=590.0) # Approx best for ml1m
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     
-    run_restoration(args.dataset, args.alpha)
+    run_restoration(args.dataset, args.alpha, seed=args.seed)
 
 if __name__ == "__main__":
     main()

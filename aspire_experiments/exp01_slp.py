@@ -14,9 +14,9 @@ sys.path.append(os.getcwd())
 
 from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 
-def run_slp(dataset_name):
-    print(f"Running Experiment 1: SLP Verification on {dataset_name} (Full Spectrum)...")
-    loader, R, S, V, config = get_loader_and_svd(dataset_name)
+def run_slp(dataset_name, seed=42):
+    print(f"Running Experiment 1: SLP Verification on {dataset_name} (Full Spectrum, seed={seed})...")
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, seed=seed)
     
     # Item popularity
     p = np.array(R.sum(axis=0)).flatten()
@@ -92,8 +92,7 @@ def run_slp(dataset_name):
     print(f"  Result saved to {out_dir}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="ml1m", help="Dataset name or path to yaml")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     
-    run_slp(args.dataset)
+    run_slp(args.dataset, seed=args.seed)

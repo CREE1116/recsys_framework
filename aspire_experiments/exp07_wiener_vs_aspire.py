@@ -40,11 +40,11 @@ def fast_val_ndcg(XV_val, filter_diag, V_t, val_gt, val_hist, device, k=10):
     ndcgs = [get_ndcg(top_idx_np[idx].tolist(), val_gt[u_id]) for idx, u_id in enumerate(u_ids)]
     return float(np.mean(ndcgs))
 
-def run_filter_comparison(dataset_name, n_trials=30):
-    print(f"\n[Comparison] HPO Comparison of Wiener vs ASPIRE on {dataset_name} (Full Spectrum)...")
+def run_filter_comparison(dataset_name, n_trials=30, seed=42):
+    print(f"\n[Comparison] HPO Comparison of Wiener vs ASPIRE on {dataset_name} (Full Spectrum, seed={seed})...")
     
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    loader, R, S, V, config = get_loader_and_svd(dataset_name)
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, seed=seed)
     
     item_pops = np.array(R.sum(axis=0)).flatten()
     s_np = S.cpu().numpy()
@@ -82,7 +82,7 @@ def run_filter_comparison(dataset_name, n_trials=30):
             return fast_val_ndcg(XV_val, h, V_t, val_gt, val_hist, device)
         
         hpo = AspireHPO([{"name": "alpha", "type": "float", "range": "1.0 1000000.0", "log": True}], 
-                        n_trials=n_trials, patience=20)
+                        n_trials=n_trials, patience=20, seed=seed)
         best_params, best_val = hpo.search(objective, study_name=f"Comp_{name}")
         
         h_best = AspireEngine.apply_filter(s_np, best_params["alpha"], beta)
@@ -182,10 +182,10 @@ def run_filter_comparison(dataset_name, n_trials=30):
     
     return final_output
 
-def run_beta_sensitivity(dataset_name, n_trials=30):
-    print(f"\n[Sensitivity] Analyzing Beta Sensitivity on {dataset_name} (Full Spectrum)...")
+def run_beta_sensitivity(dataset_name, n_trials=30, seed=42):
+    print(f"\n[Sensitivity] Analyzing Beta Sensitivity on {dataset_name} (Full Spectrum, seed={seed})...")
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    loader, R, S, V, config = get_loader_and_svd(dataset_name)
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, seed=seed)
     
     # Simple validation setup using loader's internal data
     val_gt = loader.valid_df.groupby("user_id")["item_id"].apply(list).to_dict()
@@ -232,10 +232,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
     parser.add_argument("--trials", type=int, default=60)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--sensitivity", action="store_true", help="Run beta sensitivity analysis")
     args = parser.parse_args()
     
     if args.sensitivity:
-        run_beta_sensitivity(args.dataset, n_trials=args.trials)
+        run_beta_sensitivity(args.dataset, n_trials=args.trials, seed=args.seed)
     else:
-        run_filter_comparison(args.dataset, n_trials=args.trials)
+        run_filter_comparison(args.dataset, n_trials=args.trials, seed=args.seed)

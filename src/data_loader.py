@@ -535,7 +535,7 @@ class DataLoader:
     def get_sampled_full_test_loader(self, batch_size, ratio=0.2):
         unique_users = self.test_df['user_id'].unique()
         num_sample = max(1, int(len(unique_users) * ratio))
-        rng = np.random.RandomState(42)
+        rng = np.random.RandomState(self.config.get('seed', 42))
         sampled_users = rng.choice(unique_users, num_sample, replace=False)
         sampled_df = self.test_df[self.test_df['user_id'].isin(sampled_users)].copy()
         test_dataset = TensorDataset(
@@ -568,7 +568,7 @@ class DataLoader:
             return self.get_sampled_full_test_loader(batch_size, ratio=ratio)
         unique_users = self.valid_df['user_id'].unique()
         num_sample = max(1, int(len(unique_users) * ratio))
-        rng = np.random.RandomState(42)
+        rng = np.random.RandomState(self.config.get('seed', 42))
         sampled_users = rng.choice(unique_users, num_sample, replace=False)
         sampled_df = self.valid_df[self.valid_df['user_id'].isin(sampled_users)].copy()
         valid_dataset = TensorDataset(

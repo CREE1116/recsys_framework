@@ -13,9 +13,9 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_unification(dataset_name):
-    print(f"\n[Unification] Analyzing {dataset_name} (Full Spectrum)...")
-    loader, R, S, V, config = get_loader_and_svd(dataset_name)
+def run_unification(dataset_name, seed=42):
+    print(f"\n[Unification] Analyzing {dataset_name} (Full Spectrum, seed={seed})...")
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, seed=seed)
     
     item_freq = np.array(R.sum(axis=0)).flatten().astype(float)
     s_np = S.cpu().numpy()
@@ -74,14 +74,12 @@ def run_unification(dataset_name):
     }
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--datasets", nargs="+", default=["ml100k", "ml1m", "steam"])
-    parser.add_argument("--datasets", nargs="+", default=["ml100k", "ml1m", "steam"])
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     
     results = []
     for ds in args.datasets:
-        res = run_unification(ds)
+        res = run_unification(ds, seed=args.seed)
         results.append(res)
         
     # Visualization

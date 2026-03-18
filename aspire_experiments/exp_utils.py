@@ -47,8 +47,14 @@ def load_config(dataset_name):
     
     return config
 
-def get_loader_and_svd(dataset_name, k=None, target_energy=None):
+def get_loader_and_svd(dataset_name, k=None, target_energy=None, seed=42):
     """DataLoader와 SVD 데이터를 초기화합니다. target_energy는 EVD 경로에서 무시됩니다."""
+    # Set global seeds for reproducibility
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    
     # Memory Management: 새로운 데이터셋 로드 전 기존 캐시 비움
     EVDCacheManager.clear()
     SVDCacheManager.clear()
@@ -57,6 +63,8 @@ def get_loader_and_svd(dataset_name, k=None, target_energy=None):
     GramMatrixCacheManager.clear()
     CholeskyCacheManager.clear()
     config = load_config(dataset_name)
+    if seed is not None:
+        config['seed'] = seed
     loader = DataLoader(config)
     
     # R (Interaction Matrix) 생성
@@ -65,9 +73,9 @@ def get_loader_and_svd(dataset_name, k=None, target_energy=None):
     vals = np.ones(len(rows))
     R = csr_matrix((vals, (rows, cols)), shape=(loader.n_users, loader.n_items))
     
-    # EVD 계산 (ASPIRE용 고윳값 분해 경로) - 항상 FULL
+    # EVD 계산 (ASPIRE용 고윳값 분해 경로)
     manager = EVDCacheManager()
-    U, S, V, _ = manager.get_evd(R, dataset_name=config["dataset_name"])
+    U, S, V, _ = manager.get_evd(R, k=k, dataset_name=config["dataset_name"])
     
     return loader, R, S, V, config
 

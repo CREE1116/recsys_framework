@@ -1,27 +1,14 @@
-"""
-Beta Estimators for ASPIRE (v2 - 이론 정합성 수정)
-
-이론적 기반:
-  왜곡 모델: σ_obs = σ_true^{1+β}
-  Assumption A: p_i ∝ σ_true^{2β}
-  Corollary 1: p̃_k ∝ σ_obs^{2β/(1+β)}
-
-  → SPP 공간 회귀: log p̃_k = slope · log σ_obs + C
-    slope = 2β/(1+β)  →  β = slope / (2 - slope)  [기존 slope/2는 오류]
-
-  → slope_ratio: η = 2β·α_s/(1+β)
-    →  β = η / (2α_s - η)
-"""
-
 import numpy as np
 from scipy.optimize import linprog
 
-
-def _log_xy(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
-    """log 변환 및 유효 데이터 필터링 + 트리밍(아웃라이어 제거)"""
+def _log_xy(sigma_k, p_tilde_k, trim_tail=0.0):
+    """
+    log 변환 및 유효 데이터 필터링
+    trim_tail: 하위 tail 비율 제거
+    """
     try:
         import torch
-        if torch.is_tensor(sigma_k):  sigma_k  = sigma_k.detach().cpu().numpy()
+        if torch.is_tensor(sigma_k):   sigma_k   = sigma_k.detach().cpu().numpy()
         if torch.is_tensor(p_tilde_k): p_tilde_k = p_tilde_k.detach().cpu().numpy()
     except ImportError:
         pass
@@ -36,67 +23,51 @@ def _log_xy(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
     if len(x) < 2:
         return np.array([0.0, 1.0]), np.array([0.0, 0.0])
 
-    # Trimming: 아웃라이어 제거 (head/tail)
-    if any(r > 0 for r in trim_range):
-        low, high = trim_range
+    if trim_tail > 0:
         n = len(x)
-        start_idx = int(n * low)
-        end_idx = n - int(n * high)
-        if end_idx - start_idx >= 2:
-            # 멱법칙에서는 보통 큰 값(head)이 안정적이므로
-            # 기본 정렬(기존 sigma_k는 내림차순이었을 가능성 큼) 상태 유지
-            x = x[start_idx:end_idx]
-            y = y[start_idx:end_idx]
+        end_idx = n - int(n * trim_tail)
+        end_idx = max(end_idx, 2)
+        x = x[:end_idx]
+        y = y[:end_idx]
 
     return x, y
 
+def _slope_to_beta_v2(slope):
+    """
+    v2 Mapping: Based on SPP (p_tilde) vs sigma.
+    slope = 2*beta / (1 + beta)  =>  beta = slope / (2 - slope)
+    """
+    if slope <= 0: return 0.0
+    denom = 2.0 - slope
+    if denom <= 1e-9:
+        return 10.0
+    return np.clip(slope / denom, 0.0, 10.0)
 
-def _slope_to_beta(slope):
+def _slope_to_beta_v3(slope):
     """
-    Corollary 1 기준 역산:
-      slope = 2β/(1+β)  →  β = slope / (2 - slope)
-    slope ≥ 2이면 β → ∞ (이론 범위 초과, 클램프)
-    slope < 0이면 MCAR fallback β = 0
+    v3 Mapping: Based on Item Frequency (n_k) vs sigma.
+    slope = 1 + beta  =>  beta = slope - 1
     """
-    if slope <= 0:
-        return 0.0
-    if slope >= 2.0:
-        return 10.0  # 사실상 무한대, β > 10은 의미 없음
-    return slope / (2.0 - slope)
+    return np.clip(slope - 1.0, 0.0, 10.0)
 
-
-def _compute_r2(x, y, beta):
-    """
-    Corollary 1 기준 R²:
-      y_pred = slope·x + C,  slope = 2β/(1+β)
-    """
-    slope = 2.0 * beta / (1.0 + beta)
+def _compute_r2(x, y, beta, version='v2'):
+    """R² calculation based on the assumed theory version."""
+    if version == 'v2':
+        slope = 2.0 * beta / (1.0 + beta + 1e-12)
+    else: # v3
+        slope = 1.0 + beta
+        
     intercept = np.mean(y) - slope * np.mean(x)
-    y_pred = slope * x + intercept
-    ss_res = np.sum((y - y_pred) ** 2)
-    ss_tot = np.sum((y - np.mean(y)) ** 2)
+    y_pred    = slope * x + intercept
+    ss_res    = np.sum((y - y_pred) ** 2)
+    ss_tot    = np.sum((y - np.mean(y)) ** 2)
     return float(1.0 - ss_res / (ss_tot + 1e-12))
 
-
-# ------------------------------------------------------------------
-# SPP 공간 추정량들 (slope → β = slope/(2-slope))
-# ------------------------------------------------------------------
-
-def beta_ols(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
-    """OLS: slope = 2β/(1+β) → β = slope/(2-slope)"""
-    x, y = _log_xy(sigma_k, p_tilde_k, trim_range=trim_range)
-    A = np.column_stack([x, np.ones_like(x)])
-    coef, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
-    beta = _slope_to_beta(coef[0])
-    return float(beta), _compute_r2(x, y, beta)
-
-
-def beta_lad(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
-    """LAD: L1 robust, slope → β = slope/(2-slope)"""
-    x, y = _log_xy(sigma_k, p_tilde_k, trim_range=trim_range)
-    K = len(x)
+def _lad_solve(x, y):
+    """LAD LP 풀기 → slope 반환"""
+    K      = len(x)
     n_vars = K + 2
-    c = np.zeros(n_vars); c[2:] = 1.0
+    c      = np.zeros(n_vars); c[2:] = 1.0
 
     A_ub = np.zeros((2 * K, n_vars))
     b_ub = np.zeros(2 * K)
@@ -105,74 +76,178 @@ def beta_lad(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
         A_ub[K+i, 0] = -x[i]; A_ub[K+i, 1] = -1.0; A_ub[K+i, 2+i] = -1.0; b_ub[K+i] = -y[i]
 
     bounds = [(None, None), (None, None)] + [(0, None)] * K
-    res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
+    res    = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
+    return float(res.x[0]) if res.success else None
 
-    if res.success:
-        beta = _slope_to_beta(res.x[0])
-        return float(beta), _compute_r2(x, y, beta)
-    return 0.0, 0.0
+def beta_ols(sigma_k, p_tilde_k, trim_tail=0.0):
+    """OLS Estimator"""
+    x, y  = _log_xy(sigma_k, p_tilde_k, trim_tail)
+    A     = np.column_stack([x, np.ones_like(x)])
+    coef, _, _, _ = np.linalg.lstsq(A, y, rcond=None)
+    beta  = _slope_to_beta_v2(coef[0])
+    return float(beta), _compute_r2(x, y, beta, version='v2')
 
-
-def beta_pairwise_ratio(sigma_k, p_tilde_k, trim_range=(0.05, 0.05)):
-    """Theil-Sen 스타일: 쌍별 기울기 중앙값 → β = slope/(2-slope)"""
-    x, y = _log_xy(sigma_k, p_tilde_k, trim_range=trim_range)
-    K = len(x)
-    if K < 2:
+def beta_lad(sigma_k, p_tilde_k, trim_tail=0.0):
+    """LAD Estimator"""
+    x, y  = _log_xy(sigma_k, p_tilde_k, trim_tail)
+    slope = _lad_solve(x, y)
+    if slope is None:
         return 0.0, 0.0
+    beta  = _slope_to_beta_v2(slope)
+    return float(beta), _compute_r2(x, y, beta, version='v2')
 
-    slopes = []
-    for i in range(K):
-        for j in range(i + 1, K):
-            dx = x[i] - x[j]
-            if abs(dx) < 1e-12:
-                continue
-            slopes.append((y[i] - y[j]) / dx)
+def beta_rank_index(sigma_k, item_freq, top_k=1000, skip_head=5):
+    """
+    Rank-Index 기반 Beta 추정
+    β = η / (2α_s - η)
+    """
+    try:
+        import torch
+        if torch.is_tensor(sigma_k):   sigma_k = sigma_k.detach().cpu().numpy()
+        if torch.is_tensor(item_freq): item_freq = item_freq.detach().cpu().numpy()
+    except ImportError:
+        pass
 
-    if not slopes:
-        return 0.0, 0.0
+    def _estimate_power_law(vals, max_k, skip):
+        v = np.sort(np.abs(vals))[::-1]
+        v_nz = v[v > 1e-12]
+        if len(v_nz) <= skip + 5: return 0.0, 0.0, 0
+        
+        n = min(len(v_nz), max_k)
+        indices = np.arange(skip + 1, n + 1)
+        log_k = np.log(indices)
+        log_v = np.log(v_nz[skip:n])
+        
+        A = np.column_stack([log_k, np.ones_like(log_k)])
+        c, _, _, _ = np.linalg.lstsq(A, log_v, rcond=None)
+        
+        y_pred = c[0] * log_k + c[1]
+        ss_res = np.sum((log_v - y_pred) ** 2)
+        ss_tot = np.sum((log_v - np.mean(log_v)) ** 2)
+        r2 = 1.0 - ss_res / (ss_tot + 1e-12)
+        
+        return -float(c[0]), float(r2), n - skip
 
-    beta = _slope_to_beta(float(np.median(slopes)))
-    return beta, _compute_r2(x, y, beta)
+    alpha_s, r2_s, n_s = _estimate_power_law(sigma_k, top_k, skip_head)
+    eta, r2_f, n_f = _estimate_power_law(item_freq, top_k, skip_head)
 
-
-# ------------------------------------------------------------------
-# 전체 추정
-# ------------------------------------------------------------------
-
-def estimate_all(sigma_k, p_tilde_k, item_freq=None, trim_range=(0.05, 0.05)):
-    results = {
-        "ols":              beta_ols(sigma_k, p_tilde_k, trim_range=trim_range),
-        "lad":              beta_lad(sigma_k, p_tilde_k, trim_range=trim_range),
-        "pairwise":         beta_pairwise_ratio(sigma_k, p_tilde_k, trim_range=trim_range),
+    if alpha_s <= 0.05 or eta <= 0.0:
+        return 0.0, 0.0, {"alpha_s": alpha_s, "eta": eta, "error": "too_small"}
+        
+    denom = 2.0 * alpha_s - eta
+    if denom <= 1e-3: 
+        beta = 10.0
+    else:
+        beta = eta / denom
+    
+    beta = max(0.0, min(10.0, beta))
+    
+    diag = {
+        "alpha_s": alpha_s, 
+        "eta": eta, 
+        "r2_s": r2_s, 
+        "r2_f": r2_f,
+        "n_samples": n_s,
+        "denom": denom
     }
-    return results
+    return float(beta), float(r2_s), diag
 
+def beta_log_derivative(sigma_k, p_tilde_k, q=0.5, version='v2', trim_tail=0.0, **kwargs):
+    """
+    Pure Finite Difference 기반 Beta 추정.
+    PCHIP 보간이나 Smoothing 없이, 인접한 두 점 사이의 기울기를 직접 계산함.
+    
+    q: Quantile level (0.5 for median)
+    """
+    try:
+        import torch
+        if torch.is_tensor(sigma_k):   sigma_k = sigma_k.detach().cpu().numpy()
+        if torch.is_tensor(p_tilde_k): p_tilde_k = p_tilde_k.detach().cpu().numpy()
+    except ImportError:
+        pass
 
-# ------------------------------------------------------------------
-# 테스트
-# ------------------------------------------------------------------
-if __name__ == "__main__":
-    rng = np.random.default_rng(42)
-    K   = 300
-    true_beta = 0.8
-    alpha_s   = 0.5
+    s = np.asarray(sigma_k, dtype=float).flatten()
+    pt = np.asarray(p_tilde_k, dtype=float).flatten()
+    
+    # 1. 정렬 및 유효 데이터 필터링
+    idx = np.argsort(s)[::-1]
+    s_sorted = s[idx]
+    pt_aligned = pt[idx]
+    
+    # Noise floor filtering
+    mask = (s_sorted > 1e-12) & (pt_aligned > 1e-12)
+    if mask.sum() < 5:
+        return 0.5, 0.0, {"beta": 0.5, "error": "too_few_samples"}
+        
+    s_clean = s_sorted[mask]
+    p_clean = pt_aligned[mask]
 
-    # 왜곡 모델: σ_obs = σ_true^{1+β}
-    sigma_true = np.exp(-alpha_s * np.log(np.arange(1, K+1)))
-    sigma_obs  = sigma_true ** (1 + true_beta)
+    if trim_tail > 0:
+        n = len(s_clean)
+        keep = max(int(n * (1.0 - trim_tail)), 5)
+        s_clean = s_clean[:keep]
+        p_clean = p_clean[:keep]
 
-    # Corollary 1: p̃_k ∝ σ_obs^{2β/(1+β)}
-    exp_corollary = 2 * true_beta / (1 + true_beta)
-    p_tilde = sigma_obs ** exp_corollary * np.exp(rng.normal(0, 0.05, K))
-    p_tilde = np.clip(p_tilde, 1e-12, None)
+    log_s = np.log(s_clean)
+    log_p = np.log(p_clean)
 
-    print(f"true β = {true_beta},  α_s = {alpha_s}")
-    print(f"기대 slope (Corollary 1) = 2β/(1+β) = {exp_corollary:.4f}\n")
+    # 2. 순수 차분
+    d_log_s = np.diff(log_s)
+    d_log_p = np.diff(log_p)
+    slopes = d_log_p / (d_log_s - 1e-15)
+    
+    # 4. Aggregation (Pure Quantile)
+    valid_mask = (slopes > 0.0) 
+    if version == 'v2':
+        valid_mask &= (slopes < 2.5)
+        
+    v_slopes = slopes[valid_mask]
+    if len(v_slopes) == 0:
+        return 0.5, 0.0, {"error": "No valid slopes"}
+        
+    final_slope = np.nanquantile(v_slopes, q)
 
-    print(f"{'방법':<22}  {'β_hat':>7}  {'err':>7}  {'R²':>6}")
-    print("-" * 50)
-    res = estimate_all(sigma_obs, p_tilde)
-    for name, val in res.items():
-        b, r2 = val
-        print(f"  {name:<20}  {b:7.4f}  {b-true_beta:+7.4f}  {r2:6.3f}")
+    # 5. Mapping
+    if version == 'v2':
+        beta = _slope_to_beta_v2(final_slope)
+    elif version == 'v3':
+        beta = _slope_to_beta_v3(final_slope)
+    elif version == 'identity':
+        beta = float(final_slope)
+    else:
+        beta = _slope_to_beta_v2(final_slope)
 
+    diag = {
+        "slope": float(final_slope),
+        "beta": float(beta),
+        "n_points": len(s_clean),
+        "n_slopes": len(v_slopes),
+        "version": version,
+        "method": "pure_finite_diff",
+        "q": float(q)
+    }
+    
+    r2 = _compute_r2(log_s, log_p, beta, version=version)
+    return float(beta), float(r2), diag
+
+def beta_simple_slope(sigma_k, y_k, trim_tail=0.0, version='v2'):
+    """
+    Fits a simple global OLS slope and returns it AS beta (Identity Mapping).
+    """
+    s = np.asarray(sigma_k, dtype=float).flatten()
+    y = np.asarray(y_k, dtype=float).flatten()
+    log_s = np.log(s + 1e-12)
+    log_y = np.log(y + 1e-12)
+    
+    if len(log_s) < 2: return 0.0, 0.0
+    
+    A = np.column_stack([log_s, np.ones_like(log_s)])
+    coef, _, _, _ = np.linalg.lstsq(A, log_y, rcond=None)
+    beta = float(coef[0])
+    
+    y_pred = beta * log_s + (np.mean(log_y) - beta * np.mean(log_s))
+    res = np.sum((log_y - y_pred)**2)
+    tot = np.sum((log_y - np.mean(log_y))**2)
+    r2 = 1.0 - res / (tot + 1e-12)
+    
+    return float(beta), float(r2)

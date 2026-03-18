@@ -577,84 +577,146 @@ class EVDCacheManager(GlobalCacheManager):
         h.update(idx)
         return h.hexdigest()[:12]
 
-    def get_evd(self, X_sparse, dataset_name=None, force_recompute=False):
+    def get_evd(self, X_sparse, dataset_name=None, k=None, force_recompute=False):
         """
-        Compute or load Full Eigen-decomposition based SVD.
-        Always returns full spectral components.
+        Compute or load Eigen-decomposition based SVD.
+        dataset_name: 캐시 키용 데이터셋 이름
+        k: None일 경우 Full EVD 시도. 단, 행렬이 너무 크면 자동으로 최적 k로 Truncate.
         """
         matrix_id = self._generate_matrix_id(X_sparse)
         dataset_name = dataset_name or "unknown"
         
-        # 1. Cache Search
+        # 1. Cache Search (Full or Large enough truncated)
+        suffix = "full" if k is None else f"k{k}"
         if not force_recompute:
             import glob
-            # Pattern: evd_{dataset_name}_{matrix_id}_full.pt
-            cache_path = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_full.pt")
-            if os.path.exists(cache_path):
-                print(f"[EVD] Cache hit (Full, dataset={dataset_name})")
-                cp = torch.load(cache_path, map_location='cpu')
-                u, s, v = cp['u'], cp['s'], cp['v']
-                total_energy = cp.get('total_energy', float(np.sum(X_sparse.data**2)))
-                return u.to(self.device), s.to(self.device), v.to(self.device), total_energy
+            # Pattern: evd_{dataset_name}_{matrix_id}_*.pt
+            pattern = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_*.pt")
+            cache_files = glob.glob(pattern)
+            
+            if cache_files:
+                candidates = []
+                for f in cache_files:
+                    f_name = os.path.basename(f)
+                    if "_full.pt" in f_name:
+                        candidates.append((float('inf'), f))
+                    elif "_k" in f_name:
+                        try:
+                            f_k = int(f_name.split("_k")[-1].replace(".pt", ""))
+                            candidates.append((f_k, f))
+                        except ValueError: continue
+                
+                candidates.sort(reverse=True) # Large k first
+                
+                best_file = None
+                if k is None:
+                    # Full requested -> only pick 'inf'
+                    for ck, cp in candidates:
+                        if ck == float('inf'):
+                            best_file = cp; break
+                else:
+                    # Truncated requested -> pick smallest available k >= requested k
+                    best_candidates = [c for c in candidates if c[0] >= k]
+                    if best_candidates:
+                        best_file = min(best_candidates, key=lambda x: x[0])[1]
+
+                if best_file:
+                    f_path = best_file
+                    print(f"[EVD] Cache hit ({os.path.basename(f_path)})")
+                    cp = torch.load(f_path, map_location='cpu')
+                    u, s, v = cp['u'], cp['s'], cp['v']
+                    total_energy = cp.get('total_energy', float(np.sum(X_sparse.data**2)))
+                    
+                    if k is not None and u.shape[1] > k:
+                         return u[:, :k].to(self.device), s[:k].to(self.device), v[:, :k].to(self.device), total_energy
+                    return u.to(self.device), s.to(self.device), v.to(self.device), total_energy
 
         # 2. Compute
-        u, s, v, k_final = self._compute_evd(X_sparse)
+        u, s, v, k_final = self._compute_evd(X_sparse, k=k)
         
         # 3. Save Cache
-        cache_path = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_full.pt")
+        save_suffix = "full" if k is None and k_final == min(X_sparse.shape) else f"k{k_final}"
+        cache_path = os.path.join(self.cache_dir, f"evd_{dataset_name}_{matrix_id}_{save_suffix}.pt")
         
         total_energy = float(np.sum(X_sparse.data**2))
         torch.save({'u': u.cpu(), 's': s.cpu(), 'v': v.cpu(), 'total_energy': total_energy}, cache_path)
         return u, s, v, total_energy
 
     @torch.no_grad()
-    def _compute_evd(self, X_sparse):
+    def _compute_evd(self, X_sparse, k=None):
+        """
+        Memory-efficient Full EVD path.
+        Avoids creating full dense interaction matrix X.
+        Uses Sparse-Dense MatVec logic for reconstruction to save memory.
+        """
         M, N = X_sparse.shape
         t0 = time.time()
+        
+        # Explicit truncation ONLY if k is provided (no automatic fallback)
+        if k is not None:
+            print(f"[EVD-Manager] Path Truncated (k={k}, {M}x{N}) on {self.device}...")
+            manager = SVDCacheManager(device=str(self.device))
+            u, s, v = manager._cuda_randomized_svd(X_sparse, k) if self.device.type == 'cuda' else \
+                      (manager._mps_randomized_svd(X_sparse, k) if self.device.type == 'mps' else \
+                       manager._cpu_svd(X_sparse, k))
+            return u.to(self.device), s.to(self.device), v.to(self.device), len(s)
+
         print(f"[EVD-Manager] Path Start Full ({M}x{N}) on {self.device}...")
         side = 'item' if N <= M else 'user'
-        try:
-            if isinstance(X_sparse, csr_matrix):
-                X_t = torch.from_numpy(X_sparse.toarray()).float().to(self.device).clamp(min=0)
-            else:
-                X_t = X_sparse.float().to(self.device)
-            G = torch.mm(X_t.t(), X_t) if side == 'item' else torch.mm(X_t, X_t.t())
-        except RuntimeError:
-            X_dense = X_sparse.toarray().astype(np.float32)
-            G = torch.from_numpy(X_dense.T @ X_dense if side == 'item' else X_dense @ X_dense.T).to(self.device)
-            del X_dense
+        
+        # 1. Compute Gram Matrix G = X^T X or X X^T efficiently
+        # Using Sparse-Sparse MM (Scipy) is memory efficient
+        print(f"[EVD-Manager] Computing Gram Matrix ({side} side) via Sparse MM...")
+        if side == 'item':
+            G_sparse = X_sparse.T @ X_sparse
+        else:
+            G_sparse = X_sparse @ X_sparse.T
+            
+        print(f"[EVD-Manager] Converting Gram Matrix to Dense (Size: {G_sparse.shape[0]}x{G_sparse.shape[1]})...")
+        G_np = G_sparse.toarray().astype(np.float32)
+        del G_sparse
 
+        G = torch.from_numpy(G_np).to(self.device)
+        del G_np
+
+        # 2. Eigen-decomposition of Gram matrix
+        print(f"[EVD-Manager] Solving EVD for {G.shape[0]}x{G.shape[1]} Gram Matrix...")
         try:
+            # torch.linalg.eigh is generally faster than scipy.linalg.eigh on GPU
             eigvals, eigvecs = torch.linalg.eigh(G)
         except (RuntimeError, NotImplementedError) as e:
-            if "MPS" in str(e) or "not currently implemented" in str(e):
-                print(f"[EVD-Manager] MPS eigh fallback to CPU...")
-                G_cpu = G.cpu()
-                eigvals_cpu, eigvecs_cpu = torch.linalg.eigh(G_cpu)
-                eigvals, eigvecs = eigvals_cpu.to(self.device), eigvecs_cpu.to(self.device)
-            else: raise e
+            print(f"[EVD-Manager] Solver failed on {self.device.type} ({e}), fallback to CPU...")
+            G_cpu = G.cpu()
+            eigvals_cpu, eigvecs_cpu = torch.linalg.eigh(G_cpu)
+            eigvals, eigvecs = eigvals_cpu.to(self.device), eigvecs_cpu.to(self.device)
         del G
         
+        # Sort descending (Signal first)
         eigvals = torch.flip(eigvals, dims=[0])
         eigvecs = torch.flip(eigvecs, dims=[1])
         s = torch.sqrt(torch.clamp(eigvals, min=0.0))
         
-        total_e = float(torch.sum(s**2))
-        k = len(s)
+        # 3. Reconstruct Singular Vectors
+        # Avoid creating dense X. Use Sparse-Dense MM (MatVec style) in batches.
+        print(f"[EVD-Manager] Reconstructing Singular Vectors via Sparse-Dense MM...")
+        s_inv = torch.where(s > 1e-12, 1.0 / s, torch.zeros_like(s))
         
-        s_k = s
-        vecs_k = eigvecs
-        s_inv = torch.where(s_k > 1e-12, 1.0 / s_k, torch.zeros_like(s_k))
-        
+        # Force GC before heavy reconstruction
+        import gc; gc.collect()
+
         if side == 'item':
-            v_k = vecs_k
-            u_k = torch.mm(X_t, v_k) * s_inv.unsqueeze(0)
+            v_k = eigvecs
+            # u_k = X @ v_k * s_inv
+            u_k = SVDCacheManager._sparse_mm_batched(X_sparse, v_k, batch_size=2000, device=self.device)
+            u_k = u_k * s_inv.unsqueeze(0)
         else:
-            u_k = vecs_k
-            v_k = torch.mm(X_t.t(), u_k) * s_inv.unsqueeze(0)
+            u_k = eigvecs
+            # v_k = X^T @ u_k * s_inv
+            v_k = SVDCacheManager._sparse_mm_transposed_batched(X_sparse, u_k, batch_size=2000, device=self.device)
+            v_k = v_k * s_inv.unsqueeze(0)
             
-        print(f"[EVD-Manager] Done in {time.time()-t0:.2f}s (Full Components: {k})")
-        return u_k, s_k, v_k, k
+        print(f"[EVD-Manager] Done in {time.time()-t0:.2f}s (Full Components: {len(s)})")
+        return u_k, s, v_k, len(s)
 
 
 # ============================================================

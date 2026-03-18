@@ -121,8 +121,8 @@ def run_popularity_restoration(dataset_name):
     print(f"  [Done] Visualization saved to {out_dir}")
     
     # Final check: Correlation decrease
-    corr_orig = np.corrcoef(log_pt, log_s_orig)[0, 1]
-    corr_rest = np.corrcoef(log_pt, log_s_rest)[0, 1]
+    corr_orig = np.corrcoef(log_pt_trim, log_s_orig_trim)[0, 1]
+    corr_rest = np.corrcoef(log_pt_trim, log_s_rest_trim)[0, 1]
     
     result = {
         "dataset": dataset_name,

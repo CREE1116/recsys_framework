@@ -74,8 +74,8 @@ def full_evaluation(XV_val, filter_diag, V_t, val_gt, val_hist, item_popularity,
             
     return final_results
 
-def run_method_ablation(dataset_name, n_trials=30):
-    print(f"\n[Ablation] Comparing methods on {dataset_name} (Full Spectrum, Multi-Metric)...")
+def run_method_ablation(dataset_name, n_trials=30, seed=42):
+    print(f"\n[Ablation] Comparing methods on {dataset_name} (Full Spectrum, Multi-Metric, seed={seed})...")
     
     # Load Evaluation Config
     with open("configs/evaluation.yaml", "r", encoding="utf-8") as f:
@@ -85,7 +85,7 @@ def run_method_ablation(dataset_name, n_trials=30):
     main_k = eval_cfg.get("main_metric_k", 20)
     
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    loader, R, S, V, config = get_loader_and_svd(dataset_name)
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, seed=seed)
     
     item_pops = np.array(R.sum(axis=0)).flatten()
     s_np = S.cpu().numpy()
@@ -100,12 +100,16 @@ def run_method_ablation(dataset_name, n_trials=30):
     val_u_t = torch.LongTensor(list(val_gt.keys())).to(device)
     XV_val = XV_t[val_u_t]
     S_t, V_t = S.to(device).float(), V.to(device).float()
+    
+    # Calculate Q for RMT
+    M_full, N_full = R.shape
+    Q_val = float(M_full / N_full)
 
     # Estimators to compare
     methods = {
         "OLS": lambda s, pt, pops: beta_estimators.beta_ols(s, pt)[0],
         "LAD": lambda s, pt, pops: beta_estimators.beta_lad(s, pt)[0],
-        "Pairwise": lambda s, pt, pops: beta_estimators.beta_pairwise_ratio(s, pt)[0]
+        "Log-Deriv": lambda s, pt, pops: beta_estimators.beta_log_derivative(s, pt)[0],
     }
     
     detailed_results = []
@@ -138,7 +142,7 @@ def run_method_ablation(dataset_name, n_trials=30):
                 return fast_ndcg_obj(S_t, params["alpha"], beta, main_k)
             
             hpo = AspireHPO([{"name": "alpha", "type": "float", "range": "1.0 1000000.0", "log": True}], 
-                            n_trials=n_trials, patience=15)
+                            n_trials=n_trials, patience=15, seed=seed)
             best_params, _ = hpo.search(objective, study_name=f"Ablation_{name}")
             
             # --- Full Evaluation ---
@@ -164,7 +168,7 @@ def run_method_ablation(dataset_name, n_trials=30):
             {"name": "alpha", "type": "float", "range": "1.0 1000000.0", "log": True},
             {"name": "beta",  "type": "float", "range": "0.0 2.0"}
         ]
-        hpo = AspireHPO(hpo_spec, n_trials=n_trials * 2, patience=20)
+        hpo = AspireHPO(hpo_spec, n_trials=n_trials * 2, patience=20, seed=seed)
         best_params, _ = hpo.search(objective_hpo, study_name="Ablation_BetaHPO")
         
         final_h = AspireEngine.apply_filter(s_np, best_params["alpha"], best_params["beta"])
@@ -222,9 +226,7 @@ def run_method_ablation(dataset_name, n_trials=30):
     return detailed_results
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--trials", type=int, default=30)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     
-    run_method_ablation(args.dataset, args.trials)
+    run_method_ablation(args.dataset, args.trials, seed=args.seed)

@@ -195,7 +195,6 @@ class AspireEngine:
         return p_tilde
 
     # ── 2. β 추정 (SPP 기반) ──────────────────────────────────────────────────
-
     @staticmethod
     def estimate_beta(
         singular_values: torch.Tensor,
@@ -207,6 +206,10 @@ class AspireEngine:
         estimator_type: str = "slope_ratio",
         weight_mode: str = "normal",
         item_freq: np.ndarray = None,
+        n_items: int = None,
+        n_users: int = None,
+        q: float = 0.5,
+        **kwargs
     ) -> tuple:
         """
         p̃_k의 멱법칙 피팅으로 β 추출.
@@ -223,24 +226,49 @@ class AspireEngine:
         s_  = s[lo:hi]
         pt_ = pt[lo:hi]
 
+        # Determine version based on data type primarily used
+        # If the caller provides p_tilde, it's usually v2 (SPP-based)
+        # If the caller focuses on item_freq, it's v3 (Frequency-based)
+        if "version" in kwargs: 
+            v_type = kwargs.pop("version")
+        elif item_freq is not None and (p_tilde is item_freq or np.array_equal(p_tilde, item_freq)):
+            v_type = 'v3'
+        else:
+            v_type = 'v2'
+
         # Use specialized estimators if requested
         if estimator_type == "ols":
-            beta, r2 = beta_estimators.beta_ols(s_, pt_)
+            beta, r2 = beta_estimators.beta_ols(s_, pt_, trim_tail=trim)
+        elif estimator_type == "simple_slope":
+            beta, r2 = beta_estimators.beta_simple_slope(s, pt, trim_tail=0.0, version=v_type)
         elif estimator_type == "lad":
-            beta, r2 = beta_estimators.beta_lad(s_, pt_)
-        elif estimator_type == "pairwise":
-            beta, r2 = beta_estimators.beta_pairwise_ratio(s_, pt_)
+            beta, r2 = beta_estimators.beta_lad(s_, pt_, trim_tail=trim)
+        elif estimator_type == "rank_index":
+            beta, r2, diag = beta_estimators.beta_rank_index(s, item_freq, **kwargs)
+        elif estimator_type == "log_derivative":
+            # Filter kwargs
+            valid_keys = ['version', 'trim_tail']
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_keys}
+            
+            # Use the refined log_derivative (Pure Finite Difference)
+            beta, r2, diag = beta_estimators.beta_log_derivative(
+                s, pt, version=v_type, q=q, **filtered_kwargs
+            )
         elif estimator_type == "fixed_0.5":
             beta, r2 = 0.5, 1.0
-        else: # Default: LAD
-            beta, r2 = beta_estimators.beta_lad(s_, pt_)
+        else: # Default: Pure LAD
+            beta, r2 = beta_estimators.beta_lad(s_, pt_, trim_tail=0.05)
 
         if verbose:
-            print(f"[ASPIRE] {dataset_name} ({estimator_type}): β={beta:.4f}  R²={r2:.4f}")
+            beta_disp = beta if np.isscalar(beta) else np.mean(beta)
+            print(f"[ASPIRE] {dataset_name} ({estimator_type}): β={beta_disp:.4f}  R²={r2:.4f}")
 
         if return_line:
-            y_pred_full = hub.predict(np.log(s + 1e-9).reshape(-1, 1))
-            return beta, r2, y_pred_full
+            return beta, r2, None
+            
+        if estimator_type in ["rank_index", "log_derivative"]:
+            if 'diag' not in locals(): diag = {}
+            return beta, r2, diag
             
         return beta, r2
 
@@ -256,6 +284,8 @@ class AspireEngine:
         dataset_name: str = "",
         save_dir: str = None,
         estimator_type: str = "huber",
+        beta_target_energy: float = 1.0,
+        weight_mode: str = "normal",
     ) -> tuple[float, float]:
         """
         slope 비율로 β 추정 — SVD-free ChebyASPIRE 전용.
@@ -317,22 +347,48 @@ class AspireEngine:
     # ── 4. 필터 ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def apply_filter(s, alpha: float, beta: float):
+    def apply_filter(s, alpha: float, beta, is_gamma=False):
         """
         ASPIRE Spectral Scaling Filter.
         h(sigma) = sigma^{2/(1+beta)} / (sigma^{2/(1+beta)} + alpha)
+        
+        Supports both scalar and vector/tensor beta.
         """
-        exponent = float(2.0 / (1.0 + beta))
         if torch.is_tensor(s):
             # Explicitly use float32 for MPS compatibility
             s_f = s.float()
             alpha_f = float(alpha)
+            
+            if torch.is_tensor(beta) or isinstance(beta, np.ndarray):
+                b_f = torch.as_tensor(beta, device=s.device, dtype=torch.float32)
+                # Align lengths if necessary (padding/truncating)
+                if b_f.shape != s_f.shape:
+                    # Usually s is (k,) and b is also (k,) but let's be safe
+                    pass
+                if is_gamma:
+                    exponent = 2.0 * b_f
+                else:
+                    exponent = 2.0 / (1.0 + b_f)
+            else:
+                if is_gamma:
+                    exponent = 2.0 * float(beta)
+                else:
+                    exponent = 2.0 / (1.0 + float(beta))
+                
             sp = torch.pow(torch.clamp(s_f, min=1e-9), exponent)
             return (sp / (sp + alpha_f)).float()
         else:
             s_np = AspireEngine._to_numpy(s).astype(np.float32)
+            alpha_f = float(alpha)
+            
+            if isinstance(beta, (np.ndarray, list)):
+                b_np = np.asarray(beta, dtype=np.float32)
+                exponent = 2.0 / (1.0 + b_np)
+            else:
+                exponent = 2.0 / (1.0 + float(beta))
+                
             sp = np.power(np.clip(s_np, 1e-9, None), exponent)
-            return (sp / (sp + alpha)).astype(np.float32)
+            return (sp / (sp + alpha_f)).astype(np.float32)
 
     @staticmethod
     def apply_direct_spp_filter(s, p_tilde, alpha: float, spp_pow: float):
@@ -420,6 +476,8 @@ class ASPIRELayer(nn.Module):
         target_energy: float | list = 1.0, # Kept for backward compat in config, but EVD is always full
         estimator_type: str = "slope_ratio",
         symmetric_norm: bool = False,
+        beta_target_energy: float | list = 1.0,
+        q: float | list = 0.5,
     ):
         super().__init__()
         self.k             = int(k[0] if isinstance(k, (list, np.ndarray)) else k)
@@ -428,7 +486,10 @@ class ASPIRELayer(nn.Module):
         self.spp_pow       = float(spp_pow[0] if isinstance(spp_pow, (list, np.ndarray)) else spp_pow) if spp_pow is not None else None
         self.target_energy = 1.0 # Force full
         self.estimator_type = estimator_type
+        self.beta_target_energy = float(beta_target_energy[0] if isinstance(beta_target_energy, (list, np.ndarray)) else beta_target_energy)
+        self.weight_mode = weight_mode
         self.symmetric_norm = symmetric_norm
+        self.q = float(q[0] if isinstance(q, (list, np.ndarray)) else q)
 
         self.beta          = 0.5
         self.r_squared     = 0.0
@@ -490,31 +551,38 @@ class ASPIRELayer(nn.Module):
         # ── 3. 진단 및 베타 추정 ─────────────────────────────────
         p_tilde = AspireEngine.compute_spp(V_np, item_pops)
         
-        # [NEW] Direct Slope-Ratio (v3 Default) 또는 명시된 추정기 사용
-        self.beta, self.r_squared = AspireEngine.estimate_beta(
+        # Calculate matrix dimensions for RMT
+        M, N = X_target.shape
+
+        # [NEW] LAD (v3 Default) 또는 명시된 추정기 사용
+        res = AspireEngine.estimate_beta(
             self.singular_values, p_tilde,
             verbose=True, dataset_name=dataset_name or "?",
-            estimator_type=self.estimator_type or "slope_ratio",
+            estimator_type=self.estimator_type or "lad",
             weight_mode=getattr(self, "weight_mode", "normal"),
-            item_freq=item_pops
+            item_freq=item_pops,
+            n_items=N,
+            n_users=M,
+            q=self.q,
+            target_energy=self.beta_target_energy,
         )
+        self.beta, self.r_squared = res[:2]
 
-        # ── 3. 필터 제진 (Integrated Equalizer-Wiener) ────────────────────────
-        # spp_pow가 명시적으로 설정된 경우 부스트 항(Equalizer)이 포함된 통합 필터 사용
         if self.spp_pow is not None:
-            h = AspireEngine.apply_direct_spp_filter(self.singular_values, p_tilde, self.alpha, self.spp_pow)
+            h = AspireEngine.apply_filter_spp(self.singular_values, p_tilde, self.alpha, self.spp_pow)
         else:
-            # 기존 beta 방식 (근본 ASPIRE)
+            # All estimators now return beta consistent with ASPIRE theory
             applied_beta = float(self.beta_config) if not isinstance(self.beta_config, str) else self.beta
             self.beta = applied_beta  
-            self.alignment_slope = self.beta * 2.0
-            h = AspireEngine.apply_filter(self.singular_values, self.alpha, self.beta)
+            
+            h = AspireEngine.apply_filter(self.singular_values, self.alpha, self.beta, is_gamma=False)
 
         self.register_buffer("filter_diag", h)
 
+        beta_disp = self.beta if not hasattr(self.beta, "mean") else self.beta.mean()
         print(
             f"[ASPIRELayer] build complete | "
-            f"k={self.k}  β_est={self.beta:.4f}  R²={self.r_squared:.4f}  "
+            f"k={self.k}  β_est={beta_disp:.4f}  R²={self.r_squared:.4f}  "
             f"Method={self.estimator_type or 'ewls'}  "
             f"spp_pow={self.spp_pow}  device={dev}"
         )
@@ -579,6 +647,7 @@ class ChebyASPIRELayer(nn.Module):
         threshold: float             = 1e-4,
         estimator_type: str          = "huber",
         symmetric_norm: bool         = False,
+        beta_target_energy: float | list = 1.0,
     ):
         super().__init__()
         self.alpha               = float(alpha[0] if isinstance(alpha, (list, np.ndarray)) else alpha)
@@ -588,6 +657,7 @@ class ChebyASPIRELayer(nn.Module):
         self.threshold           = float(threshold)
         self.estimator_type      = estimator_type
         self.symmetric_norm      = symmetric_norm
+        self.beta_target_energy  = beta_target_energy
 
         self.beta            = 0.5
         self.alignment_slope = 0.0
@@ -706,6 +776,8 @@ class ChebyASPIRELayer(nn.Module):
                     verbose=True,
                     dataset_name=actual_data_name or "?",
                     estimator_type=self.estimator_type,
+                    beta_target_energy=self.beta_target_energy,
+                    weight_mode='normal',
                 )
                 if cache_key:
                     _MNARGammaCache.put(cache_key, {"beta": self.beta, "a": a})

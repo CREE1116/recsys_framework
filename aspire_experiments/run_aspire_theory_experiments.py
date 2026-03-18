@@ -53,10 +53,12 @@ def main():
         print(f"  ASPIRE Theory Experiments v3  |  dataset={dataset}")
         print(f"{'='*60}")
 
+        seed = args.seeds[0]
+        
         # 01. SLP
         if "exp01" not in args.skip:
             print("\n[Exp 01] SLP Verification")
-            run_slp(dataset)
+            run_slp(dataset) # Keeping simple as per user request (uses default 42)
 
         # 02. Power-law Coupling
         if "exp02" not in args.skip:
@@ -73,20 +75,22 @@ def main():
             print("\n[Exp 04] Spectral Restoration Analysis")
             run_restoration(dataset)
 
-        # 06. Method Ablation
-        if "exp06" not in args.skip:
-            print("\n[Exp 06] Method Ablation (NDCG Comparison)")
-            run_method_ablation(dataset, n_trials=args.trials)
+        # HPO-based experiments (support multiple seeds)
+        for seed in args.seeds:
+            # 06. Method Ablation
+            if "exp06" not in args.skip:
+                print(f"\n[Exp 06] Method Ablation (NDCG Comparison, seed={seed})")
+                run_method_ablation(dataset, n_trials=args.trials, seed=seed)
 
-        # 07. Filter Comparison (Wiener vs ASPIRE)
-        if "exp07" not in args.skip:
-            print("\n[Exp 07] Wiener vs. ASPIRE Filter Comparison")
-            run_filter_comparison(dataset, n_trials=args.trials)
+            # 07. Filter Comparison (Wiener vs ASPIRE)
+            if "exp07" not in args.skip:
+                print(f"\n[Exp 07] Wiener vs. ASPIRE Filter Comparison (seed={seed})")
+                run_filter_comparison(dataset, n_trials=args.trials, seed=seed)
 
-        # 08. Beta Ablation
-        if "exp08" not in args.skip:
-            print("\n[Exp 08] Beta Ablation (Recall Scan)")
-            run_beta_ablation(dataset, n_trials=args.trials)
+            # 08. Beta Ablation
+            if "exp08" not in args.skip:
+                print(f"\n[Exp 08] Beta Ablation (Recall Scan, seed={seed})")
+                run_beta_ablation(dataset, n_trials=args.trials, seed=seed)
 
         # 10. Popularity Restoration Visualization
         if "exp10" not in args.skip:

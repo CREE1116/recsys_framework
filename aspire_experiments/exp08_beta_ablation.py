@@ -47,11 +47,11 @@ def full_test_evaluation(XV_test, filter_diag, V_t, test_gt, test_hist, u_ids, k
     ndcgs = [get_ndcg(top_idx_np[idx].tolist(), test_gt[u_id]) for idx, u_id in enumerate(u_ids)]
     return float(np.mean(recalls)), float(np.mean(ndcgs))
 
-def run_beta_ablation(dataset_name, n_trials=30):
-    print(f"\n[Beta Ablation] Running Beta Range Scan on {dataset_name} (Full Spectrum)...")
+def run_beta_ablation(dataset_name, n_trials=30, seed=42):
+    print(f"\n[Beta Ablation] Running Beta Range Scan on {dataset_name} (Full Spectrum, seed={seed})...")
     
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    loader, R, S, V, config = get_loader_and_svd(dataset_name)
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, seed=seed)
     
     item_pops = np.array(R.sum(axis=0)).flatten()
     s_np = S.cpu().numpy()
@@ -100,7 +100,7 @@ def run_beta_ablation(dataset_name, n_trials=30):
             return fast_eval_obj(S_t, params["alpha"], beta, 20, XV_val, V_t, val_gt, val_hist, val_u_ids)
             
         hpo = AspireHPO([{"name": "alpha", "type": "float", "range": "1.0 1000000.0", "log": True}], 
-                        n_trials=n_trials, patience=15)
+                        n_trials=n_trials, patience=15, seed=seed)
         best_params, val_ndcg = hpo.search(objective, study_name=f"BetaAblation_{beta:.2f}")
         
         # Test Evaluation
@@ -167,6 +167,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
     parser.add_argument("--trials", type=int, default=30)
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     
-    run_beta_ablation(args.dataset, args.trials)
+    run_beta_ablation(args.dataset, args.trials, seed=args.seed)

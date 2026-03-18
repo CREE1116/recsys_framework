@@ -16,9 +16,9 @@ from aspire_experiments.exp_utils import get_loader_and_svd, ensure_dir, get_tri
 from src.models.csar.ASPIRELayer import AspireEngine
 from src.models.csar import beta_estimators
 
-def run_power_law(dataset_name):
-    print(f"Running Experiment 2: Power-law Coupling on {dataset_name} (Full Spectrum)...")
-    loader, R, S, V, config = get_loader_and_svd(dataset_name)
+def run_power_law(dataset_name, seed=42):
+    print(f"Running Experiment 2: Power-law Coupling on {dataset_name} (Full Spectrum, seed={seed})...")
+    loader, R, S, V, config = get_loader_and_svd(dataset_name, seed=seed)
     
     item_pops = np.array(R.sum(axis=0)).flatten()
     s_np = S.cpu().numpy()
@@ -26,14 +26,23 @@ def run_power_law(dataset_name):
     # p_tilde = AspireEngine.compute_spp(V, item_pops)
     p_tilde = AspireEngine.compute_spp(V, item_pops)
     
+    # Calculate aspect ratio Q for RMT
+    M_full, N_full = R.shape
+    Q_val = float(M_full / N_full)
+
     # 1. OLS
     beta_ols, r2_ols = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="ols")
     
     # 2. Pure LAD
     beta_lad, r2_lad = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="lad")
+    
+    # 3. Simple Slope (Global Untrimmed)
+    beta_simple, r2_simple = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="simple_slope")
 
-    # 3. Pairwise
-    beta_pair, r2_pair = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="pairwise")
+    # 4. Log-Derivative (Robust Exponent Estimation) - Multiple Quantiles
+    beta_25, r2_25, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.25)
+    beta_50, r2_50, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.50)
+    beta_75, r2_75, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.75)
     
     # Data's raw OLS slope for reference (Global)
     raw_slope = np.linalg.lstsq(np.column_stack([np.log(s_np + 1e-12), np.ones_like(s_np)]), np.log(p_tilde + 1e-12), rcond=None)[0][0]
@@ -42,7 +51,10 @@ def run_power_law(dataset_name):
     print(f"  Observed Slope: {raw_slope:.4f}")
     print(f"  OLS       : β={beta_ols:.4f}, R²={r2_ols:.4f}")
     print(f"  Pure LAD  : β={beta_lad:.4f}, R²={r2_lad:.4f}")
-    print(f"  Pairwise  : β={beta_pair:.4f}, R²={r2_pair:.4f}")
+    print(f"  Simple Sl : β={beta_simple:.4f} (Global, Ident)")
+    print(f"  Log-Deriv (q=0.25): β={beta_25:.4f}, R²={r2_25:.4f}")
+    print(f"  Log-Deriv (q=0.50): β={beta_50:.4f}, R²={r2_50:.4f}")
+    print(f"  Log-Deriv (q=0.75): β={beta_75:.4f}, R²={r2_75:.4f}")
 
     x = np.log(s_np + 1e-9)
     y = np.log(p_tilde + 1e-9)
@@ -57,16 +69,23 @@ def run_power_law(dataset_name):
     plt.figure(figsize=(10, 7))
     plt.scatter(x_trim, y_trim, alpha=0.3, s=10, label='Data points (Trimmed 5%)')
     
-    def plot_line(b, x_vals, y_vals, color, label):
-        # Slope in log-log space is 2 * beta / (1 + beta)
-        # Using the Corollary 1 relation: slope = 2*beta / (1+beta)
-        slope = 2.0 * b / (1.0 + b)
+    def plot_line(b, x_vals, y_vals, color, label, is_simple=False):
+        val = b if np.isscalar(b) else np.mean(b)
+        if is_simple:
+            slope = val
+        else:
+            # v2 mapping for other legacy estimators in this script
+            slope = 2.0 * val / (1.0 + val)
         intercept = np.mean(y_vals) - slope * np.mean(x_vals)
         plt.plot(x_vals, slope * x_vals + intercept, color=color, label=label)
 
-    plot_line(beta_ols, x_trim, y_trim, 'blue', f'OLS (β={beta_ols:.3f}, R²={r2_ols:.3f})')
-    plot_line(beta_lad, x_trim, y_trim, 'green', f'Pure LAD (β={beta_lad:.3f}, R²={r2_lad:.3f})')
-    plot_line(beta_pair, x_trim, y_trim, 'orange', f'Pairwise (β={beta_pair:.3f}, R²={r2_pair:.3f})')
+    plot_line(beta_ols, x_trim, y_trim, 'blue', f'OLS (β={beta_ols:.3f})')
+    plot_line(beta_lad, x_trim, y_trim, 'green', f'Pure LAD (β={beta_lad:.3f})')
+    
+    plot_line(beta_simple, x_trim, y_trim, 'orange', f'Simple Slope (β={beta_simple:.3f})', is_simple=True)
+    plot_line(beta_25, x_trim, y_trim, 'cyan', f'Log-Deriv q=.25 (β={beta_25:.3f})')
+    plot_line(beta_50, x_trim, y_trim, 'teal', f'Log-Deriv q=.50 (β={beta_50:.3f})')
+    plot_line(beta_75, x_trim, y_trim, 'darkcyan', f'Log-Deriv q=.75 (β={beta_75:.3f})')
     
     plt.xlabel("log(σ_k)")
     plt.ylabel("log(p̃_k)")
@@ -75,7 +94,7 @@ def run_power_law(dataset_name):
     plt.grid(True, alpha=0.3)
     plt.savefig(os.path.join(out_dir, "powerlaw_comparison.png"))
     plt.close()
-    
+
     # 메인 결과는 OLS로 기록하여 확인
     beta, r2 = beta_ols, r2_ols
     
@@ -83,9 +102,8 @@ def run_power_law(dataset_name):
         "dataset": config['dataset_name'],
         "beta_ols": float(beta_ols),
         "beta_lad": float(beta_lad),
-        "beta_pair": float(beta_pair),
         "r2_ols": float(r2_ols),
-        "r2_lad": float(r2_lad)
+        "r2_lad": float(r2_lad),
     }
     with open(os.path.join(out_dir, "result.json"), 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4)
@@ -104,7 +122,9 @@ def run_power_law(dataset_name):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="ml1m", help="Dataset name or path to yaml")
+    parser.add_argument("--dataset", type=str, default="ml100k", help="Dataset name")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     
-    run_power_law(args.dataset)
+    dataset = args.dataset.replace("旋", "") # Clean up accidental char
+    run_power_law(dataset, seed=args.seed)
