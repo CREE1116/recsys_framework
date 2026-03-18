@@ -28,6 +28,7 @@ class ASPIRE(BaseModel):
         self.weight_mode = model_config.get('weight_mode', 'normal')
         self.symmetric_norm = model_config.get('symmetric_norm', False)
         self.q = model_config.get('q', 0.5)
+        self.smooth_window = model_config.get('smooth_window', 3)
         
         # ASPIRE Layer
         self.lira_layer = ASPIRELayer(
@@ -39,11 +40,12 @@ class ASPIRE(BaseModel):
             symmetric_norm=self.symmetric_norm,
             target_energy=self.target_energy,
             estimator_type=self.estimator_type,
-            q=self.q
+            q=self.q,
+            smooth_window=self.smooth_window
         )
         self.lira_layer.to(self.device)
         
-        self._log(f"Initialized (k={self.k}, α={self.alpha}, β={self.beta}, q={self.q}, method={self.estimator_type})")
+        self._log(f"Initialized (k={self.k}, α={self.alpha}, β={self.beta}, q={self.q}, window={self.smooth_window}, method={self.estimator_type})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)

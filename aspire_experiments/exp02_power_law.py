@@ -39,10 +39,18 @@ def run_power_law(dataset_name, seed=42):
     # 3. Simple Slope (Global Untrimmed)
     beta_simple, r2_simple, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="simple_slope")
 
-    # 4. Log-Derivative (Robust Exponent Estimation) - Multiple Quantiles
-    beta_25, r2_25, diag_25 = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.25)
-    beta_50, r2_50, diag_50 = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.50)
-    beta_75, r2_75, diag_75 = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.75)
+    # 4. Log-Derivative & Dynamic Stride Variants (0.25, 0.50, 0.75)
+    results_ld = {}
+    results_ds = {}
+    for q_val in [0.25, 0.50, 0.75]:
+        b_ld, r2_ld, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=q_val)
+        b_ds, r2_ds, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="dynamic_derivative", item_freq=item_pops, q=q_val)
+        results_ld[q_val] = (b_ld, r2_ld)
+        results_ds[q_val] = (b_ds, r2_ds)
+    
+    # 5. [NEW] Dynamic Stride (q="auto") - Maximize R2
+    b_auto, r2_auto, diag_auto = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="dynamic_derivative", item_freq=item_pops, q="auto")
+    best_q = diag_auto.get("q_used", 0.5)
     
     # Data's raw OLS slope for reference (Global)
     raw_slope = np.linalg.lstsq(np.column_stack([np.log(s_np + 1e-12), np.ones_like(s_np)]), np.log(p_tilde + 1e-12), rcond=None)[0][0]
@@ -52,9 +60,13 @@ def run_power_law(dataset_name, seed=42):
     print(f"  OLS       : β={beta_ols:.4f}, R²={r2_ols:.4f}")
     print(f"  Pure LAD  : β={beta_lad:.4f}, R²={r2_lad:.4f}")
     print(f"  Simple Sl : β={beta_simple:.4f} (Global, Ident)")
-    print(f"  Log-Deriv (q=0.25): β={beta_25:7.4f}, R²={r2_25:7.4f} | Diag: {diag_25}")
-    print(f"  Log-Deriv (q=0.50): β={beta_50:7.4f}, R²={r2_50:7.4f} | Diag: {diag_50}")
-    print(f"  Log-Deriv (q=0.75): β={beta_75:7.4f}, R²={r2_75:7.4f} | Diag: {diag_75}")
+    for q_val in [0.25, 0.50, 0.75]:
+        b, r = results_ld[q_val]
+        print(f"  Log-Deriv (q={q_val:.2f}): β={b:7.4f}, R²={r:7.4f}")
+    for q_val in [0.25, 0.50, 0.75]:
+        b, r = results_ds[q_val]
+        print(f"  Dynamic   (q={q_val:.2f}): β={b:7.4f}, R²={r:7.4f}")
+    print(f"  Dynamic   (q=AUTO): β={b_auto:7.4f}, R²={r2_auto:7.4f} (Best Q={best_q:.2f})")
 
     x = np.log(s_np + 1e-9)
     y = np.log(p_tilde + 1e-9)
@@ -83,9 +95,10 @@ def run_power_law(dataset_name, seed=42):
     plot_line(beta_lad, x_trim, y_trim, 'green', f'Pure LAD (β={beta_lad:.3f})')
     
     plot_line(beta_simple, x_trim, y_trim, 'orange', f'Simple Slope (β={beta_simple:.3f})', is_simple=True)
-    plot_line(beta_25, x_trim, y_trim, 'cyan', f'Log-Deriv q=.25 (β={beta_25:.3f})')
-    plot_line(beta_50, x_trim, y_trim, 'teal', f'Log-Deriv q=.50 (β={beta_50:.3f})')
-    plot_line(beta_75, x_trim, y_trim, 'darkcyan', f'Log-Deriv q=.75 (β={beta_75:.3f})')
+    
+    b_ds50, _ = results_ds[0.50]
+    plot_line(b_ds50, x_trim, y_trim, 'red', f'Dynamic q=.50 (β={b_ds50:.3f})')
+    plot_line(b_auto, x_trim, y_trim, 'purple', f'Dynamic AUTO (β={b_auto:.3f}, R2={r2_auto:.2f})')
     
     plt.xlabel("log(σ_k)")
     plt.ylabel("log(p̃_k)")

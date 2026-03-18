@@ -203,12 +203,13 @@ class AspireEngine:
         verbose: bool = True,
         dataset_name: str = "",
         return_line: bool = False,
-        estimator_type: str = "slope_ratio",
+        estimator_type: str = "dynamic_derivative",
         weight_mode: str = "normal",
         item_freq: np.ndarray = None,
         n_items: int = None,
         n_users: int = None,
         q: float = 0.5,
+        smooth_window: int = 3,
         **kwargs
     ) -> tuple:
         """
@@ -226,16 +227,6 @@ class AspireEngine:
         s_  = s[lo:hi]
         pt_ = pt[lo:hi]
 
-        # Determine version based on data type primarily used
-        # If the caller provides p_tilde, it's usually v2 (SPP-based)
-        # If the caller focuses on item_freq, it's v3 (Frequency-based)
-        if "version" in kwargs: 
-            v_type = kwargs.pop("version")
-        elif item_freq is not None and (p_tilde is item_freq or np.array_equal(p_tilde, item_freq)):
-            v_type = 'v3'
-        else:
-            v_type = 'v2'
-
         # 2. Estimate Slope/Beta
         diag = {}
         if estimator_type == "ols":
@@ -248,21 +239,24 @@ class AspireEngine:
             slope, r2, diag = beta_estimators.beta_rank_index(s, item_freq, **kwargs)
         elif estimator_type == "log_derivative":
             beta, r2, diag = beta_estimators.beta_log_derivative(s_, pt_, q=q, **kwargs)
+            # For log_derivative, beta is directly estimated, not derived from slope
+            if verbose:
+                beta_disp = beta if np.isscalar(beta) else np.mean(beta)
+                print(f"[ASPIRE] {dataset_name} ({estimator_type}): β={beta_disp:.4f}  R²={r2:.4f}")
+            return beta, float(r2), diag
+        elif estimator_type == "dynamic_derivative":
+            beta, r2, diag = beta_estimators.beta_dynamic_derivative(s, p_tilde, q=q, **kwargs)
+            if verbose:
+                print(f"[ASPIRE] {dataset_name} ({estimator_type}): β={beta:.4f}")
             return beta, r2, diag
         elif estimator_type == "fixed_0.5":
-            slope, r2 = 0.5, 1.0
+            slope, r2 = 0.5, 1.0 # beta = 0.25 (as slope=0.5 => beta=0.5/1.5=1/3? no, wait)
         else:
             slope, r2 = beta_estimators.beta_lad(s_, pt_, trim_tail=0.05)
 
-        # 3. Map Slope to Beta for Legacy/LAD/OLS/simple_slope
-        if v_type == 'v3':
-            beta = slope - 1.0
-        elif v_type == 'v2':
-            beta = slope / (2.0 - slope + 1e-9)
-        else:
-            beta = slope
-            
-        beta = float(np.clip(beta, 0.0, 10.0))
+        # 3. Unified Mapping: gamma = 2b/(1+b) => beta = gamma / (2-gamma)
+        beta = float(slope / (2.0 - slope + 1e-12))
+        
         return beta, float(r2), diag
 
         if verbose:
@@ -330,56 +324,34 @@ class AspireEngine:
         p_i = n_raw / (n_raw.max() + 1e-9)
         p_all_sorted = np.sort(p_i)[::-1]
 
-        # [NEW] Use standardized beta_slope_ratio
-        beta, _ = beta_estimators.beta_slope_ratio(s, p_all_sorted)
-        a = beta * 2.0
+        # [NEW] Use standardized beta_slope_ratio (returns beta, gamma)
+        beta, gamma = beta_estimators.beta_slope_ratio(s, p_all_sorted)
 
         if verbose:
             print(
                 f"[ASPIRE-slope] {tag}: "
-                f"a={a:.3f}  β=a/2={beta:.4f}"
+                f"γ={gamma:.3f}  β={beta:.4f}"
             )
 
-        if save_dir:
-            try:
-                AspireEngine._save_slope_plot(
-                    s, p_all_sorted, sl_s, sl_n, a, beta, save_dir, tag
-                )
-            except Exception:
-                pass
-
-        return beta, a
+        return beta, gamma
 
     # ── 4. 필터 ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def apply_filter(s, alpha: float, beta, is_gamma=False):
+    def apply_filter(s, alpha: float, beta):
         """
         ASPIRE Spectral Scaling Filter.
         h(sigma) = sigma^{2/(1+beta)} / (sigma^{2/(1+beta)} + alpha)
-        
-        Supports both scalar and vector/tensor beta.
         """
         if torch.is_tensor(s):
-            # Explicitly use float32 for MPS compatibility
             s_f = s.float()
             alpha_f = float(alpha)
             
             if torch.is_tensor(beta) or isinstance(beta, np.ndarray):
                 b_f = torch.as_tensor(beta, device=s.device, dtype=torch.float32)
-                # Align lengths if necessary (padding/truncating)
-                if b_f.shape != s_f.shape:
-                    # Usually s is (k,) and b is also (k,) but let's be safe
-                    pass
-                if is_gamma:
-                    exponent = 2.0 * b_f
-                else:
-                    exponent = 2.0 / (1.0 + b_f)
+                exponent = 2.0 / (1.0 + b_f)
             else:
-                if is_gamma:
-                    exponent = 2.0 * float(beta)
-                else:
-                    exponent = 2.0 / (1.0 + float(beta))
+                exponent = 2.0 / (1.0 + float(beta))
                 
             sp = torch.pow(torch.clamp(s_f, min=1e-9), exponent)
             return (sp / (sp + alpha_f)).float()
@@ -480,10 +452,11 @@ class ASPIRELayer(nn.Module):
         spp_pow: float | list | None = None,  # [Direct SPP] 인기도(SPP)를 편향으로 믿는 정도 (0~1)
         weight_mode: str = "normal",           # [NEW] E-WLS 가중치 모드 (normal | inverse)
         target_energy: float | list = 1.0, # Kept for backward compat in config, but EVD is always full
-        estimator_type: str = "slope_ratio",
+        estimator_type: str = "dynamic_derivative",
         symmetric_norm: bool = False,
         beta_target_energy: float | list = 1.0,
-        q: float | list = 0.5,
+        q: float | str | list = "auto",
+        smooth_window: int | list = 3,
     ):
         super().__init__()
         self.k             = int(k[0] if isinstance(k, (list, np.ndarray)) else k)
@@ -495,7 +468,11 @@ class ASPIRELayer(nn.Module):
         self.beta_target_energy = float(beta_target_energy[0] if isinstance(beta_target_energy, (list, np.ndarray)) else beta_target_energy)
         self.weight_mode = weight_mode
         self.symmetric_norm = symmetric_norm
-        self.q = float(q[0] if isinstance(q, (list, np.ndarray)) else q)
+        if isinstance(q, str):
+            self.q = q
+        else:
+            self.q = float(q[0] if isinstance(q, (list, np.ndarray)) else q)
+        self.smooth_window = int(smooth_window[0] if isinstance(smooth_window, (list, np.ndarray)) else smooth_window)
 
         self.beta          = 0.5
         self.r_squared     = 0.0
@@ -570,6 +547,7 @@ class ASPIRELayer(nn.Module):
             n_items=N,
             n_users=M,
             q=self.q,
+            smooth_window=self.smooth_window,
             target_energy=self.beta_target_energy,
         )
         self.beta, self.r_squared = res[:2]
@@ -581,7 +559,7 @@ class ASPIRELayer(nn.Module):
             applied_beta = float(self.beta_config) if not isinstance(self.beta_config, str) else self.beta
             self.beta = applied_beta  
             
-            h = AspireEngine.apply_filter(self.singular_values, self.alpha, self.beta, is_gamma=False)
+            h = AspireEngine.apply_filter(self.singular_values, self.alpha, self.beta)
 
         self.register_buffer("filter_diag", h)
 
@@ -666,7 +644,7 @@ class ChebyASPIRELayer(nn.Module):
         self.beta_target_energy  = beta_target_energy
 
         self.beta            = 0.5
-        self.alignment_slope = 0.0
+        self.gamma           = 0.0
         self.gamma           = 0.0  # 하위 호환
 
         self.register_buffer("cheby_coeffs", torch.empty(0))
@@ -682,8 +660,8 @@ class ChebyASPIRELayer(nn.Module):
 
     def _aspire_filter(self, lam: np.ndarray) -> np.ndarray:
         """h(λ) = λ^{1/(1+β)} / (λ^{1/(1+β)} + α),  λ = σ²."""
-        exp     = float(1.0 / (1.0 + self.beta))
-        lam_pow = np.power(np.maximum(lam, 0.0), exp)
+        exponent = 1.0 / (1.0 + self.beta)
+        lam_pow = np.power(np.maximum(lam, 0.0), exponent)
         return lam_pow / (lam_pow + self.alpha)
 
     @torch.no_grad()
@@ -770,12 +748,12 @@ class ChebyASPIRELayer(nn.Module):
 
         if isinstance(self.beta_config, str):  # "auto"
             if cached is not None:
-                self.beta            = float(cached["beta"])
-                self.alignment_slope = float(cached.get("a", 0.0))
+                self.beta  = float(cached["beta"])
+                self.gamma = float(cached.get("gamma", 0.0))
             else:
                 # Use current X_sparse (might be normalized) and its item frequencies
                 curr_item_pops = np.array(X_sparse.sum(axis=0)).flatten()
-                self.beta, a = AspireEngine.estimate_beta_from_slope(
+                self.beta, self.gamma = AspireEngine.estimate_beta_from_slope(
                     singular_values=None,
                     item_frequencies=curr_item_pops, 
                     X_sparse=X_sparse,          
@@ -786,8 +764,7 @@ class ChebyASPIRELayer(nn.Module):
                     weight_mode='normal',
                 )
                 if cache_key:
-                    _MNARGammaCache.put(cache_key, {"beta": self.beta, "a": a})
-                self.alignment_slope = a
+                    _MNARGammaCache.put(cache_key, {"beta": self.beta, "gamma": self.gamma})
 
             # ── 2. 보정 적용 ──────────────────────────────────────────────────
         else:
@@ -910,7 +887,7 @@ class ChebyASPIRELayer(nn.Module):
         metrics = {
             "model":  "ChebyASPIRE",
             "params": {"alpha": self.alpha, "beta": self.beta,
-                       "degree": self.degree, "lambda_max": float(lambda_max)},
+                       "gamma": self.gamma, "degree": self.degree, "lambda_max": float(lambda_max)},
             "fit_quality": {
                 "mae":  float(np.mean(np.abs(fit_err))),
                 "rmse": float(np.sqrt(np.mean(fit_err ** 2))),
@@ -930,7 +907,7 @@ class ChebyASPIRELayer(nn.Module):
         axes[1].plot(sigmas, f_approx + 1e-12, color="orange",
                      lw=2, label="Cheby fit")
         axes[1].set_yscale("log"); axes[1].invert_xaxis()
-        axes[1].set_title(rf"Filter  ($\beta={self.beta:.3f}$)")
+        axes[1].set_title(rf"Filter  ($\beta={self.beta:.3f}, \gamma={self.gamma:.3f}$)")
         axes[1].set_xlabel(r"$\sigma$ (head→tail)")
         axes[1].set_ylabel("h(σ)"); axes[1].legend(); axes[1].grid(True, alpha=0.3)
 
