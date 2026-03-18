@@ -105,19 +105,20 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
     M_full, N_full = R.shape
     Q_val = float(M_full / N_full)
 
-    # Estimators to compare
-    methods = {
-        "OLS": lambda s, pt, pops: beta_estimators.beta_ols(s, pt)[0],
-        "LAD": lambda s, pt, pops: beta_estimators.beta_lad(s, pt)[0],
-        "Log-Deriv": lambda s, pt, pops: beta_estimators.beta_log_derivative(s, pt)[0],
-    }
+    # 1. Estimate all betas first
+    estimates = beta_estimators.estimate_all(
+        s_np, p_tilde, 
+        item_freq=item_pops, 
+        n_items=M_full, 
+        n_users=N_full
+    )
     
     detailed_results = []
     out_dir = ensure_dir(f"aspire_experiments/output/method_ablation/{dataset_name}")
 
     # Helper for simple HPO objective (NDCG@main_k)
     def fast_ndcg_obj(S_in, alpha, beta, k):
-        h = AspireEngine.apply_filter(S_in, float(alpha), float(beta)).float()
+        h = AspireEngine.apply_filter(S_in, float(alpha), beta).float()
         # We need a quick ranking calc for the specific K
         u_ids = list(val_gt.keys())
         # [Corrected dimensions]
@@ -132,11 +133,18 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
         ndcgs = [get_ndcg(top_idx_np[idx].tolist(), val_gt[u_id]) for idx, u_id in enumerate(u_ids)]
         return float(np.mean(ndcgs))
 
-    for name, b_fn in methods.items():
+    for name, v in estimates.items():
+        if not isinstance(v, tuple) or len(v) < 2: continue
+        beta = v[0]
+        
         print(f"\n--- Testing Method: {name} ---")
         try:
-            beta = b_fn(s_np, p_tilde, item_pops)
-            print(f"  Estimated Beta: {beta:.4f}")
+            if isinstance(beta, np.ndarray):
+                b_print = float(np.mean(beta))
+                print(f"  Estimated Beta(mean): {b_print:.4f}")
+            else:
+                b_print = float(beta)
+                print(f"  Estimated Beta: {b_print:.4f}")
             
             def objective(params):
                 return fast_ndcg_obj(S_t, params["alpha"], beta, main_k)
@@ -151,7 +159,7 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
             
             metrics.update({
                 "method": name,
-                "beta": float(beta),
+                "beta": b_print,
                 "alpha": float(best_params["alpha"])
             })
             detailed_results.append(metrics)
@@ -226,6 +234,10 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
     return detailed_results
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default="ml100k")
+    parser.add_argument("--trials", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     

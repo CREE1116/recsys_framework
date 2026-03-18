@@ -4,12 +4,12 @@ import numpy as np
 import time
 from scipy.sparse import csr_matrix
 from ..base_model import BaseModel
-from .ASPIRELayer import ChebyASPIRELayer, MNARGammaCacheManager
+from .ASPIRELayer import ChebyASPIRELayer, ASPIREBetaCacheManager
 
 class ChebyASPIRE(BaseModel):
     """
     ChebyASPIRE: SVD-free ASPIRE via Chebyshev polynomial approximation.
-    f(S) = S^{3/4} / (S^{3/4} + alpha * I)
+    h(sigma) = sigma^{2/(1+beta)} / (sigma^{2/(1+beta)} + alpha)
     """
     def __init__(self, config, data_loader):
         super(ChebyASPIRE, self).__init__(config, data_loader)
@@ -24,7 +24,7 @@ class ChebyASPIRE(BaseModel):
         self.lambda_max_estimate = model_config.get('lambda_max_estimate', 'auto')
         self.threshold = model_config.get('threshold', 1e-4)
         self.visualize = model_config.get('visualize', True)
-        self.estimator_type = model_config.get('estimator_type', 'huber')
+        self.estimator_type = model_config.get('estimator_type', 'isotropic_detrended')
         
         # ChebyASPIRE Layer
         self.lira_layer = ChebyASPIRELayer(
@@ -43,7 +43,7 @@ class ChebyASPIRE(BaseModel):
         self._log(f"Initialized (degree={self.degree}, alpha={self.alpha}, beta={self.beta}, threshold={self.threshold})")
 
         # Cache manager 등록
-        self.register_cache_manager('mnar_gamma', MNARGammaCacheManager())
+        self.register_cache_manager('aspire_beta', ASPIREBetaCacheManager())
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df

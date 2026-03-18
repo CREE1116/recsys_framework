@@ -4,13 +4,13 @@ import numpy as np
 import os
 from scipy.sparse import csr_matrix
 from src.models.base_model import BaseModel
-from src.models.csar.ASPIRELayer import ASPIRELayer, MNARGammaCacheManager
+from src.models.csar.ASPIRELayer import ASPIRELayer, ASPIREBetaCacheManager
 from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager
 
 class ASPIRE(BaseModel):
     """
-    ASPIRE - Scalable LIRA using SVD with Popularity Decay.
-    h(sigma_k) = sigma_k^(2-beta) / (sigma_k^(2-beta) + alpha)
+    ASPIRE - Scalable Spectral Scaling with Popularity Correction.
+    h(sigma_k) = sigma_k^(2/(1+beta)) / (sigma_k^(2/(1+beta)) + alpha)
     """
     def __init__(self, config, data_loader):
         super(ASPIRE, self).__init__(config, data_loader)
@@ -58,7 +58,7 @@ class ASPIRE(BaseModel):
         # Cache managers 등록 (Trainer가 자동 관리)
         self.register_cache_manager('evd', EVDCacheManager(device=self.device.type))
         self.register_cache_manager('svd', SVDCacheManager(device=self.device.type)) # Legacy if needed
-        self.register_cache_manager('mnar_gamma', MNARGammaCacheManager())
+        self.register_cache_manager('aspire_beta', ASPIREBetaCacheManager())
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df
