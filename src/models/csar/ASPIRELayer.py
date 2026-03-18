@@ -236,28 +236,34 @@ class AspireEngine:
         else:
             v_type = 'v2'
 
-        # Use specialized estimators if requested
+        # 2. Estimate Slope/Beta
+        diag = {}
         if estimator_type == "ols":
-            beta, r2 = beta_estimators.beta_ols(s_, pt_, trim_tail=trim)
+            slope, r2 = beta_estimators.beta_ols(s_, pt_, trim_tail=trim)
         elif estimator_type == "simple_slope":
-            beta, r2 = beta_estimators.beta_simple_slope(s, pt, trim_tail=0.0, version=v_type)
+            slope, r2 = beta_estimators.beta_simple_slope(s, pt, trim_tail=0.0)
         elif estimator_type == "lad":
-            beta, r2 = beta_estimators.beta_lad(s_, pt_, trim_tail=trim)
+            slope, r2 = beta_estimators.beta_lad(s_, pt_, trim_tail=trim)
         elif estimator_type == "rank_index":
-            beta, r2, diag = beta_estimators.beta_rank_index(s, item_freq, **kwargs)
+            slope, r2, diag = beta_estimators.beta_rank_index(s, item_freq, **kwargs)
         elif estimator_type == "log_derivative":
-            # Filter kwargs
-            valid_keys = ['version', 'trim_tail']
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_keys}
-            
-            # Use the refined log_derivative (Pure Finite Difference)
-            beta, r2, diag = beta_estimators.beta_log_derivative(
-                s, pt, version=v_type, q=q, **filtered_kwargs
-            )
+            beta, r2, diag = beta_estimators.beta_log_derivative(s_, pt_, q=q, **kwargs)
+            return beta, r2, diag
         elif estimator_type == "fixed_0.5":
-            beta, r2 = 0.5, 1.0
-        else: # Default: Pure LAD
-            beta, r2 = beta_estimators.beta_lad(s_, pt_, trim_tail=0.05)
+            slope, r2 = 0.5, 1.0
+        else:
+            slope, r2 = beta_estimators.beta_lad(s_, pt_, trim_tail=0.05)
+
+        # 3. Map Slope to Beta for Legacy/LAD/OLS/simple_slope
+        if v_type == 'v3':
+            beta = slope - 1.0
+        elif v_type == 'v2':
+            beta = slope / (2.0 - slope + 1e-9)
+        else:
+            beta = slope
+            
+        beta = float(np.clip(beta, 0.0, 10.0))
+        return beta, float(r2), diag
 
         if verbose:
             beta_disp = beta if np.isscalar(beta) else np.mean(beta)

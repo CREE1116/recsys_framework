@@ -31,18 +31,18 @@ def run_power_law(dataset_name, seed=42):
     Q_val = float(M_full / N_full)
 
     # 1. OLS
-    beta_ols, r2_ols = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="ols")
+    beta_ols, r2_ols, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="ols")
     
     # 2. Pure LAD
-    beta_lad, r2_lad = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="lad")
+    beta_lad, r2_lad, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="lad")
     
     # 3. Simple Slope (Global Untrimmed)
-    beta_simple, r2_simple = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="simple_slope")
+    beta_simple, r2_simple, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="simple_slope")
 
     # 4. Log-Derivative (Robust Exponent Estimation) - Multiple Quantiles
-    beta_25, r2_25, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.25)
-    beta_50, r2_50, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.50)
-    beta_75, r2_75, _ = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.75)
+    beta_25, r2_25, diag_25 = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.25)
+    beta_50, r2_50, diag_50 = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.50)
+    beta_75, r2_75, diag_75 = AspireEngine.estimate_beta(S, p_tilde, verbose=False, estimator_type="log_derivative", item_freq=item_pops, q=0.75)
     
     # Data's raw OLS slope for reference (Global)
     raw_slope = np.linalg.lstsq(np.column_stack([np.log(s_np + 1e-12), np.ones_like(s_np)]), np.log(p_tilde + 1e-12), rcond=None)[0][0]
@@ -52,9 +52,9 @@ def run_power_law(dataset_name, seed=42):
     print(f"  OLS       : β={beta_ols:.4f}, R²={r2_ols:.4f}")
     print(f"  Pure LAD  : β={beta_lad:.4f}, R²={r2_lad:.4f}")
     print(f"  Simple Sl : β={beta_simple:.4f} (Global, Ident)")
-    print(f"  Log-Deriv (q=0.25): β={beta_25:.4f}, R²={r2_25:.4f}")
-    print(f"  Log-Deriv (q=0.50): β={beta_50:.4f}, R²={r2_50:.4f}")
-    print(f"  Log-Deriv (q=0.75): β={beta_75:.4f}, R²={r2_75:.4f}")
+    print(f"  Log-Deriv (q=0.25): β={beta_25:7.4f}, R²={r2_25:7.4f} | Diag: {diag_25}")
+    print(f"  Log-Deriv (q=0.50): β={beta_50:7.4f}, R²={r2_50:7.4f} | Diag: {diag_50}")
+    print(f"  Log-Deriv (q=0.75): β={beta_75:7.4f}, R²={r2_75:7.4f} | Diag: {diag_75}")
 
     x = np.log(s_np + 1e-9)
     y = np.log(p_tilde + 1e-9)

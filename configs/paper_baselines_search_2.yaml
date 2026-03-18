@@ -4,7 +4,7 @@
 datasets:
   - "configs/dataset/ml100k.yaml"
   - "configs/dataset/ml1m.yaml"
-  - "configs/dataset/ml20m.yaml"
+  # - "configs/dataset/ml20m.yaml"
   - "configs/dataset/steam.yaml"
   # - "configs/dataset/lastfm_2k.yaml"
   # - "configs/dataset/amazon_music.yaml"
@@ -18,17 +18,17 @@ seeds: [42, 43, 44]
 
 # 데이터셋 요약 시 표시할 메트릭 (target metric은 항상 포함)
 summary_metrics:
-  - "NDCG@10"
+  - "NDCG@20"
   - "Recall@10"
   - "HitRate@10"
   - "Coverage@10"
   - "LongTailCoverage@10"
   - "LongTailRecall@10"
   - "LongTailHitRate@10"
-  - "LongTailNDCG@10"
+  - "LongTailNDCG@20"
   - "HeadRecall@10"
   - "HeadHitRate@10"
-  - "HeadNDCG@10"
+  - "HeadNDCG@20"
 
   - "NDCG@20"
   - "Recall@20"
@@ -64,15 +64,15 @@ searches:
     params:
       - name: "model.reg_lambda"
         type: "float"
-        range: "1e-4 100.0"
+        range: "1e-4 10000.0"
         log: true
       - name: "model.alpha"
         type: "float"
-        range: "1.0 200.0"
+        range: "1.0 10000.0"
         log: true
       - name: "model.embedding_dim"
         type: "categorical"
-        range: "32 64 128 256"
+        range: "32 64 128"
     n_trials: 60
     patience: 20
     metric: "NDCG@20"
@@ -83,7 +83,7 @@ searches:
     params:
       - name: "model.k"
         type: "int"
-        range: "10 500"
+        range: "10 1000"
     n_trials: 60
     patience: 20
     metric: "NDCG@20"
@@ -217,11 +217,26 @@ searches:
     params:
       - name: "model.alpha"
         type: "float"
-        range: "0.1 100000.0"
+        range: "1.0 10000.0"
         log: true
+      - name: "model.q"
+        type: "float"
+        range: "0.25 0.75"
     n_trials: 60
     patience: 20
     metric: "NDCG@20"
+
+  # - name: "ASPIRE-Norm"
+  #   method: "bayesian"
+  #   model_config: "configs/model/csar/aspire_norm.yaml"
+  #   params:
+  #     - name: "model.alpha"
+  #       type: "float"
+  #       range: "1.0 10000.0"
+  #       log: true
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
 
   # - name: "ChebyASPIRE"
   #   method: "bayesian"
@@ -231,6 +246,9 @@ searches:
   #       type: "float"
   #       range: "1.0 100000.0"
   #       log: true
+  #     - name: "model.q"
+  #       type: "float"
+  #       range: "0.25 0.75"
   #     # - name: "model.degree"
   #     #   type: "int"
   #     #   range: "1 30"
