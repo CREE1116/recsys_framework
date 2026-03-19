@@ -21,31 +21,20 @@ class ASPIRE(BaseModel):
         self.alpha = model_config.get('alpha', 500.0)
         self.beta = model_config.get('beta', 0.5)
         self.target_energy = model_config.get('target_energy', 0.9)
-        self.k = model_config.get('k', 128)
+        self.k = model_config.get('k', None)
         self.visualize = model_config.get('visualize', True)
-        self.estimator_type = model_config.get('estimator_type', 'huber')
-        self.spp_pow = model_config.get('spp_pow', None)
-        self.weight_mode = model_config.get('weight_mode', 'normal')
-        self.symmetric_norm = model_config.get('symmetric_norm', False)
-        self.q = model_config.get('q', 0.5)
-        self.smooth_window = model_config.get('smooth_window', 3)
-        
+        self.estimator_type = model_config.get('estimator_type', 'ols')
         # ASPIRE Layer
         self.lira_layer = ASPIRELayer(
             k=self.k,
             alpha=self.alpha,
             beta=self.beta,
-            spp_pow=self.spp_pow,
-            weight_mode=self.weight_mode,
-            symmetric_norm=self.symmetric_norm,
             target_energy=self.target_energy,
-            estimator_type=self.estimator_type,
-            q=self.q,
-            smooth_window=self.smooth_window
+            estimator_type=self.estimator_type
         )
         self.lira_layer.to(self.device)
         
-        self._log(f"Initialized (k={self.k}, α={self.alpha}, β={self.beta}, q={self.q}, window={self.smooth_window}, method={self.estimator_type})")
+        self._log(f"Initialized (k={self.k}, α={self.alpha}, β={self.beta}, method={self.estimator_type})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)

@@ -162,35 +162,31 @@ class AspireEngine:
         item_freq: np.ndarray = None,
         n_items: int = None,
         n_users: int = None,
-        q: float | str = 0.5,
         **kwargs
     ) -> tuple:
         s  = np.sort(np.abs(AspireEngine._to_numpy(singular_values)))[::-1]
         pt = np.asarray(p_tilde, dtype=float)
         estimator_type = estimator_type.lower() if isinstance(estimator_type, str) else "ols"
 
-        if estimator_type == "ols":
-            beta, r2 = beta_estimators.beta_ols(s, pt)
-            diag = {}
-        elif estimator_type == "lad":
-            beta, r2 = beta_estimators.beta_lad(s, pt)
-            diag = {}
-        elif estimator_type == "vector_opt":
-            beta, r2, diag = beta_estimators.estimate_vector_beta(s, pt)
-        elif estimator_type == "smooth_vector":
-            beta, r2, diag = beta_estimators.smooth_estimate_vector_opt(s, pt)
-        elif estimator_type == "iso_detrend":
-            beta, r2 = beta_estimators.estimate_beta_with_detrending(s)
-            diag = {}
-        elif estimator_type == "iso_no_detrend":
-            beta, r2 = beta_estimators.estimate_beta_no_detrending(s)
-            diag = {}
-        elif estimator_type == "decoupling":
-            beta, r2 = beta_estimators.estimate_beta_decoupling(s, pt)
+        # Mapping of estimator types to functions
+        estimator_map = {
+            "ols": beta_estimators.estimate_beta_ols,
+            "lad": beta_estimators.beta_lad,
+            "max_median": lambda s, pt: (beta_estimators.estimate_beta_max_median(item_freq), 0.0, {}),
+            "iso_detrend": lambda s, pt: (beta_estimators.estimate_beta_with_detrending(s), 0.0, {}),
+            "iso_no_detrend": lambda s, pt: (beta_estimators.estimate_beta_no_detrending(s), 0.0, {}),
+        }
+
+        estimator_fn = estimator_map.get(estimator_type, beta_estimators.estimate_beta_ols)
+        # Call the selected estimator.
+        res = estimator_fn(s, pt)
+        
+        # Standardize output to (beta, r2, diag)
+        if len(res) == 2:
+            beta, r2 = res
             diag = {}
         else:
-            beta, r2 = beta_estimators.beta_ols(s, pt)
-            diag = {}
+            beta, r2, diag = res
 
         if verbose:
             if isinstance(beta, np.ndarray):
@@ -235,17 +231,16 @@ class ASPIRELayer(nn.Module):
         k: int = 200,
         alpha: float = 500.0,
         beta: float | str = "auto",
-        estimator_type: str = "lad",
-        symmetric_norm: bool = False,
+        estimator_type: str = "ols",
         **kwargs
     ):
         super().__init__()
-        self.k = int(k)
+        self.k = int(k) if k is not None else None
         self.alpha = float(alpha)
         self.beta_config = beta
         self.estimator_type = estimator_type
-        self.symmetric_norm = symmetric_norm
-        self.q = kwargs.get("q", 0.5)
+        self.estimator_type = estimator_type
+        self.target_energy = kwargs.get("target_energy", 0.9)
 
         self.beta = 0.5
         self.r_squared = 0.0
@@ -267,26 +262,22 @@ class ASPIRELayer(nn.Module):
         item_pops_raw = np.array(X_sparse.sum(axis=0)).flatten().astype(float)
         M, N = X_sparse.shape
 
-        if self.symmetric_norm:
-            import scipy.sparse as sp
-            user_sums = np.array(X_sparse.sum(axis=1)).flatten()
-            item_sums = np.array(X_sparse.sum(axis=0)).flatten()
-            def get_inv_sqrt(sums):
-                inv_sqrt = np.zeros_like(sums)
-                mask = sums > 0
-                inv_sqrt[mask] = np.power(sums[mask], -0.5)
-                return inv_sqrt
-            w_u = get_inv_sqrt(user_sums)
-            w_i = get_inv_sqrt(item_sums)
-            self.register_buffer("user_norm_weights", torch.from_numpy(w_u).float().to(dev))
-            self.register_buffer("item_norm_weights", torch.from_numpy(w_i).float().to(dev))
-            X_target = sp.diags(w_u) @ X_sparse @ sp.diags(w_i)
-            svd_dataset_name = f"{dataset_name}_norm" if dataset_name else None
-            _, s, v, _ = manager.get_evd(X_target, dataset_name=svd_dataset_name)
-            item_pops = np.array(X_target.sum(axis=0)).flatten().astype(float)
-        else:
-            _, s, v, _ = manager.get_evd(X_sparse, dataset_name=dataset_name)
-            item_pops = item_pops_raw
+        # 1. Prepare Target Signal
+        X_target = X_sparse
+        svd_dataset_name = dataset_name
+        _, s, v, _ = manager.get_evd(X_target, dataset_name=svd_dataset_name)
+        item_pops = item_pops_raw
+
+        # ── Target Energy 기반 Truncation (k가 None인 경우) ──
+        if self.k is None and self.target_energy is not None:
+            total_ev = (s**2).sum()
+            cumsum_ev = torch.cumsum(s**2, dim=0)
+            k_energy = torch.where(cumsum_ev / (total_ev + 1e-12) >= self.target_energy)[0]
+            if len(k_energy) > 0:
+                new_k = int(k_energy[0]) + 1
+                s = s[:new_k]
+                v = v[:, :new_k]
+                print(f"[ASPIRELayer] Energy Truncation: target={self.target_energy:.2f} -> k={new_k}")
 
         self.k = len(s)
         self.register_buffer("singular_values", s.to(dev))
@@ -297,8 +288,7 @@ class ASPIRELayer(nn.Module):
             self.singular_values, p_tilde,
             verbose=True, dataset_name=dataset_name or "?",
             estimator_type=self.estimator_type,
-            item_freq=item_pops, n_items=N, n_users=M,
-            q=self.q
+            item_freq=item_pops, n_items=N, n_users=M
         )
         self.beta, self.r_squared = res[:2]
         
@@ -313,15 +303,8 @@ class ASPIRELayer(nn.Module):
     @torch.no_grad()
     def forward(self, X_batch: torch.Tensor, user_ids=None) -> torch.Tensor:
         X = X_batch
-        if self.symmetric_norm:
-            if user_ids is not None:
-                u_w = self.user_norm_weights[user_ids].view(-1, 1)
-                X = X * u_w
-            X = X * self.item_norm_weights.view(1, -1)
         XV = torch.mm(X, self.V_raw)
         scores = torch.mm(XV * self.filter_diag, self.V_raw.t())
-        if self.symmetric_norm:
-            scores = scores * self.item_norm_weights.view(1, -1)
         return scores
 
     @torch.no_grad()
@@ -342,8 +325,7 @@ class ChebyASPIRELayer(nn.Module):
         degree: int = 20,
         beta: float | str = "auto",
         lambda_max_estimate: float | str = "auto",
-        estimator_type: str = "lad",
-        symmetric_norm: bool = False,
+        estimator_type: str = "ols",
         **kwargs
     ):
         super().__init__()
@@ -352,7 +334,6 @@ class ChebyASPIRELayer(nn.Module):
         self.beta_config = beta
         self.lambda_max_estimate = lambda_max_estimate
         self.estimator_type = estimator_type
-        self.symmetric_norm = symmetric_norm
 
         self.beta = 0.5
         self.r_squared = 0.0
@@ -361,8 +342,6 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer("t_mid",        torch.tensor(0.0))
         self.register_buffer("t_half",       torch.tensor(0.0))
         self.register_buffer("item_weights", torch.empty(0))
-        self.register_buffer("user_norm_weights", torch.empty(0))
-        self.register_buffer("item_norm_weights", torch.empty(0))
 
         self.X_torch_csr = None
         self.Xt_torch_csr = None
@@ -412,20 +391,6 @@ class ChebyASPIRELayer(nn.Module):
         self.sparse_device = torch.device("cpu" if "mps" in dev else dev)
         M, N = X_sparse.shape
 
-        if self.symmetric_norm:
-            import scipy.sparse as sp
-            user_sums = np.array(X_sparse.sum(axis=1)).flatten()
-            item_sums = np.array(X_sparse.sum(axis=0)).flatten()
-            def get_inv_sqrt(sums):
-                inv_sqrt = np.zeros_like(sums)
-                mask = sums > 0
-                inv_sqrt[mask] = np.power(sums[mask], -0.5)
-                return inv_sqrt
-            w_u, w_i = get_inv_sqrt(user_sums), get_inv_sqrt(item_sums)
-            self.register_buffer("user_norm_weights", torch.from_numpy(w_u).float().to(dev))
-            self.register_buffer("item_norm_weights", torch.from_numpy(w_i).float().to(dev))
-            X_sparse = sp.diags(w_u) @ X_sparse @ sp.diags(w_i)
-
         X_coo = X_sparse.tocoo()
         indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
         values = torch.from_numpy(X_coo.data).float()
@@ -434,7 +399,7 @@ class ChebyASPIRELayer(nn.Module):
 
         lambda_max = self._estimate_lambda_max(self.X_torch_csr, self.Xt_torch_csr) if self.lambda_max_estimate == "auto" else float(self.lambda_max_estimate)
 
-        actual_name = f"{dataset_name}_norm" if (dataset_name and self.symmetric_norm) else dataset_name
+        actual_name = dataset_name
         cache_key = f"{actual_name}_aspire_v26" if actual_name else None
         cached = _BetaCache.get(cache_key) if cache_key else None
 
@@ -446,13 +411,16 @@ class ChebyASPIRELayer(nn.Module):
                 curr_item_pops = np.array(X_sparse.sum(axis=0)).flatten()
                 
                 # SVD-free 전용 에스티메이터 선택
-                est_type = self.estimator_type.lower()
-                if est_type == "iso_pop_detrend":
-                    self.beta, _ = beta_estimators.estimate_beta_with_detrending(curr_item_pops, is_svd=False)
-                elif est_type == "iso_pop_no_detrend":
-                    self.beta, _ = beta_estimators.estimate_beta_no_detrending(curr_item_pops, is_svd=False)
-                else: # Default: max_median
-                    self.beta, _ = beta_estimators.estimate_beta_max_median(curr_item_pops)
+                # Mapping of SVD-free estimator types
+                est_map_svdfree = {
+                    "iso_pop_detrend": lambda p: beta_estimators.estimate_beta_with_detrending(p, is_svd=False),
+                    "iso_pop_no_detrend": lambda p: beta_estimators.estimate_beta_no_detrending(p, is_svd=False),
+                    "max_median": beta_estimators.estimate_beta_max_median,
+                }
+                # Default to max_median for SVD-free if not specified
+                est_fn = est_map_svdfree.get(self.estimator_type.lower(), 
+                                            beta_estimators.estimate_beta_max_median)
+                self.beta, _ = est_fn(curr_item_pops)
                 
                 if cache_key:
                     _BetaCache.put(cache_key, {"beta": self.beta})
@@ -494,18 +462,10 @@ class ChebyASPIRELayer(nn.Module):
     @torch.no_grad()
     def forward(self, X_batch: torch.Tensor, user_ids=None) -> torch.Tensor:
         X = X_batch
-        if self.symmetric_norm:
-            if user_ids is not None:
-                X = X * self.user_norm_weights[user_ids].view(-1, 1)
-            X = X * self.item_norm_weights.view(1, -1)
-        
         if self.item_weights.numel() > 0:
             scores = torch.mm(X, self.item_weights)
         else:
             scores = self._spmv_forward(X)
-            
-        if self.symmetric_norm:
-            scores = scores * self.item_norm_weights.view(1, -1)
         return scores
 
     def _spmv_forward(self, X):

@@ -33,7 +33,8 @@ def run_power_law(dataset_name, seed=42):
         s_np, p_tilde, 
         item_freq=item_pops, 
         n_items=N_full, 
-        n_users=M_full
+        n_users=M_full,
+        trim_tail=0.05
     )
     
     raw_slope = np.linalg.lstsq(np.column_stack([np.log(s_np + 1e-12), np.ones_like(s_np)]), np.log(p_tilde + 1e-12), rcond=None)[0][0]
@@ -41,12 +42,13 @@ def run_power_law(dataset_name, seed=42):
     print(f"\n[Beta Fitting Comparison for {dataset_name}]")
     print(f"  Observed Slope: {raw_slope:.4f}")
     
-    x = np.log(s_np + 1e-9)
-    y = np.log(p_tilde + 1e-9)
+    s_norm = s_np / (s_np.max() + 1e-12)
+    x = np.log(p_tilde + 1e-9)
+    y = np.log(s_norm + 1e-9)
     x_trim, y_trim = get_trimmed_data(x, y)
     
     def calculate_r2(beta_val):
-        slope = 2.0 * beta_val / (1.0 + beta_val + 1e-12)
+        slope = beta_val
         intercept = np.mean(y_trim) - slope * np.mean(x_trim)
         y_pred = slope * x_trim + intercept
         ss_res = np.sum((y_trim - y_pred)**2)
@@ -61,12 +63,12 @@ def run_power_law(dataset_name, seed=42):
             if isinstance(beta_val, np.ndarray):
                 b_mean = np.mean(beta_val)
                 r2_cent = calculate_r2(b_mean)
-                print(f"  {k:15s}: β(mean)={b_mean:7.4f}, R²(Cent)={r2_cent:7.4f}")
+                print(f"  {k:15s}: \u03b2(mean)={b_mean:7.4f}, R\u00b2(Cent)={r2_cent:7.4f}")
                 result_dict[f"beta_{k}"] = float(b_mean)
                 result_dict[f"r2_{k}"] = r2_cent
             else:
                 r2_cent = calculate_r2(beta_val)
-                print(f"  {k:15s}: β={beta_val:7.4f}, R²(Cent)={r2_cent:7.4f}")
+                print(f"  {k:15s}: \u03b2={beta_val:7.4f}, R\u00b2(Cent)={r2_cent:7.4f}")
                 result_dict[f"beta_{k}"] = float(beta_val)
                 result_dict[f"r2_{k}"] = r2_cent
             
@@ -88,28 +90,30 @@ def run_power_law(dataset_name, seed=42):
         if isinstance(b, np.ndarray):
             # Try to plot curve if same len, else use mean
             if len(b) == len(x_trim):
-                slope = 2.0 * b / (1.0 + b + 1e-12)
+                slope = b
                 intercept = np.mean(y_trim) - np.mean(slope) * np.mean(x_trim)
                 plt.plot(x_trim, slope * x_trim + intercept, color=c, linestyle=ls, label=f"{method} (Curve)")
             else:
                 b_mean = np.mean(b)
-                slope = 2.0 * b_mean / (1.0 + b_mean + 1e-12)
+                slope = b_mean
                 intercept = np.mean(y_trim) - slope * np.mean(x_trim)
-                plt.plot(x_trim, slope * x_trim + intercept, color=c, linestyle=ls, label=f"{method} (β_mean={b_mean:.2f})")
+                plt.plot(x_trim, slope * x_trim + intercept, color=c, linestyle=ls, label=f"{method} (\u03b2_mean={b_mean:.2f})")
         else:
-            # Power-law slope based on beta: slope = 2β/(1+β)
-            slope = 2.0 * b / (1.0 + b + 1e-12)
+            # Power-law slope based on beta
+            slope = b
             intercept = np.mean(y_trim) - slope * np.mean(x_trim)
-            plt.plot(x_trim, slope * x_trim + intercept, color=c, linestyle=ls, label=f"{method} (β={b:.2f})")
+            plt.plot(x_trim, slope * x_trim + intercept, color=c, linestyle=ls, label=f"{method} (\u03b2={b:.2f})")
     
     if "rmt_lad" in estimates and len(estimates["rmt_lad"]) >= 3:
         diag = estimates["rmt_lad"][2]
         if "lambda_plus" in diag:
-            x_line = 0.5 * np.log(diag["lambda_plus"] + 1e-12)
-            plt.axvline(x=x_line, color="red", linestyle="--", alpha=0.7, label=f"RMT Cutoff (log σ={x_line:.2f})")
+            # Plotting RMT cutoff needs adjustment if axes changed
+            # But x is now log(p). We need to find p corresponding to lambda_plus.
+            # This is complex inside this script. We can skip or fix later.
+            pass
             
-    plt.xlabel("log(σ_k)")
-    plt.ylabel("log(p̃_k)")
+    plt.xlabel("log(Spectral Propensity \u1e57_k)")
+    plt.ylabel("log(Normalized Singular Value \u03c3_k)")
     plt.title(f"Spectral Power-law Analysis: {config['dataset_name']}\n(RMT & Rank-Index Estimation)\nQ = n_items/n_users = {Q_val:.3f}")
     plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
     plt.grid(True, alpha=0.3)

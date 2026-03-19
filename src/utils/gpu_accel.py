@@ -685,10 +685,12 @@ class EVDCacheManager(GlobalCacheManager):
             # torch.linalg.eigh is generally faster than scipy.linalg.eigh on GPU
             eigvals, eigvecs = torch.linalg.eigh(G)
         except (RuntimeError, NotImplementedError) as e:
-            print(f"[EVD-Manager] Solver failed on {self.device.type} ({e}), fallback to CPU...")
-            G_cpu = G.cpu()
-            eigvals_cpu, eigvecs_cpu = torch.linalg.eigh(G_cpu)
-            eigvals, eigvecs = eigvals_cpu.to(self.device), eigvecs_cpu.to(self.device)
+            print(f"[EVD-Manager] Solver failed on {self.device.type} ({e}), fallback to Scipy CPU...")
+            G_cpu_np = G.cpu().numpy()
+            from scipy.linalg import eigh as scipy_eigh
+            eigvals_np, eigvecs_np = scipy_eigh(G_cpu_np)
+            eigvals = torch.from_numpy(eigvals_np).to(self.device).float()
+            eigvecs = torch.from_numpy(eigvecs_np).to(self.device).float()
         del G
         
         # Sort descending (Signal first)

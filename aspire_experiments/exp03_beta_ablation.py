@@ -60,8 +60,9 @@ def run_beta_ablation(dataset_name, n_trials=30, seed=42):
     # 1. Estimate theoretical Betas
     beta_lad, _ = beta_estimators.beta_lad(s_np, p_tilde)
     beta_ols, _ = beta_estimators.beta_ols(s_np, p_tilde)
+    beta_deq, _ = beta_estimators.estimate_beta_decoupling(s_np, p_tilde)
     
-    print(f"Theory LAD: {beta_lad:.4f}, OLS: {beta_ols:.4f}")
+    print(f"Theory LAD: {beta_lad:.4f}, OLS: {beta_ols:.4f}, Decoupling: {beta_deq:.4f}")
     
     # Validation Setup
     val_gt = loader.valid_df.groupby("user_id")["item_id"].apply(list).to_dict()
@@ -85,7 +86,7 @@ def run_beta_ablation(dataset_name, n_trials=30, seed=42):
     # Define Beta scan points
     beta_points = list(np.arange(0.0, 1.51, 0.25))
     # Ensure theoretical points are evaluated exactly
-    for b in [beta_lad]:
+    for b in [beta_lad, beta_deq]:
         if not any(np.isclose(b, bp, atol=0.05) for bp in beta_points):
             beta_points.append(float(b))
     beta_points = sorted(list(set(beta_points)))
@@ -99,8 +100,8 @@ def run_beta_ablation(dataset_name, n_trials=30, seed=42):
         def objective(params):
             return fast_eval_obj(S_t, params["alpha"], beta, 20, XV_val, V_t, val_gt, val_hist, val_u_ids)
             
-        hpo = AspireHPO([{"name": "alpha", "type": "float", "range": "1.0 1000000.0", "log": True}], 
-                        n_trials=n_trials, patience=15, seed=seed)
+        hpo = AspireHPO([{"name": "alpha", "type": "float", "range": "1.0 1000.0", "log": True}], 
+                        n_trials=n_trials, patience=20, seed=seed)
         best_params, val_ndcg = hpo.search(objective, study_name=f"BetaAblation_{beta:.2f}")
         
         # Test Evaluation
@@ -128,7 +129,10 @@ def run_beta_ablation(dataset_name, n_trials=30, seed=42):
     plt.plot(df["beta"], df["test_recall20"], marker='o', linestyle='-', linewidth=2, color='royalblue', label="Recall@20")
     
     # Mark theoretical points
-    colors = {'LAD': ('green', beta_lad)}
+    colors = {
+        'LAD': ('green', beta_lad),
+        'Decouple': ('orange', beta_deq)
+    }
     for name, (color, val) in colors.items():
         # Interpolate y value for the line
         y_val = np.interp(val, df["beta"], df["test_recall20"])
@@ -166,7 +170,7 @@ def run_beta_ablation(dataset_name, n_trials=30, seed=42):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--trials", type=int, default=30)
+    parser.add_argument("--trials", type=int, default=60)
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     

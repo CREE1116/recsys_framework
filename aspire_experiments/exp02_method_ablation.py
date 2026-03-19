@@ -112,6 +112,8 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
         n_items=M_full, 
         n_users=N_full
     )
+    # Add Original SVD baseline
+    estimates["original_svd"] = (0.0, 0.0)
     
     detailed_results = []
     out_dir = ensure_dir(f"aspire_experiments/output/method_ablation/{dataset_name}")
@@ -119,9 +121,7 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
     # Helper for simple HPO objective (NDCG@main_k)
     def fast_ndcg_obj(S_in, alpha, beta, k):
         h = AspireEngine.apply_filter(S_in, float(alpha), beta).float()
-        # We need a quick ranking calc for the specific K
         u_ids = list(val_gt.keys())
-        # [Corrected dimensions]
         scores = torch.mm(XV_val * h, V_t.t())
         for idx, u_id in enumerate(u_ids):
             excl = list(val_hist.get(u_id, set()) - set(val_gt[u_id]))
@@ -137,6 +137,9 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
         if not isinstance(v, tuple) or len(v) < 2: continue
         beta = v[0]
         
+        if name not in ["original_svd", "ols", "lad", "blue", "smooth_vector", "max_median", "iso_pop_no_detrend"]:
+            continue # Focus on key methods
+            
         print(f"\n--- Testing Method: {name} ---")
         try:
             if isinstance(beta, np.ndarray):
@@ -149,8 +152,8 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
             def objective(params):
                 return fast_ndcg_obj(S_t, params["alpha"], beta, main_k)
             
-            hpo = AspireHPO([{"name": "alpha", "type": "float", "range": "1.0 1000000.0", "log": True}], 
-                            n_trials=n_trials, patience=15, seed=seed)
+            hpo = AspireHPO([{"name": "alpha", "type": "float", "range": "0.1 1000000.0", "log": True}], 
+                            n_trials=n_trials, patience=20, seed=seed)
             best_params, _ = hpo.search(objective, study_name=f"Ablation_{name}")
             
             # --- Full Evaluation ---
@@ -173,8 +176,8 @@ def run_method_ablation(dataset_name, n_trials=30, seed=42):
             return fast_ndcg_obj(S_t, params["alpha"], params["beta"], main_k)
         
         hpo_spec = [
-            {"name": "alpha", "type": "float", "range": "1.0 1000000.0", "log": True},
-            {"name": "beta",  "type": "float", "range": "0.0 2.0"}
+            {"name": "alpha", "type": "float", "range": "0.1 1000000.0", "log": True},
+            {"name": "beta",  "type": "float", "range": "0.0 10.0"}
         ]
         hpo = AspireHPO(hpo_spec, n_trials=n_trials * 2, patience=20, seed=seed)
         best_params, _ = hpo.search(objective_hpo, study_name="Ablation_BetaHPO")
@@ -237,7 +240,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
-    parser.add_argument("--trials", type=int, default=20)
+    parser.add_argument("--trials", type=int, default=60)
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     
