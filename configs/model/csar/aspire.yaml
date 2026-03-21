@@ -1,6 +1,8 @@
 model:
   name: "aspire"
-  beta: "auto"
-  estimator_type: "lad"
+  gamma: 1.0
+  tau: 0.3        # cut-off threshold. 'auto' 설정 시 MP 노이즈 에지로 자동 추정
   target_energy: 1.0
-  visualize: true # Adaptive Spectral Popularity-aware Intrinsic REgularization
+  visualize: true
+
+device: "auto"

@@ -4,12 +4,13 @@ import numpy as np
 import time
 from scipy.sparse import csr_matrix
 from ..base_model import BaseModel
-from .ASPIRELayer import ChebyASPIRELayer, ASPIREBetaCacheManager
+from .ASPIRELayer import ChebyASPIRELayer
 
 class ChebyASPIRE(BaseModel):
     """
     ChebyASPIRE: SVD-free ASPIRE via Chebyshev polynomial approximation.
-    h(sigma) = sigma^{2/(1+beta)} / (sigma^{2/(1+beta)} + alpha)
+    h(sigma_tilde; gamma, tau) = sigma_tilde^gamma / (sigma_tilde^gamma + tau^gamma)
+    tau: cut-off threshold [0,1] independent of gamma.
     """
     def __init__(self, config, data_loader):
         super(ChebyASPIRE, self).__init__(config, data_loader)
@@ -18,32 +19,25 @@ class ChebyASPIRE(BaseModel):
         self.n_items = data_loader.n_items
         
         model_config = config.get('model', {})
-        self.alpha = model_config.get('alpha', 500.0)
+        self.tau = model_config.get('tau', model_config.get('alpha', 0.3))  # backward compat
         self.degree = model_config.get('degree', 20)
-        self.beta = model_config.get('beta', 0.5)
+        self.gamma = model_config.get('gamma', 1.0)
         self.lambda_max_estimate = model_config.get('lambda_max_estimate', 'auto')
-        self.threshold = model_config.get('threshold', 1e-4)
         self.visualize = model_config.get('visualize', True)
-        self.estimator_type = model_config.get('estimator_type', 'isotropic_detrended')
         
         # ChebyASPIRE Layer
         self.lira_layer = ChebyASPIRELayer(
-            alpha=self.alpha,
+            tau=self.tau,
             degree=self.degree,
-            beta=self.beta,
-            lambda_max_estimate=self.lambda_max_estimate,
-            threshold=self.threshold,
-            estimator_type=self.estimator_type
+            gamma=self.gamma,
+            lambda_max_estimate=self.lambda_max_estimate
         )
         self.lira_layer.to(self.device)
         
-        # Build during fit (not here)
+        # Build during fit
         self.train_matrix_csr = None
         
-        self._log(f"Initialized (degree={self.degree}, alpha={self.alpha}, beta={self.beta}, threshold={self.threshold})")
-
-        # Cache manager 등록
-        self.register_cache_manager('aspire_beta', ASPIREBetaCacheManager())
+        self._log(f"Initialized (degree={self.degree}, tau={self.tau:.3f}, gamma={self.gamma:.2f})")
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df
@@ -60,7 +54,7 @@ class ChebyASPIRE(BaseModel):
     def fit(self, data_loader):
         """Build ChebyASPIRE model"""
         self._log(f"\n{'='*60}")
-        self._log(f"Training ChebyASPIRE (degree={self.degree}, alpha={self.alpha}, beta={self.beta})")
+        self._log(f"Training ChebyASPIRE (degree={self.degree}, tau={self.tau:.3f}, gamma={self.gamma:.2f})")
         self._log(f"{'='*60}")
         
         start_time = time.time()
@@ -101,7 +95,7 @@ class ChebyASPIRE(BaseModel):
         # Use the already built CSR matrix
         X_csr = self.train_matrix_csr 
         user_history_dense = torch.from_numpy(X_csr[users.cpu().numpy()].toarray()).float().to(self.device)
-        scores = self.lira_layer(user_history_dense, user_ids=users)
+        scores = self.lira_layer(user_history_dense)
         
         if items is not None:
              return scores.gather(1, items)
@@ -111,11 +105,11 @@ class ChebyASPIRE(BaseModel):
         return self.predict_full(user_ids, item_ids)
 
     def get_final_item_embeddings(self):
-        # f(S) implicitly handled; return Identity for now as item-item similarity is not stored
+        # Implicitly handled; return Identity
         return torch.eye(self.n_items, device=self.device)
     
     def calc_loss(self, batch_data):
         return (torch.tensor(0.0, device=self.device),), None
 
     def __str__(self):
-        return f"ChebyASPIRE(degree={self.degree}, alpha={self.alpha}, threshold={self.threshold})"
+        return f"ChebyASPIRE(degree={self.degree}, tau={self.tau:.3f}, gamma={self.gamma:.2f})"

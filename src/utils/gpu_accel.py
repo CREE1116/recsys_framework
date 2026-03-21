@@ -623,13 +623,19 @@ class EVDCacheManager(GlobalCacheManager):
                 if best_file:
                     f_path = best_file
                     print(f"[EVD] Cache hit ({os.path.basename(f_path)})")
-                    cp = torch.load(f_path, map_location='cpu')
-                    u, s, v = cp['u'], cp['s'], cp['v']
-                    total_energy = cp.get('total_energy', float(np.sum(X_sparse.data**2)))
-                    
-                    if k is not None and u.shape[1] > k:
-                         return u[:, :k].to(self.device), s[:k].to(self.device), v[:, :k].to(self.device), total_energy
-                    return u.to(self.device), s.to(self.device), v.to(self.device), total_energy
+                    try:
+                        cp = torch.load(f_path, map_location='cpu')
+                    except Exception as e:
+                        print(f"[EVD] Cache corrupted, deleting and re-computing: {e}")
+                        os.remove(f_path)
+                        cp = None
+                    if cp is not None:
+                        u, s, v = cp['u'], cp['s'], cp['v']
+                        total_energy = cp.get('total_energy', float(np.sum(X_sparse.data**2)))
+                        
+                        if k is not None and u.shape[1] > k:
+                             return u[:, :k].to(self.device), s[:k].to(self.device), v[:, :k].to(self.device), total_energy
+                        return u.to(self.device), s.to(self.device), v.to(self.device), total_energy
 
         # 2. Compute
         u, s, v, k_final = self._compute_evd(X_sparse, k=k)
@@ -839,13 +845,19 @@ class SVDCacheManager(GlobalCacheManager):
                 if best_file:
                     f_k, f_path = best_file
                     print(f"[SVD] Cache hit (k={f_k}, dataset={dataset_name})")
-                    cp = torch.load(f_path, map_location='cpu')
-                    u, s, v = cp['u'], cp['s'], cp['v']
-                    total_energy = cp.get('total_energy', float(np.sum(X_sparse.data**2)))
-                    
-                    if k is not None and f_k > k:
-                        return u[:, :k].to(self.device), s[:k].to(self.device), v[:, :k].to(self.device), total_energy
-                    return u.to(self.device), s.to(self.device), v.to(self.device), total_energy
+                    try:
+                        cp = torch.load(f_path, map_location='cpu')
+                    except Exception as e:
+                        print(f"[SVD] Cache corrupted, deleting and re-computing: {e}")
+                        os.remove(f_path)
+                        cp = None
+                    if cp is not None:
+                        u, s, v = cp['u'], cp['s'], cp['v']
+                        total_energy = cp.get('total_energy', float(np.sum(X_sparse.data**2)))
+                        
+                        if k is not None and f_k > k:
+                            return u[:, :k].to(self.device), s[:k].to(self.device), v[:, :k].to(self.device), total_energy
+                        return u.to(self.device), s.to(self.device), v.to(self.device), total_energy
 
         # 2. Compute
         if k is None:

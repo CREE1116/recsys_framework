@@ -1,12 +1,7 @@
 model:
-  name: cheby_aspire
+  name: "cheby_aspire"
+  gamma: 1.0
   alpha: 500.0
-  degree: 50
-
-  # Beta: MCAR 기준선(a=0.5)으로부터의 스펙트럼 이탈량
-  # 'auto': β = max(0, 2a - 1), SWLS로 a 추정
-  beta: "auto"
-
+  degree: 20
   lambda_max_estimate: "auto"
   visualize: true
-device: auto
