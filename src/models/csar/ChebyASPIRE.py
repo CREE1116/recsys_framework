@@ -25,6 +25,7 @@ class ChebyASPIRE(BaseModel):
         self.lambda_max_estimate = model_config.get('lambda_max_estimate', 'auto')
         self.filter_mode = model_config.get('filter_mode', 'standard')
         self.visualize = model_config.get('visualize', True)
+        self.precompute_scores = model_config.get('precompute_scores', True)
         
         # ChebyASPIRE Layer
         # Remove explicitly passed args from kwargs to avoid 'multiple values for keyword argument' error
@@ -81,7 +82,7 @@ class ChebyASPIRE(BaseModel):
         
         # 3. Precompute Full Scores (Optimization for evaluation speed)
         # Only if item_weights (dense matrix) was not built (i.e., for large datasets)
-        if self.lira_layer.item_weights.numel() == 0:
+        if self.precompute_scores and self.lira_layer.item_weights.numel() == 0:
             self.lira_layer.precompute(X_sparse, device=self.device)
         
         if self.visualize:
