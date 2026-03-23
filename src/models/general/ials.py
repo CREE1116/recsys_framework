@@ -23,7 +23,8 @@ class iALS(BaseModel):
         self.reg_lambda = config['model'].get('reg_lambda', 0.01)
         self.alpha = config['model'].get('alpha', 40.0)
         self.max_iter = config['model'].get('max_iter', 15)
-        self.seed = config['model'].get('seed', 42)
+        # 우선순위: config['model']['seed'] -> config['seed'] -> 42
+        self.seed = config['model'].get('seed', config.get('seed', 42))
 
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
