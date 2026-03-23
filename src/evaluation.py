@@ -273,18 +273,28 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
     """
     # 1. Collect all interaction pairs (vectorized for speed)
     print("[Evaluation] Collecting interaction pairs...")
-    all_users_np = []
-    all_items_np = []
-    for user_batch, target_item_batch in test_loader:
-        all_users_np.append(user_batch.numpy())
-        all_items_np.append(target_item_batch.numpy())
-    all_users_np = np.concatenate(all_users_np)
-    all_items_np = np.concatenate(all_items_np)
+    # 1. Collect all interaction pairs (Optimized: Direct access if TensorDataset)
+    from torch.utils.data import TensorDataset
+    if isinstance(test_loader.dataset, TensorDataset):
+        all_users_np = test_loader.dataset.tensors[0].numpy()
+        all_items_np = test_loader.dataset.tensors[1].numpy()
+    else:
+        # Fallback to loop if not TensorDataset
+        all_users_np = []
+        all_items_np = []
+        for user_batch, target_item_batch in test_loader:
+            all_users_np.append(user_batch.numpy())
+            all_items_np.append(target_item_batch.numpy())
+        all_users_np = np.concatenate(all_users_np)
+        all_items_np = np.concatenate(all_items_np)
 
-    # 2. Aggregate ground truth items by user (vectorized via pandas groupby)
-    import pandas as _pd
-    _pairs_df = _pd.DataFrame({'u': all_users_np, 'i': all_items_np})
-    user_test_ground_truth = _pairs_df.groupby('u')['i'].apply(list).to_dict()
+    # 2. Aggregate ground truth items by user (Optimized with defaultdict to avoid slow pd.groupby.apply)
+    from collections import defaultdict
+    user_test_ground_truth = defaultdict(list)
+    for u, i in zip(all_users_np, all_items_np):
+        user_test_ground_truth[u].append(i)
+    user_test_ground_truth = dict(user_test_ground_truth)
+    print(f"[Evaluation] Grouped interactions for {len(user_test_ground_truth)} users.")
             
     unique_test_users = sorted(list(user_test_ground_truth.keys()))
     
