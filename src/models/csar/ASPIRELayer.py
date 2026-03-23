@@ -376,6 +376,9 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer("t_mid", torch.tensor(lambda_max / 2.0, device=dev))
         self.register_buffer("t_half", torch.tensor(lambda_max / 2.0, device=dev))
 
+        n = X_sparse.shape[1]
+        L = _GramCache.get(dataset_name, device=dev)
+        
         # ML-20M (18k items) fits easily in 16GB VRAM as a dense N x N matrix (1.3GB).
         # We increase threshold to 25000 (~2.5GB).
         if L is None and n <= 25000:
