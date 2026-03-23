@@ -376,11 +376,19 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer("t_mid", torch.tensor(lambda_max / 2.0, device=dev))
         self.register_buffer("t_half", torch.tensor(lambda_max / 2.0, device=dev))
 
-        n = X_sparse.shape[1]
-        L = _GramCache.get(dataset_name, device=dev)
-        if L is None and n <= 15000:
-            L = torch.mm(self.X_torch_csr.to_dense().to(dev).t(), self.X_torch_csr.to_dense().to(dev))
-            if dataset_name: _GramCache.put(dataset_name, L)
+        # ML-20M (18k items) fits easily in 16GB VRAM as a dense N x N matrix (1.3GB).
+        # We increase threshold to 25000 (~2.5GB).
+        if L is None and n <= 25000:
+            try:
+                # Use sparse-dense MM to build G = X^T X instead of to_dense().t() @ to_dense()
+                I_n = torch.eye(n, device=dev)
+                # G = X^T (X I)
+                L = torch.sparse.mm(self.Xt_torch_csr.to(dev), torch.sparse.mm(self.X_torch_csr.to(dev), I_n))
+                del I_n
+                if dataset_name: _GramCache.put(dataset_name, L)
+            except Exception as e:
+                print(f"[ChebyASPIRE] Dense Gram build failed: {e}")
+                L = None
         
         self.item_weights = self._dense_chebyshev(L, coeffs, n, dev) if L is not None else torch.empty(0)
         self.scores_cache = None # Reset cache on rebuild
@@ -426,52 +434,44 @@ class ChebyASPIRELayer(nn.Module):
     @torch.no_grad()
     def precompute(self, X_all_sparse, dataset_name=None, matrix_id=None, device=None):
         """
-        Precompute scores for all users in X_all_sparse.
-        Uses Basis Matrix caching to avoid SpMM if hyperparameters change but dataset is same.
+        Memory-efficient precomputation.
+        1. If N is small, compute item_weights (N x N) and use them.
+        2. If scores_cache is needed, compute it in batches to avoid M x M intermediates.
         """
-        print(f"[ChebyASPIRE] Precomputing scores (Dataset: {dataset_name})...")
+        print(f"[ChebyASPIRE] Precomputing (Items: {X_all_sparse.shape[1]}, Users: {X_all_sparse.shape[0]})...")
         t0 = time.time()
         
         N_users, N_items = X_all_sparse.shape
-        # Estimate size: degree * users * items * 4 bytes
-        total_size_gb = (self.degree + 1) * N_users * N_items * 4 / (1024**3)
-        
-        # 1. Try Basis Cache if total size is reasonable (< 20GB) or explicitly enabled
-        if dataset_name and matrix_id and total_size_gb < 20.0 and _BasisCache.exists(dataset_name, matrix_id, self.degree):
-            print(f"[ChebyASPIRE] Basis Cache Hit (Total Size: {total_size_gb:.1f}GB). Loading...")
-            bases = _BasisCache.load(dataset_name, matrix_id, self.degree, device=device or self.sparse_device)
-            self.scores_cache = torch.zeros((N_users, N_items), device="cpu")
-            for k, Z_k in enumerate(bases):
-                self.scores_cache.add_(Z_k.cpu(), alpha=float(self.cheby_coeffs[k]))
-            print(f"[ChebyASPIRE] Basis reconstruction done: {time.time()-t0:.2f}s")
-            return
+        # If we don't have item_weights yet, try to build them first (much smaller than scores_cache)
+        if self.item_weights.numel() == 0 and N_items <= 25000:
+            print(f"[ChebyASPIRE] Building item-wise filter (weights)...")
+            I_n = torch.eye(N_items, device=device or self.sparse_device)
+            self.item_weights = self._spmv_forward(I_n).to(device or self.sparse_device)
+            del I_n
 
-        # 2. Manual Expansion (Normal path)
-        X_t = torch.from_numpy(X_all_sparse.toarray()).float().t().to(self.sparse_device)
-        T_prev = X_t
-        
-        # --- Basis Caching Inner Logic ---
-        save_basis = dataset_name and matrix_id and total_size_gb < 20.0
-        if save_basis: _BasisCache.save(dataset_name, matrix_id, 0, T_prev)
-        
-        with torch.no_grad():
-            T_curr = (torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_prev)) - self.t_mid * T_prev) / self.t_half
-            if save_basis: _BasisCache.save(dataset_name, matrix_id, 1, T_curr)
-            
-            W = float(self.cheby_coeffs[0]) * T_prev + float(self.cheby_coeffs[1]) * T_curr
-            
-            inv_half = 2.0 / self.t_half
-            mid_val = self.t_mid
-            
-            for k in range(2, self.degree + 1):
-                temp = torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_curr))
-                T_next = inv_half * (temp - mid_val * T_curr) - T_prev
-                if save_basis: _BasisCache.save(dataset_name, matrix_id, k, T_next)
-                
-                W.add_(T_next, alpha=float(self.cheby_coeffs[k]))
-                T_prev, T_curr = T_curr, T_next
-                
-        self.scores_cache = W.t().cpu()
+        # If item_weights exist, use them to compute scores_cache in batches
+        if self.item_weights.numel() > 0:
+            print(f"[ChebyASPIRE] Computing scores_cache via item_weights...")
+            batch_size = 10000
+            all_scores = torch.zeros((N_users, N_items), device="cpu")
+            for i in range(0, N_users, batch_size):
+                end = min(i + batch_size, N_users)
+                X_batch = torch.from_numpy(X_all_sparse[i:end].toarray()).float().to(self.item_weights.device)
+                all_scores[i:end] = torch.mm(X_batch, self.item_weights).cpu()
+                del X_batch
+            self.scores_cache = all_scores
+        else:
+            # Absolute fallback: Batch-wise iterative expansion (Very slow but safe)
+            print(f"[ChebyASPIRE] Fallback: Batch-wise iterative expansion...")
+            batch_size = 5000
+            all_scores = torch.zeros((N_users, N_items), device="cpu")
+            for i in range(0, N_users, batch_size):
+                end = min(i + batch_size, N_users)
+                X_batch = torch.from_numpy(X_all_sparse[i:end].toarray()).float().to(self.sparse_device)
+                all_scores[i:end] = self._spmv_forward(X_batch).cpu()
+                del X_batch
+            self.scores_cache = all_scores
+
         print(f"[ChebyASPIRE] Precomputation done: {time.time()-t0:.2f}s")
 
     @torch.no_grad()
