@@ -19,25 +19,31 @@ class ChebyASPIRE(BaseModel):
         self.n_items = data_loader.n_items
         
         model_config = config.get('model', {})
-        self.tau = model_config.get('tau', model_config.get('alpha', 0.3))  # backward compat
-        self.degree = model_config.get('degree', 20)
+        self.alpha = model_config.get('alpha', 0.1)
         self.gamma = model_config.get('gamma', 1.0)
+        self.degree = model_config.get('degree', 20)
         self.lambda_max_estimate = model_config.get('lambda_max_estimate', 'auto')
+        self.filter_mode = model_config.get('filter_mode', 'standard')
         self.visualize = model_config.get('visualize', True)
         
         # ChebyASPIRE Layer
+        # Remove explicitly passed args from kwargs to avoid 'multiple values for keyword argument' error
+        layer_kwargs = model_config.copy()
+        for key in ['alpha', 'gamma', 'degree', 'lambda_max_estimate', 'filter_mode']:
+            layer_kwargs.pop(key, None)
+
         self.lira_layer = ChebyASPIRELayer(
-            tau=self.tau,
             degree=self.degree,
             gamma=self.gamma,
-            lambda_max_estimate=self.lambda_max_estimate
+            lambda_max_estimate=self.lambda_max_estimate,
+            **layer_kwargs
         )
         self.lira_layer.to(self.device)
         
         # Build during fit
         self.train_matrix_csr = None
         
-        self._log(f"Initialized (degree={self.degree}, tau={self.tau:.3f}, gamma={self.gamma:.2f})")
+        self._log(f"Initialized (degree={self.degree}, mode=gamma_only, gamma={self.gamma:.2f})")
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df
@@ -54,7 +60,13 @@ class ChebyASPIRE(BaseModel):
     def fit(self, data_loader):
         """Build ChebyASPIRE model"""
         self._log(f"\n{'='*60}")
-        self._log(f"Training ChebyASPIRE (degree={self.degree}, tau={self.tau:.3f}, gamma={self.gamma:.2f})")
+        diag = self.diagnostics()
+        if diag.get('filter_mode') == 'gamma_only':
+            mode_str = "(gamma_only)"
+        else:
+            mode_str = f"α={diag['alpha']:.4f} (standard)"
+            
+        self._log(f"Training ChebyASPIRE | degree={self.degree} {mode_str} gamma={diag['gamma']:.2f}")
         self._log(f"{'='*60}")
         
         start_time = time.time()
@@ -67,21 +79,22 @@ class ChebyASPIRE(BaseModel):
         self.lira_layer.build(X_sparse, dataset_name=dataset_name)
         self.lira_layer.to(self.device)
         
-        self._log(f"Analyzing model (Visualize Heavyweight: {self.visualize})...")
-        try:
-            import os
-            analysis_dir = os.path.join(self.output_path, 'analysis')
-            os.makedirs(analysis_dir, exist_ok=True)
-            self._log(f"Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
-            if hasattr(self.lira_layer, 'visualize_matrices'):
-                self.lira_layer.visualize_matrices(
-                    X_sparse=self.train_matrix_csr, 
-                    save_dir=analysis_dir,
-                    lightweight=not self.visualize
-                )
-                self._log(f"Analysis results saved to {analysis_dir}")
-        except Exception as e:
-            self._log(f"Visualization skipped: {e}")
+        if self.visualize:
+            self._log(f"Analyzing model (Visualize Heavyweight: {self.visualize})...")
+            try:
+                import os
+                analysis_dir = os.path.join(self.output_path, 'analysis')
+                os.makedirs(analysis_dir, exist_ok=True)
+                self._log(f"Analysis directory created/verified: {os.path.abspath(analysis_dir)}")
+                if hasattr(self.lira_layer, 'visualize_matrices'):
+                    self.lira_layer.visualize_matrices(
+                        X_sparse=self.train_matrix_csr, 
+                        save_dir=analysis_dir,
+                        lightweight=not self.visualize
+                    )
+                    self._log(f"Analysis results saved to {analysis_dir}")
+            except Exception as e:
+                self._log(f"Visualization skipped: {e}")
         
         elapsed = time.time() - start_time
         self._log(f"\n{'='*60}")
@@ -108,8 +121,18 @@ class ChebyASPIRE(BaseModel):
         # Implicitly handled; return Identity
         return torch.eye(self.n_items, device=self.device)
     
+    def diagnostics(self):
+        layer = self.lira_layer
+        return {
+            "gamma": float(self.gamma),
+            "alpha": float(layer.alpha) if layer.alpha is not None else 0.0,
+            "alpha_abs": float(layer.alpha_abs) if layer.alpha_abs is not None else 0.0,
+            "degree": int(self.degree),
+            "filter_mode": self.filter_mode
+        }
+
     def calc_loss(self, batch_data):
         return (torch.tensor(0.0, device=self.device),), None
 
     def __str__(self):
-        return f"ChebyASPIRE(degree={self.degree}, tau={self.tau:.3f}, gamma={self.gamma:.2f})"
+        return f"ChebyASPIRE(degree={self.degree}, gamma={self.gamma:.2f}, mode={self.filter_mode})"

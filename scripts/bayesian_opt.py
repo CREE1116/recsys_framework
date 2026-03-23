@@ -348,14 +348,19 @@ class BayesianOptimizer:
                     choices = p_range.split()
                 else:
                     choices = p_range
-                # Try to convert
-                try:
-                    choices = [int(c) for c in choices]
-                except:
+                # Try to convert safely without precision loss
+                new_choices = []
+                for c in choices:
                     try:
-                        choices = [float(c) for c in choices]
-                    except:
-                        pass
+                        f_val = float(c)
+                        # Only convert to int if it's identical (e.g. 1.0 or "1")
+                        if f_val == int(f_val):
+                            new_choices.append(int(f_val))
+                        else:
+                            new_choices.append(f_val)
+                    except (ValueError, TypeError):
+                        new_choices.append(c)
+                choices = new_choices
                 val = trial.suggest_categorical(name, choices)
             else:
                 raise ValueError(f"Unknown type: {p_type}")

@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 
 class ASPIREVisualizer:
     @staticmethod
-    def visualize_aspire_spectral(singular_values, filter_diag, alpha, gamma, effective_alpha=None, X_sparse=None, save_dir=None, file_prefix='aspire'):
+    def visualize_aspire_spectral(singular_values, filter_diag, alpha, gamma, alpha_abs=None, 
+                                  effective_alpha=None, X_sparse=None, save_dir=None, file_prefix='aspire'):
         """
         ASPIRE 전용 스펙트럼 분석 시각화 (Gamma 기반).
         
@@ -31,7 +32,8 @@ class ASPIREVisualizer:
         # 1. Metrics Calculation
         metrics = {
             "config": {
-                "alpha": float(alpha), 
+                "alpha": float(alpha) if alpha is not None else 0.0, 
+                "alpha_abs": float(alpha_abs) if alpha_abs is not None else None,
                 "gamma": float(gamma),
                 "effective_alpha": float(effective_alpha) if effective_alpha is not None else None
             },
@@ -70,20 +72,21 @@ class ASPIREVisualizer:
 
         # [Panel 2] Filter Transfer Function
         ax = axes[1]
-        # Wiener baseline: s^2 / (s^2 + alpha)
-        wiener = (s_vals**2) / (s_vals**2 + float(alpha) + 1e-9)
+        # Wiener baseline: s^2 / (s^2 + float(alpha or 0.1))
+        alpha_val = float(alpha) if alpha is not None else 0.0
+        wiener = (s_vals**2) / (s_vals**2 + alpha_val + 1e-9)
         
-        ax.plot(s_vals, wiener, color='#95a5a6', linestyle='--', label=r'Wiener ($\gamma=2$)', alpha=0.6)
+        ax.plot(s_vals, wiener, color='#95a5a6', linestyle='--', label=r'Wiener baseline', alpha=0.6)
         ax.plot(s_vals, filter_w, color='#e67e22', linewidth=2, label=rf'ASPIRE ($\gamma={gamma:.2f}$)')
         
         ax.set_xscale('log')
         ax.invert_xaxis()
         
-        title_alpha = rf"$\alpha={alpha:.1f}$"
-        if effective_alpha is not None:
-            title_alpha += rf", $\alpha_{{eff}}={effective_alpha:.4f}$"
+        title_alpha = rf"$\alpha_{{norm}}={alpha_val:.4f}$"
+        if alpha_abs is not None:
+            title_alpha += rf", $\alpha_{{abs}}={float(alpha_abs):.2f}$"
             
-        ax.set_title(f"Filter Shape ({title_alpha})", fontsize=14, fontweight='bold')
+        ax.set_title(f"Filter Shape (g={gamma:.2f}, {title_alpha})", fontsize=14, fontweight='bold')
         ax.set_xlabel(r"Singular Value $\sigma$", fontsize=12)
         ax.set_ylabel(r"$h(\sigma)$", fontsize=12)
         ax.grid(True, which="both", ls="-", alpha=0.2)

@@ -246,8 +246,8 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
             # G + λI (clone해서 캐시된 G_t는 λ 없이 보존)
             G_reg = G_t.clone()
             G_reg.diagonal().add_(reg_lambda)
-            # Pass dataset_name to allow caching the L factor for this specific lambda
-            P = gpu_cholesky_solve(G_reg, rhs, device=device, dataset_name=dataset_name, return_tensor=return_tensor)
+            # lambda가 포함된 Cholesky 결과는 재사용률이 낮으므로 디스크 캐싱 중단 (dataset_name=None)
+            P = gpu_cholesky_solve(G_reg, rhs, device=device, dataset_name=None, return_tensor=return_tensor)
             del G_reg
             return P
         except Exception as e:

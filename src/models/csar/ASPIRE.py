@@ -19,22 +19,28 @@ class ASPIRE(BaseModel):
         self.n_items = data_loader.n_items
         
         model_config = config.get('model', {})
-        self.tau = model_config.get('tau', model_config.get('alpha', 0.3))  # backward compat
+        self.alpha = model_config.get('alpha', 0.1)
         self.gamma = model_config.get('gamma', 1.0)
         self.target_energy = model_config.get('target_energy', 0.9)
         self.k = model_config.get('k', None)
+        self.filter_mode = model_config.get('filter_mode', 'standard')
         self.visualize = model_config.get('visualize', True)
         
         # ASPIRE Layer
+        # Remove explicitly passed args from kwargs to avoid 'multiple values for keyword argument' error
+        layer_kwargs = model_config.copy()
+        for key in ['k', 'gamma', 'target_energy', 'filter_mode', 'alpha']:
+            layer_kwargs.pop(key, None)
+
         self.lira_layer = ASPIRELayer(
             k=self.k,
-            tau=self.tau,
             gamma=self.gamma,
-            target_energy=self.target_energy
+            target_energy=self.target_energy,
+            **layer_kwargs
         )
         self.lira_layer.to(self.device)
         
-        self._log(f"Initialized (k={self.k}, t={self.tau:.3f}, g={self.gamma:.2f})")
+        self._log(f"Initialized (k={self.k}, mode=gamma_only, gamma={self.gamma:.2f})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
@@ -86,16 +92,22 @@ class ASPIRE(BaseModel):
         layer = self.lira_layer
         return {
             "gamma": float(self.gamma),
-            "tau": float(self.tau),
-            "tau_gamma": float(layer.tau_gamma),
-            "rho": float(layer.rho),
+            "alpha": float(layer.alpha) if layer.alpha is not None else 0.0,
+            "alpha_abs": float(layer.alpha_abs) if layer.alpha_abs is not None else 0.0,
+            "rho": float(layer.rho) if hasattr(layer, 'rho') else 0.0,
             "n_components": int(layer.k),
+            "filter_mode": self.filter_mode
         }
 
     def fit(self, data_loader):
         diag = self.diagnostics()
         self._log(f"\n{'='*60}")
-        self._log(f"Training ASPIRE | g={diag['gamma']:.2f} t={diag['tau']:.4f} (t^g={diag['tau_gamma']:.4f}) rho={diag['rho']:.4f}")
+        if diag['filter_mode'] == 'gamma_only':
+            mode_str = "(gamma_only)"
+        else:
+            mode_str = f"α={diag['alpha']:.4f} (standard)"
+            
+        self._log(f"Training ASPIRE | g={diag['gamma']:.2f} {mode_str} rho={diag['rho']:.4f}")
         self._log("="*60)
         
         if self.visualize:

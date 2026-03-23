@@ -74,63 +74,24 @@ class AspireFilter:
       dh/d(γ)|_{τ 고정} → 형상만 변경
     """
     @staticmethod
-    def apply_filter(vals: torch.Tensor, tau: float, gamma: float, is_gram: bool = False) -> tuple[torch.Tensor, float]:
+    def apply_filter(vals: torch.Tensor, gamma: float = 1.0, is_gram: bool = False) -> tuple[torch.Tensor, float, float]:
         """
-        vals: Singular values (is_gram=False) or Eigenvalues (is_gram=True).
-        h(σ̃) = σ̃^γ / (σ̃^γ + τ^γ)
-        cut-off: σ̃ = τ → h = 0.5, regardless of gamma.
+        Returns:
+            - h (Tensor): Filter coefficients
+            - alpha (float): The alpha parameter (fixed to 1.0)
+            - alpha_abs (float): The effective lambda used in the denominator (s_max^gamma)
         """
-        # 1. Normalize by max value (σ̃)
-        v_max = vals.max().item() + 1e-12
-        s_tilde = vals / v_max
-
-        # 2. Compute exponent (eigenvalue = sigma^2, so use gamma/2)
+        s = torch.clamp(vals.float(), min=1e-12)
         exp = float(gamma) if not is_gram else float(gamma) / 2.0
-        s_gamma = torch.pow(torch.clamp(s_tilde.float(), min=1e-12), exp)
-
-        # 3. tau^gamma as the cut-off level (completely decoupled from gamma shape)
-        tau_gamma = float(tau) ** exp
-
-        # 4. Filter
-        h = s_gamma / (s_gamma + tau_gamma + 1e-10)
-        return h.float(), tau_gamma
-
-    @staticmethod
-    def estimate_tau(singular_values: torch.Tensor, X_sparse=None, method: str = "mp") -> float:
-        """
-        데이터 기반 τ 자동 추정 (HPO 불필요).
-
-        methods:
-          'mp'           : Marchenko-Pastur noise edge
-                           τ* = sqrt(nnz) / sigma_max
-                           이론적으로 SNR=1이 되는 지점.
-                           Sparse할수록 τ 작아짐(더 강한 복원).
-          'spectral_gap' : log-scale 2차 미분이 최대인 지점(변곡점).
-          'median'       : 정규화 특이값의 중간값.
-        """
-        s = singular_values.detach().cpu().numpy()
-        sigma_max = s[0] + 1e-12
-        s_tilde = s / sigma_max
-
-        if method == "mp" and X_sparse is not None:
-            # Marchenko-Pastur noise edge:
-            # σ_noise ≈ sqrt(density) * σ_max  →  τ* = σ_noise / σ_max = sqrt(density)
-            n_users, n_items = X_sparse.shape
-            density = X_sparse.nnz / (n_users * n_items)
-            tau = float(np.clip(np.sqrt(density), 0.01, 0.95))
-
-        elif method == "spectral_gap":
-            log_s = np.log(s_tilde + 1e-10)
-            if len(log_s) < 5:
-                return 0.3
-            d2 = np.abs(np.diff(np.diff(log_s)))
-            gap_idx = int(np.argmax(d2)) + 1
-            tau = float(np.clip(s_tilde[gap_idx], 0.01, 0.99))
-
-        else:  # 'median' fallback
-            tau = float(np.clip(np.median(s_tilde), 0.01, 0.99))
-
-        return tau
+        s_gamma = torch.pow(s, exp)
+        
+        # [Gamma-only] h = s^g / (s^g + s_max^g)
+        # This ensures h(s_max) = 0.5.
+        s_max_gamma = s_gamma.max().item()
+        effective_lambda = s_max_gamma
+        h = s_gamma / (s_gamma + effective_lambda + 1e-10)
+        
+        return h.float(), 1.0, float(effective_lambda)
 
     @staticmethod
     def compute_rho(singular_values: torch.Tensor) -> float:
@@ -163,18 +124,18 @@ class AspireFilter:
 # ==============================================================================
 
 class ASPIRELayer(nn.Module):
-    def __init__(self, k: int = 200, tau: float = 0.3, gamma: float = 1.0, **kwargs):
+    def __init__(self, k: int = 200, gamma: float = 1.0, **kwargs):
         super().__init__()
         self.k = k
-        self.tau = tau if isinstance(tau, str) else float(tau)  # 'auto' 허용
         self.gamma = float(gamma)
+        self.alpha = 1.0  # Fixed in gamma_only mode
         self.target_energy = kwargs.get("target_energy", 0.9)
+        self.filter_mode = "gamma_only"
 
         self.register_buffer("singular_values", torch.empty(0))
         self.register_buffer("V_raw",           torch.empty(0, 0))
         self.register_buffer("filter_diag",     torch.empty(0))
-
-        self.tau_gamma = 0.0  # τ^γ (effective cut-off level)
+        self.alpha_abs = 0.0
         self.rho = 0.0
 
     @property
@@ -184,9 +145,9 @@ class ASPIRELayer(nn.Module):
     @torch.no_grad()
     def build(self, X_sparse, dataset_name: str | None = None, verbose: bool = True):
         dev = next((p.device for p in self.parameters()), torch.device("cpu"))
-        manager = EVDCacheManager(device=dev)
         
         # 1. SVD
+        manager = EVDCacheManager(device=dev)
         _, s, v, _ = manager.get_evd(X_sparse, dataset_name=dataset_name)
 
         # 2. Energy-based Truncation
@@ -201,18 +162,15 @@ class ASPIRELayer(nn.Module):
         self.register_buffer("singular_values", s.to(dev))
         self.register_buffer("V_raw", v.to(dev))
 
-        # 3. Auto-estimate tau if requested
-        if isinstance(self.tau, str) and self.tau == "auto":
-            self.tau = AspireFilter.estimate_tau(self.singular_values, X_sparse=X_sparse, method="mp")
-
-        # 4. Filtering with tau-reparameterization
-        h, tau_g = AspireFilter.apply_filter(self.singular_values, self.tau, self.gamma)
+        # 3. Filtering
+        h, self.alpha, self.alpha_abs = AspireFilter.apply_filter(
+            self.singular_values, gamma=self.gamma
+        )
         self.register_buffer("filter_diag", h)
-        self.tau_gamma = tau_g
         self.rho = AspireFilter.compute_rho(self.singular_values)
 
         if verbose:
-            print(f"[ASPIRELayer] Built | γ={self.gamma:.2f} τ={self.tau:.4f} (τ^γ={self.tau_gamma:.4f}) ρ={self.rho:.4f} k={self.k}")
+            print(f"[ASPIRELayer] Built | γ={self.gamma:.2f} α={self.alpha:.2f} ρ={self.rho:.4f}")
 
     @torch.no_grad()
     def forward(self, X_batch: torch.Tensor) -> torch.Tensor:
@@ -222,8 +180,8 @@ class ASPIRELayer(nn.Module):
     @torch.no_grad()
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
         ASPIREVisualizer.visualize_aspire_spectral(
-            self.singular_values, self.filter_diag, self.tau,
-            gamma=self.gamma, effective_alpha=self.tau_gamma,
+            self.singular_values, self.filter_diag, alpha=self.alpha,
+            gamma=self.gamma, alpha_abs=self.alpha_abs, 
             X_sparse=X_sparse, save_dir=save_dir, file_prefix="aspire"
         )
 
@@ -232,20 +190,20 @@ class ASPIRELayer(nn.Module):
 # ==============================================================================
 
 class ChebyASPIRELayer(nn.Module):
-    def __init__(self, tau: float = 0.3, degree: int = 20, gamma: float = 1.0, 
+    def __init__(self, degree: int = 20, gamma: float = 1.0, 
                  lambda_max_estimate: float | str = "auto", **kwargs):
         super().__init__()
-        self.tau = tau if isinstance(tau, str) else float(tau)  # 'auto' 허용
         self.degree = int(degree)
         self.gamma = float(gamma)
         self.lambda_max_estimate = lambda_max_estimate
+        self.filter_mode = "gamma_only"
+        self.alpha = 1.0
 
         self.register_buffer("cheby_coeffs", torch.empty(0))
         self.register_buffer("t_mid",        torch.tensor(0.0))
         self.register_buffer("t_half",       torch.tensor(0.0))
         self.register_buffer("item_weights", torch.empty(0))
-
-        self.tau_gamma = 0.0  # τ^γ (effective cut-off level)
+        self.alpha_abs = 0.0
         self.rho = 0.0
 
         self.X_torch_csr = None
@@ -274,10 +232,11 @@ class ChebyASPIRELayer(nn.Module):
         mid = half = lam_max / 2.0
         lam_nodes = mid + half * np.cos(theta)
 
-        # Apply tau-reparameterized filter
+        # Apply finalized filter
         lam_torch = torch.from_numpy(lam_nodes).float()
-        h_nodes, tau_g = AspireFilter.apply_filter(lam_torch, self.tau, self.gamma, is_gram=True)
-        self.tau_gamma = tau_g
+        h_nodes, self.alpha, self.alpha_abs = AspireFilter.apply_filter(
+            lam_torch, gamma=self.gamma, is_gram=True
+        )
 
         f_nodes = h_nodes.numpy()
         coeffs = np.zeros(K + 1)
@@ -313,7 +272,7 @@ class ChebyASPIRELayer(nn.Module):
         self.item_weights = self._dense_chebyshev(L, coeffs, n, dev) if L is not None else torch.empty(0)
 
         if verbose:
-            print(f"[ChebyASPIRELayer] Built | γ={self.gamma:.2f} τ={self.tau:.4f} (τ^γ={self.tau_gamma:.4f}) λ_max={lambda_max:.2f}")
+            print(f"[ChebyASPIRELayer] Built | γ={self.gamma:.2f} α={self.alpha:.4f} (abs={self.alpha_abs:.2f})")
 
     def _dense_chebyshev(self, L, coeffs, n, dev) -> torch.Tensor:
         T_prev = torch.eye(n, device=dev)
@@ -345,10 +304,15 @@ class ChebyASPIRELayer(nn.Module):
 
     @torch.no_grad()
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
+        # Normalize range for filter visualization [0, 1]
         sigmas = np.linspace(1.0, 1e-3, 500)
-        h_vals, tau_g = AspireFilter.apply_filter(torch.from_numpy(sigmas**2).float(), self.tau, self.gamma, is_gram=True)
+        lam_nodes = torch.from_numpy(sigmas**2).float()
+        h_vals, eff_alpha, _ = AspireFilter.apply_filter(
+            lam_nodes, gamma=self.gamma, is_gram=True
+        )
         ASPIREVisualizer.visualize_aspire_spectral(
             torch.from_numpy(sigmas).float(), h_vals,
-            self.tau, gamma=self.gamma, effective_alpha=tau_g,
+            self.alpha, gamma=self.gamma, 
+            alpha_abs=self.alpha_abs, effective_alpha=eff_alpha, 
             save_dir=save_dir, file_prefix="cheby_aspire"
         )

@@ -92,11 +92,11 @@ class GF_CF(BaseModel):
         k = min(self.k, min_dim - 1)
         
         # Perform SVD using SVDManager
-        # NOTE: cache key must include k and norm_weight
+        # SVDCacheManager가 k 기반 트렁케이션을 지원하므로 dataset_name에 k를 포함하지 않음.
+        # norm_weight에 따른 행렬 변화는 matrix_hash가 자동으로 처리함.
         dataset_name = self.config.get('dataset_name', 'unknown_gfcf')
-        cache_suffix = f"_k{k}_w{self.norm_weight:.2f}"
         
-        u, s, v, _ = self.svd_manager.get_svd(R_norm, k=k, dataset_name=f"{dataset_name}{cache_suffix}")
+        u, s, v, _ = self.svd_manager.get_svd(R_norm, k=k, dataset_name=dataset_name)
         
         # 안전한 버퍼 변수 덮어쓰기
         self.user_factors = u.to(self.device).float()
