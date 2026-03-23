@@ -13,6 +13,93 @@ from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager
 from src.models.csar.aspire_visualizer import ASPIREVisualizer
 from src.utils.cache_manager import GlobalCacheManager
 
+from src.utils.cache_manager import GlobalCacheManager
+
+
+# ==============================================================================
+# Cheby Setup Cache (lambda_max)
+# ==============================================================================
+
+class ChebySetupCacheManager(GlobalCacheManager):
+    """
+    Persistent cache for dataset-specific parameters (lambda_max).
+    These are independent of alpha/gamma hyperparameters.
+    """
+    _mem_cache: dict = {}
+    _cache_dir: str  = "data_cache"
+
+    @classmethod
+    def get_lambda(cls, dataset_name, matrix_id):
+        if not dataset_name or not matrix_id: return None
+        key = f"cheby_lam_{dataset_name}_{matrix_id}"
+        if key in cls._mem_cache: return cls._mem_cache[key]
+        
+        path = os.path.join(cls._cache_dir, f"{key}.json")
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    return json.load(f)['lambda_max']
+            except Exception: pass
+        return None
+
+    @classmethod
+    def put_lambda(cls, dataset_name, matrix_id, lambda_max):
+        if not dataset_name or not matrix_id: return
+        os.makedirs(cls._cache_dir, exist_ok=True)
+        key = f"cheby_lam_{dataset_name}_{matrix_id}"
+        cls._mem_cache[key] = lambda_max
+        path = os.path.join(cls._cache_dir, f"{key}.json")
+        try:
+            with open(path, 'w') as f:
+                json.dump({'lambda_max': float(lambda_max)}, f)
+        except Exception: pass
+
+_ChebyCache = ChebySetupCacheManager
+
+
+# ==============================================================================
+# Cheby Basis Matrix Cache (T_k(L) X^T)
+# ==============================================================================
+
+class ChebyBasisCacheManager(GlobalCacheManager):
+    """
+    Persistent cache for Chebyshev basis matrices: Z_k = T_k(L) X^T.
+    These are independent of alpha/gamma and depend only on dataset and degree.
+    """
+    _cache_dir = "data_cache"
+    
+    @classmethod
+    def get_path(cls, dataset_name, matrix_id, k):
+        return os.path.join(cls._cache_dir, f"cheby_basis_{dataset_name}_{matrix_id}_k{k}.pt")
+
+    @classmethod
+    def exists(cls, dataset_name, matrix_id, degree):
+        if not dataset_name or not matrix_id: return False
+        # Check if all k up to degree exist
+        for k in range(degree + 1):
+            if not os.path.exists(cls.get_path(dataset_name, matrix_id, k)):
+                return False
+        return True
+
+    @classmethod
+    def load(cls, dataset_name, matrix_id, degree, device="cpu"):
+        bases = []
+        for k in range(degree + 1):
+            path = cls.get_path(dataset_name, matrix_id, k)
+            bases.append(torch.load(path, map_location=device, weights_only=True))
+        return bases
+
+    @classmethod
+    def save(cls, dataset_name, matrix_id, k, val: torch.Tensor):
+        if not dataset_name or not matrix_id: return
+        os.makedirs(cls._cache_dir, exist_ok=True)
+        path = cls.get_path(dataset_name, matrix_id, k)
+        torch.save(val.cpu(), path)
+
+
+_BasisCache = ChebyBasisCacheManager
+
+
 # ==============================================================================
 # Gram Matrix Cache (XᵀX)
 # ==============================================================================
@@ -210,6 +297,7 @@ class ChebyASPIRELayer(nn.Module):
         self.Xt_torch_csr = None
         self.sparse_device = None
         self.scores_cache = None  # Precomputed scores for all users
+        self.matrix_id = None
 
     @torch.no_grad()
     def _estimate_lambda_max(self, X_csr, Xt_csr) -> float:
@@ -272,7 +360,16 @@ class ChebyASPIRELayer(nn.Module):
         self.X_torch_csr = torch.sparse_coo_tensor(indices, values, X_coo.shape, device=self.sparse_device).coalesce().to_sparse_csr()
         self.Xt_torch_csr = torch.sparse_coo_tensor(torch.stack([indices[1], indices[0]]), values, (X_coo.shape[1], X_coo.shape[0]), device=self.sparse_device).coalesce().to_sparse_csr()
 
-        lambda_max = self._estimate_lambda_max(self.X_torch_csr, self.Xt_torch_csr) if self.lambda_max_estimate == "auto" else float(self.lambda_max_estimate)
+        # --- Cache Logic for Lambda Max (Parameter Independent) ---
+        self.matrix_id = EVDCacheManager._generate_matrix_id(X_sparse)
+        lambda_max = _ChebyCache.get_lambda(dataset_name, self.matrix_id)
+        
+        if lambda_max is None:
+            lambda_max = self._estimate_lambda_max(self.X_torch_csr, self.Xt_torch_csr) if self.lambda_max_estimate == "auto" else float(self.lambda_max_estimate)
+            _ChebyCache.put_lambda(dataset_name, self.matrix_id, lambda_max)
+        elif verbose:
+            print(f"[ChebyASPIRE] Lambda Cache Hit | λ_max={lambda_max:.2f}")
+
         coeffs = self._compute_chebyshev_coeffs(lambda_max, self.degree)
 
         self.register_buffer("cheby_coeffs", torch.from_numpy(coeffs).float().to(dev))
@@ -327,26 +424,54 @@ class ChebyASPIRELayer(nn.Module):
         return W.t().to(X.device)
 
     @torch.no_grad()
-    def precompute(self, X_all_sparse, device=None):
+    def precompute(self, X_all_sparse, dataset_name=None, matrix_id=None, device=None):
         """
         Precompute scores for all users in X_all_sparse.
-        Useful for speeding up evaluation on large datasets.
+        Uses Basis Matrix caching to avoid SpMM if hyperparameters change but dataset is same.
         """
-        print(f"[ChebyASPIRE] Precomputing scores for all {X_all_sparse.shape[0]} users...")
+        print(f"[ChebyASPIRE] Precomputing scores (Dataset: {dataset_name})...")
         t0 = time.time()
         
-        # We need to process in batches if X_all is too large to handle at once in _spmv_forward
-        N = X_all_sparse.shape[0]
-        batch_size = 5000 # Adjustable
-        all_scores = []
+        N_users, N_items = X_all_sparse.shape
+        # Estimate size: degree * users * items * 4 bytes
+        total_size_gb = (self.degree + 1) * N_users * N_items * 4 / (1024**3)
         
-        for i in range(0, N, batch_size):
-            end = min(i + batch_size, N)
-            batch_indices = np.arange(i, end)
-            X_batch_dense = torch.from_numpy(X_all_sparse[batch_indices].toarray()).float().to(device or self.sparse_device)
-            all_scores.append(self.forward(X_batch_dense).cpu())
+        # 1. Try Basis Cache if total size is reasonable (< 20GB) or explicitly enabled
+        if dataset_name and matrix_id and total_size_gb < 20.0 and _BasisCache.exists(dataset_name, matrix_id, self.degree):
+            print(f"[ChebyASPIRE] Basis Cache Hit (Total Size: {total_size_gb:.1f}GB). Loading...")
+            bases = _BasisCache.load(dataset_name, matrix_id, self.degree, device=device or self.sparse_device)
+            self.scores_cache = torch.zeros((N_users, N_items), device="cpu")
+            for k, Z_k in enumerate(bases):
+                self.scores_cache.add_(Z_k.cpu(), alpha=float(self.cheby_coeffs[k]))
+            print(f"[ChebyASPIRE] Basis reconstruction done: {time.time()-t0:.2f}s")
+            return
+
+        # 2. Manual Expansion (Normal path)
+        X_t = torch.from_numpy(X_all_sparse.toarray()).float().t().to(self.sparse_device)
+        T_prev = X_t
+        
+        # --- Basis Caching Inner Logic ---
+        save_basis = dataset_name and matrix_id and total_size_gb < 20.0
+        if save_basis: _BasisCache.save(dataset_name, matrix_id, 0, T_prev)
+        
+        with torch.no_grad():
+            T_curr = (torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_prev)) - self.t_mid * T_prev) / self.t_half
+            if save_basis: _BasisCache.save(dataset_name, matrix_id, 1, T_curr)
             
-        self.scores_cache = torch.cat(all_scores, dim=0)
+            W = float(self.cheby_coeffs[0]) * T_prev + float(self.cheby_coeffs[1]) * T_curr
+            
+            inv_half = 2.0 / self.t_half
+            mid_val = self.t_mid
+            
+            for k in range(2, self.degree + 1):
+                temp = torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_curr))
+                T_next = inv_half * (temp - mid_val * T_curr) - T_prev
+                if save_basis: _BasisCache.save(dataset_name, matrix_id, k, T_next)
+                
+                W.add_(T_next, alpha=float(self.cheby_coeffs[k]))
+                T_prev, T_curr = T_curr, T_next
+                
+        self.scores_cache = W.t().cpu()
         print(f"[ChebyASPIRE] Precomputation done: {time.time()-t0:.2f}s")
 
     @torch.no_grad()

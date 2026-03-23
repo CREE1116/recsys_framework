@@ -83,7 +83,8 @@ class ChebyASPIRE(BaseModel):
         # 3. Precompute Full Scores (Optimization for evaluation speed)
         # Only if item_weights (dense matrix) was not built (i.e., for large datasets)
         if self.precompute_scores and self.lira_layer.item_weights.numel() == 0:
-            self.lira_layer.precompute(X_sparse, device=self.device)
+            self.lira_layer.precompute(X_sparse, dataset_name=dataset_name, 
+                                      matrix_id=self.lira_layer.matrix_id, device=self.device)
         
         if self.visualize:
             self._log(f"Analyzing model (Visualize Heavyweight: {self.visualize})...")
