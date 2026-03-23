@@ -65,14 +65,19 @@ class iALS(BaseModel):
             shape=(self.n_users, self.n_items),
             dtype=np.float32
         )
+        # [중요] implicit 라이브러리는 정렬된 인덱스를 기대하는 경우가 많으며, 
+        # 정렬되지 않은 경우 C++ 레벨에서 Segfault가 발생할 수 있음.
+        X.sum_duplicates()  # 중복 합치기
+        X.sort_indices()    # 인덱스 정렬 (안정성 핵심)
 
         # backend_name = 'CUDA GPU' if self.use_gpu else 'CPU (OpenMP)'
         backend_name = 'CPU (OpenMP)'
         print(f"[iALS] Training forced to use {backend_name} backend as requested.")
         start_time = time.time()
         
-        # 최적화된 백엔드 연산 수행 (show_progress=True로 설정하면 내부적으로 tqdm 바 생성됨)
-        self.engine.fit(X, show_progress=True)
+        # 최적화된 백엔드 연산 수행
+        # Windows 환경에서 HPO 진행 시 tqdm(show_progress)이 스레드 충돌을 일으키는 경우가 있어 꺼둠.
+        self.engine.fit(X, show_progress=False)
         
         print(f"[iALS] total training time: {time.time() - start_time:.4f}s")
 
