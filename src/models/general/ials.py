@@ -28,20 +28,16 @@ class iALS(BaseModel):
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
 
-        self.device = get_device('auto')
+        # self.device = get_device('auto')
+        self.device = torch.device('cpu')
 
         # PyTorch 생태계(추론, 평가 등)와의 완벽한 호환성을 위한 껍데기 Embedding
         self.user_embedding = nn.Embedding(self.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.n_items, self.embedding_dim)
 
-        # Device에 따른 엔진 라우팅 
-        # (MPS는 C++ backend에서 지원하지 않으므로 무조건 CPU로 빠지게 설정)
-        if self.device.type == 'cuda':
-            self.use_gpu = True
-            ALS_Engine = GPU_ALS
-        else:
-            self.use_gpu = False
-            ALS_Engine = CPU_ALS
+        # Device에 따른 엔진 라우팅 (에러 방지를 위해 무조건 CPU 백엔드 사용)
+        self.use_gpu = False
+        ALS_Engine = CPU_ALS
 
         # [핵심 수정] calculate_training_loss=False 로 변경 완료.
         # 이 옵션이 꺼져 있어야 매 이터레이션마다 극심한 연산 오버헤드가 발생하지 않음.
@@ -69,8 +65,9 @@ class iALS(BaseModel):
             dtype=np.float32
         )
 
-        backend_name = 'CUDA GPU' if self.use_gpu else 'CPU (OpenMP)'
-        print(f"[iALS] Training started using {backend_name} backend...")
+        # backend_name = 'CUDA GPU' if self.use_gpu else 'CPU (OpenMP)'
+        backend_name = 'CPU (OpenMP)'
+        print(f"[iALS] Training forced to use {backend_name} backend as requested.")
         start_time = time.time()
         
         # 최적화된 백엔드 연산 수행 (show_progress=True로 설정하면 내부적으로 tqdm 바 생성됨)
