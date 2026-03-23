@@ -1,8 +1,10 @@
 import os
-# [Mac 환경 최적화] 라이브러리 로드 전 OpenMP 스레드 수를 강제 할당하여 
-# 싱글 코어로 도는 현상 방지 (사용 중인 Mac의 성능에 따라 8~10 정도로 조절 가능)
-# os.environ['OPENBLAS_NUM_THREADS'] = '8'
-# os.environ['OMP_NUM_THREADS'] = '8'
+# [Windows/Mac 환경 안정성 최적화]
+# Windows 환경에서 OpenMP 스레드 충돌로 인한 silent crash 방지를 위해 
+# 스레드 수를 4개 정도로 보수적으로 제한합니다. (필요 시 조절 가능)
+os.environ['OPENBLAS_NUM_THREADS'] = '4'
+os.environ['OMP_NUM_THREADS'] = '4'
+os.environ['MKL_NUM_THREADS'] = '4'
 
 import torch
 import torch.nn as nn
@@ -29,14 +31,15 @@ class iALS(BaseModel):
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
 
-        # self.device = get_device('auto')
-        self.device = torch.device('cpu')
-
+        self.device = get_device('auto')
+        
         # PyTorch 생태계(추론, 평가 등)와의 완벽한 호환성을 위한 껍데기 Embedding
         self.user_embedding = nn.Embedding(self.n_users, self.embedding_dim)
         self.item_embedding = nn.Embedding(self.n_items, self.embedding_dim)
-
-        # Device에 따른 엔진 라우팅 (에러 방지를 위해 무조건 CPU 백엔드 사용)
+        
+        # [중요] GPU(CUDA) 사용 시 런타임 오류가 발생하는 환경이 있어 CPU로 강제합니다.
+        # Windows 환경의 OpenMP 안정성을 위해 CPU 백엔드만 사용하도록 설정됨.
+        self.device = torch.device('cpu')
         self.use_gpu = False
         ALS_Engine = CPU_ALS
 
@@ -70,16 +73,21 @@ class iALS(BaseModel):
         X.sum_duplicates()  # 중복 합치기
         X.sort_indices()    # 인덱스 정렬 (안정성 핵심)
 
-        # backend_name = 'CUDA GPU' if self.use_gpu else 'CPU (OpenMP)'
-        backend_name = 'CPU (OpenMP)'
-        print(f"[iALS] Training forced to use {backend_name} backend as requested.")
+        backend_name = 'CUDA GPU' if self.use_gpu else 'CPU (OpenMP)'
+        print(f"[iALS] Training using {backend_name} backend.")
         start_time = time.time()
         
         # 최적화된 백엔드 연산 수행
         # Windows 환경에서 HPO 진행 시 tqdm(show_progress)이 스레드 충돌을 일으키는 경우가 있어 꺼둠.
-        self.engine.fit(X, show_progress=False)
-        
-        print(f"[iALS] total training time: {time.time() - start_time:.4f}s")
+        try:
+            print(f"[iALS] Fitting engine (max_iter={self.max_iter})...")
+            self.engine.fit(X, show_progress=False)
+            print(f"[iALS] total training time: {time.time() - start_time:.4f}s")
+        except Exception as e:
+            print(f"[iALS] Error during fit: {str(e)}")
+            # 만약 뻗어버리는 게 Segfault 라면 여기까지 올 수도 없겠지만, 
+            # 일반적인 에러라면 여기서 잡힐 것임.
+            raise e
 
         # --- 훈련 완료 후 임베딩 동기화 ---
         u_factors = self.engine.user_factors
