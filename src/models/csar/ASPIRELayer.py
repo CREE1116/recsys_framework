@@ -209,21 +209,37 @@ class ChebyASPIRELayer(nn.Module):
         self.X_torch_csr = None
         self.Xt_torch_csr = None
         self.sparse_device = None
+        self.scores_cache = None  # Precomputed scores for all users
 
     @torch.no_grad()
     def _estimate_lambda_max(self, X_csr, Xt_csr) -> float:
-        X_cpu, Xt_cpu = X_csr.to("cpu"), Xt_csr.to("cpu")
-        v = torch.randn(X_cpu.shape[1], 1, device="cpu")
+        """
+        Power iteration to estimate the largest eigenvalue of Gram matrix (X^T X).
+        Use GPU if CUDA is available, otherwise CPU (MPS sparse support is flaky).
+        """
+        device = X_csr.device
+        # Use GPU for CUDA, but fallback to CPU for MPS due to sparse issues
+        calc_device = device if device.type == 'cuda' else torch.device("cpu")
+        
+        X_local = X_csr.to(calc_device)
+        Xt_local = Xt_csr.to(calc_device)
+        
+        v = torch.randn(X_local.shape[1], 1, device=calc_device)
         v /= (v.norm() + 1e-12)
         
         last_lambda = 0.0
+        # 30 iterations is usually enough for spectral radius
         for _ in range(30):
-            v_next = torch.sparse.mm(Xt_cpu, torch.sparse.mm(X_cpu, v))
+            # L @ v = Xt @ (X @ v)
+            v_next = torch.sparse.mm(Xt_local, torch.sparse.mm(X_local, v))
             lambda_est = v_next.norm().item()
             if lambda_est < 1e-12: break
-            v = v_next / lambda_est
-            if abs(lambda_est - last_lambda) / (lambda_est + 1e-12) < 1e-4: break
+            v = v_next / (lambda_est + 1e-12)
+            
+            if abs(lambda_est - last_lambda) / (lambda_est + 1e-12) < 1e-4: 
+                break
             last_lambda = lambda_est
+            
         return last_lambda * 1.01 
 
     def _compute_chebyshev_coeffs(self, lam_max, K) -> np.ndarray:
@@ -257,8 +273,8 @@ class ChebyASPIRELayer(nn.Module):
         self.Xt_torch_csr = torch.sparse_coo_tensor(torch.stack([indices[1], indices[0]]), values, (X_coo.shape[1], X_coo.shape[0]), device=self.sparse_device).coalesce().to_sparse_csr()
 
         lambda_max = self._estimate_lambda_max(self.X_torch_csr, self.Xt_torch_csr) if self.lambda_max_estimate == "auto" else float(self.lambda_max_estimate)
-        
         coeffs = self._compute_chebyshev_coeffs(lambda_max, self.degree)
+
         self.register_buffer("cheby_coeffs", torch.from_numpy(coeffs).float().to(dev))
         self.register_buffer("t_mid", torch.tensor(lambda_max / 2.0, device=dev))
         self.register_buffer("t_half", torch.tensor(lambda_max / 2.0, device=dev))
@@ -270,9 +286,10 @@ class ChebyASPIRELayer(nn.Module):
             if dataset_name: _GramCache.put(dataset_name, L)
         
         self.item_weights = self._dense_chebyshev(L, coeffs, n, dev) if L is not None else torch.empty(0)
+        self.scores_cache = None # Reset cache on rebuild
 
         if verbose:
-            print(f"[ChebyASPIRELayer] Built | γ={self.gamma:.2f} α={self.alpha:.4f} (abs={self.alpha_abs:.2f})")
+            print(f"[ChebyASPIRELayer] Built | γ={self.gamma:.2f} α={self.alpha:.2f} (abs={self.alpha_abs:.2f})")
 
     def _dense_chebyshev(self, L, coeffs, n, dev) -> torch.Tensor:
         T_prev = torch.eye(n, device=dev)
@@ -291,16 +308,46 @@ class ChebyASPIRELayer(nn.Module):
         return self._spmv_forward(X_batch)
 
     def _spmv_forward(self, X):
+        # Optimization: In-place addition and pre-computed constants
         X_t = X.t().to(self.sparse_device)
         T_prev = X_t
         with torch.no_grad():
             T_curr = (torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_prev)) - self.t_mid * T_prev) / self.t_half
             W = float(self.cheby_coeffs[0]) * T_prev + float(self.cheby_coeffs[1]) * T_curr
+            
+            inv_half = 2.0 / self.t_half
+            mid_val = self.t_mid
+            
             for k in range(2, self.degree + 1):
-                T_next = (2.0 * (torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_curr)) - self.t_mid * T_curr) / self.t_half) - T_prev
-                W += float(self.cheby_coeffs[k]) * T_next
+                # T_next = (2.0 * (L @ T_curr - mid * T_curr) / half) - T_prev
+                temp = torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_curr))
+                T_next = inv_half * (temp - mid_val * T_curr) - T_prev
+                W.add_(T_next, alpha=float(self.cheby_coeffs[k]))
                 T_prev, T_curr = T_curr, T_next
         return W.t().to(X.device)
+
+    @torch.no_grad()
+    def precompute(self, X_all_sparse, device=None):
+        """
+        Precompute scores for all users in X_all_sparse.
+        Useful for speeding up evaluation on large datasets.
+        """
+        print(f"[ChebyASPIRE] Precomputing scores for all {X_all_sparse.shape[0]} users...")
+        t0 = time.time()
+        
+        # We need to process in batches if X_all is too large to handle at once in _spmv_forward
+        N = X_all_sparse.shape[0]
+        batch_size = 5000 # Adjustable
+        all_scores = []
+        
+        for i in range(0, N, batch_size):
+            end = min(i + batch_size, N)
+            batch_indices = np.arange(i, end)
+            X_batch_dense = torch.from_numpy(X_all_sparse[batch_indices].toarray()).float().to(device or self.sparse_device)
+            all_scores.append(self.forward(X_batch_dense).cpu())
+            
+        self.scores_cache = torch.cat(all_scores, dim=0)
+        print(f"[ChebyASPIRE] Precomputation done: {time.time()-t0:.2f}s")
 
     @torch.no_grad()
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):

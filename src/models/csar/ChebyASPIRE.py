@@ -79,6 +79,11 @@ class ChebyASPIRE(BaseModel):
         self.lira_layer.build(X_sparse, dataset_name=dataset_name)
         self.lira_layer.to(self.device)
         
+        # 3. Precompute Full Scores (Optimization for evaluation speed)
+        # Only if item_weights (dense matrix) was not built (i.e., for large datasets)
+        if self.lira_layer.item_weights.numel() == 0:
+            self.lira_layer.precompute(X_sparse, device=self.device)
+        
         if self.visualize:
             self._log(f"Analyzing model (Visualize Heavyweight: {self.visualize})...")
             try:
@@ -105,10 +110,14 @@ class ChebyASPIRE(BaseModel):
         return self.predict_full(users, items)
 
     def predict_full(self, users, items=None):
-        # Use the already built CSR matrix
-        X_csr = self.train_matrix_csr 
-        user_history_dense = torch.from_numpy(X_csr[users.cpu().numpy()].toarray()).float().to(self.device)
-        scores = self.lira_layer(user_history_dense)
+        # 1. Use precomputed cache if available
+        if self.lira_layer.scores_cache is not None:
+            scores = self.lira_layer.scores_cache[users.cpu().numpy()].to(self.device)
+        else:
+            # Fallback to iterative forward
+            X_csr = self.train_matrix_csr 
+            user_history_dense = torch.from_numpy(X_csr[users.cpu().numpy()].toarray()).float().to(self.device)
+            scores = self.lira_layer(user_history_dense)
         
         if items is not None:
              return scores.gather(1, items)

@@ -1,31 +1,66 @@
-# Python
+# --- Python 관련 ---
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
 *.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- 가상환경 ---
 .venv/
+venv/
+env/
+ENV/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Framework outputs
-trained_model/
+# --- 데이터 및 모델 (용량이 크거나 로컬 전용) ---
+data/
 data_cache/
+trained_model/
 output/
-analysis_results/
+analyze/
 analysis/
 
-# Data (raw datasets - not tracked)
-data/
+# --- 실험 결과 (이미지 등) ---
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+# 특정 실험 폴더 내의 출력물
+aspire_experiments/output/
 
-# Dataset configs (contain local paths)
-configs/dataset/
+# --- IDE 및 OS 설정 ---
+.vscode/
+.idea/
+.DS_Store
+.AppleDouble
+.LSOverride
 
-# Logs & temp
+# --- 툴 관련 ---
+.claude/
+.gemini/
+.agents/
+_agents/
+
+# --- 로그 및 임시 파일 ---
 *.log
-/tmp/
+*.tmp
+.ipynb_checkpoints
+.pytest_cache/
+.mypy_cache/
