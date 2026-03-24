@@ -8,12 +8,10 @@ from ...utils.gpu_accel import SVDCacheManager
 class GF_CF(BaseModel):
     """
     GF-CF: Graph Filter based Collaborative Filtering (CIKM 2021)
-    "How Powerful is Graph Convolution for Recommendation?"
+    Exact Implementation with materialized weight matrix.
     
-    Refined Implementation:
-    1. Build Generalized Normalized Bipartite Graph Matrix.
-    2. Perform SVD via SVDCacheManager (supports MPS & Caching).
-    3. Apply Graph Spectral Filter with Alpha scaling.
+    W = R_tilde^T @ R_tilde + alpha * (V @ V^T)
+    where R_tilde is the symmetrically normalized adjacency matrix.
     """
     def __init__(self, config, data_loader):
         super(GF_CF, self).__init__(config, data_loader)
@@ -21,15 +19,7 @@ class GF_CF(BaseModel):
         # Hyperparameters
         k = self.config['model'].get('k', 256)
         self.k = k[0] if isinstance(k, list) else k
-        self.filter_type = self.config['model'].get('filter_type', 'ideal')
-        
-        # alpha: scaling singular values (Sigma^alpha)
-        # alpha=1.0 is standard linear filtering. alpha=0.0 is ideal low-pass.
-        self.alpha = self.config['model'].get('alpha', 1.0)
-        
-        # norm_weight: control normalization strength (D^-w)
-        # w=0.5 is standard symmetric normalization. w=0.0 is PureSVD (no norm).
-        self.norm_weight = self.config['model'].get('norm_weight', 0.5)
+        self.alpha = self.config['model'].get('alpha', 0.5)
         
         self.n_users = self.data_loader.n_users
         self.n_items = self.data_loader.n_items
@@ -37,43 +27,33 @@ class GF_CF(BaseModel):
         # SVD Manager initialization
         self.svd_manager = SVDCacheManager(device=self.device.type)
         
-        self.register_buffer('user_factors', torch.empty(0))
-        self.register_buffer('item_factors', torch.empty(0))
-        self.register_buffer('sigma', torch.empty(0))
-        self.register_buffer('user_factors_scaled', torch.empty(0))
+        self.register_buffer('W', torch.empty(0))
+        self.train_matrix_csr = None
         
-        self._log(f"Initialized (k={self.k}, filter={self.filter_type}, α={self.alpha}, w={self.norm_weight})")
+        self._log(f"Initialized (k={self.k}, alpha={self.alpha})")
 
         # Cache manager 등록
         self.register_cache_manager('svd', self.svd_manager)
 
-    def _normalize_matrix(self, R, weight):
-        """Generalized Symmetric Normalization: D_u^-w * R * D_i^-w"""
-        if weight == 0:
-            return R
-            
+    def _normalize_matrix(self, R):
+        """Symmetric Normalization: D_u^-0.5 * R * D_i^-0.5"""
         user_sums = np.array(R.sum(axis=1)).flatten()
         item_sums = np.array(R.sum(axis=0)).flatten()
         
-        # 안전한 역수 거듭제곱 연산
-        user_inv_w = np.zeros_like(user_sums)
+        user_inv_sqrt = np.zeros_like(user_sums)
         u_mask = user_sums > 0
-        user_inv_w[u_mask] = np.power(user_sums[u_mask], -weight)
+        user_inv_sqrt[u_mask] = np.power(user_sums[u_mask], -0.5)
         
-        item_inv_w = np.zeros_like(item_sums)
+        item_inv_sqrt = np.zeros_like(item_sums)
         i_mask = item_sums > 0
-        item_inv_w[i_mask] = np.power(item_sums[i_mask], -weight)
+        item_inv_sqrt[i_mask] = np.power(item_sums[i_mask], -0.5)
         
-        # D_u^-w @ R
-        R_norm = sp.diags(user_inv_w) @ R
-        # R_norm @ D_i^-w
-        R_norm = R_norm @ sp.diags(item_inv_w)
-        
+        R_norm = sp.diags(user_inv_sqrt) @ R @ sp.diags(item_inv_sqrt)
         return R_norm
 
     def fit(self, data_loader):
-        """SVD on normalized interaction matrix + apply graph filter."""
-        self._log(f"Building interaction matrix (w={self.norm_weight})...")
+        """Build exact weight matrix W."""
+        self._log("Building interaction matrix...")
         rows = data_loader.train_df['user_id'].values
         cols = data_loader.train_df['item_id'].values
         data = np.ones(len(rows))
@@ -83,50 +63,59 @@ class GF_CF(BaseModel):
             shape=(self.n_users, self.n_items),
             dtype=np.float32
         )
+        self.train_matrix_csr = R
         
-        # Apply Generalized Normalization
-        R_norm = self._normalize_matrix(R, self.norm_weight)
+        # 1. Normalize
+        self._log("Normalizing matrix (Symmetric)...")
+        R_tilde = self._normalize_matrix(R)
         
-        # SVD Rank 제한 설정 (행렬 차원을 넘을 수 없음)
-        min_dim = min(R_norm.shape)
-        k = min(self.k, min_dim - 1)
+        # 2. SVD via SVDCacheManager
+        dataset_name = self.config.get('dataset_name', 'unknown')
+        self._log(f"Performing SVD (k={self.k})...")
+        u, s, v, _ = self.svd_manager.get_svd(R_tilde, k=self.k, dataset_name=dataset_name)
         
-        # Perform SVD using SVDManager
-        # SVDCacheManager가 k 기반 트렁케이션을 지원하므로 dataset_name에 k를 포함하지 않음.
-        # norm_weight에 따른 행렬 변화는 matrix_hash가 자동으로 처리함.
-        dataset_name = self.config.get('dataset_name', 'unknown_gfcf')
+        # Ensure exact K is used (safety truncation)
+        V = v[:, :self.k].to(self.device).float() # (n_items, k)
         
-        u, s, v, _ = self.svd_manager.get_svd(R_norm, k=k, dataset_name=dataset_name)
+        # 3. Linear term P = R_tilde^T @ R_tilde
+        self._log("Computing Linear term (Gram matrix)...")
+        # Produced matrix is sparse (n_items x n_items)
+        P_sparse = R_tilde.T @ R_tilde
         
-        # 안전한 버퍼 변수 덮어쓰기
-        self.user_factors = u.to(self.device).float()
-        self.item_factors = v.to(self.device).float()
-        self.sigma = s.to(self.device).float()
+        # 4. Low-pass term L = V @ V^T
+        self._log("Computing Low-pass term (V @ V^T)...")
+        L_dense = torch.mm(V, V.t()) # (n_items, n_items)
         
-        # Apply alpha scaling to singular values
-        # Score = U * Sig^alpha * V^T
-        # For GF-CF (CIKM'21), the ideal linear filter is alpha=1.0 on a normalized matrix.
-        scaled_sigma = torch.pow(self.sigma, self.alpha)
+        # 5. Final W = P + alpha * L
+        self._log("Assembling final weight matrix W...")
+        # Convert sparse P to dense on device
+        P_dense = torch.from_numpy(P_sparse.toarray()).float().to(self.device)
+        self.W = P_dense + self.alpha * L_dense
         
-        # Final User Factors = U * Sigma^alpha
-        self.user_factors_scaled = self.user_factors * scaled_sigma.unsqueeze(0)
-        
-        self._log(f"Fitted. user_factors: {self.user_factors_scaled.shape}, item_factors: {self.item_factors.shape}")
+        del P_sparse, P_dense, L_dense, R_tilde
+        self._log(f"Fitted. W shape: {self.W.shape}")
 
-    def forward(self, users):
-        """Predict scores for given users over all items."""
-        # Score = User_scaled @ Item_factors^T
-        batch_users_scaled = self.user_factors_scaled[users]  # (batch, k)
-        return torch.matmul(batch_users_scaled, self.item_factors.T)  # (batch, n_items)
+    def forward(self, user_ids, item_ids=None):
+        """Predict scores using W."""
+        if isinstance(user_ids, torch.Tensor):
+            u_ids_np = user_ids.cpu().numpy()
+        else:
+            u_ids_np = user_ids
 
-    def predict_for_pairs(self, user_ids, item_ids):
-        """Predict for specific user-item pairs."""
-        u_embeds = self.user_factors_scaled[user_ids]
-        i_embeds = self.item_factors[item_ids]
-        return torch.sum(u_embeds * i_embeds, dim=1)
+        X_batch_sparse = self.train_matrix_csr[u_ids_np]
+        X_batch = torch.from_numpy(X_batch_sparse.toarray()).float().to(self.device)
+        
+        scores = torch.matmul(X_batch, self.W)
+        
+        if item_ids is not None:
+            # Pairwise prediction
+            return scores.gather(1, item_ids.unsqueeze(1)).squeeze(1)
+            
+        return scores
 
     def get_final_item_embeddings(self):
-        return self.item_factors
+        # W itself can be seen as item similarity/embeddings
+        return self.W
 
     def calc_loss(self, batch_data):
         return (torch.tensor(0.0, device=self.device),), None

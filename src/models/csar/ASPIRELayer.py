@@ -235,9 +235,10 @@ class ASPIRELayer(nn.Module):
         
         # 1. SVD
         manager = EVDCacheManager(device=dev)
-        _, s, v, _ = manager.get_evd(X_sparse, dataset_name=dataset_name)
+        # [Optimization] Pass k=self.k to enable early truncation in cache manager
+        _, s, v, _ = manager.get_evd(X_sparse, k=self.k, dataset_name=dataset_name)
 
-        # 2. Energy-based Truncation
+        # 2. Energy-based or K-based Truncation
         if self.k is None and self.target_energy is not None:
             cumsum_ev = torch.cumsum(s**2, dim=0)
             k_energy = torch.where(cumsum_ev / (cumsum_ev[-1] + 1e-12) >= self.target_energy)[0]
