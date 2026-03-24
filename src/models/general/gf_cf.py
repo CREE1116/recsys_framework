@@ -23,7 +23,7 @@ class GF_CF(BaseModel):
         k = self.config['model'].get('k', 256)
         self.k = k[0] if isinstance(k, list) else k
         self.alpha = self.config['model'].get('alpha', 0.3)
-        self.materialize_threshold = self.config['model'].get('materialize_threshold', 15000)
+        self.materialize_threshold = self.config['model'].get('materialize_threshold', 20000)
 
         self.n_users = self.data_loader.n_users
         self.n_items = self.data_loader.n_items
@@ -116,9 +116,12 @@ class GF_CF(BaseModel):
 
         # --- Linear term U_2 ---
         if self.norm_adj_torch is not None:
-            # CUDA Sparse: (X @ R_tilde_t) @ R_tilde
-            tmp = torch.sparse.mm(self.norm_adj_t_torch, X_batch_dense.t()).t()
-            U_2 = torch.sparse.mm(self.norm_adj_torch.t(), tmp.t()).t()
+            # step1: X @ R_tilde^T = (B, n_items) @ (n_items, n_users)
+            # torch.sparse.mm(sparse, dense_t).t() -> (n_users, n_items) @ (n_items, B) -> (n_users, B).t() -> (B, n_users)
+            tmp = torch.sparse.mm(self.norm_adj_torch, X_batch_dense.t()).t()
+            # step2: tmp @ R_tilde = (B, n_users) @ (n_users, n_items)
+            # torch.sparse.mm(sparse, dense_t).t() -> (n_items, n_users) @ (n_users, B) -> (n_items, B).t() -> (B, n_items)
+            U_2 = torch.sparse.mm(self.norm_adj_t_torch, tmp.t()).t()
         else:
             # MPS/CPU Scipy Fallback
             tmp = X_batch_sparse @ self.norm_adj_t_cpu
@@ -134,26 +137,21 @@ class GF_CF(BaseModel):
         return scores
 
     def predict_for_pairs(self, user_ids, item_ids):
-        # 쌍 예측은 항상 효율적으로 수행
-        if self.W is not None:
-            u_ids_np = user_ids.cpu().numpy()
-            i_ids_np = item_ids.cpu().numpy()
-            X_batch = self.train_matrix_csr[u_ids_np]
-            # (B, N) @ (N, B) 가 아닌 pointwise dot product
-            # 하지만 W가 있으므로 그냥 slicing이 더 빠를 수도 있음
+        # 쌍 예측 시 BxN 행렬 생성을 방지하여 메모리/속도 최적화
+        if self.W is not None or len(user_ids) > 5000:
+            # 배치 크기가 크거나 W가 있으면 forward가 더 유리할 수 있음
             return self.forward(user_ids, item_ids)
 
-        # No W case: Compute scores directly per pair to avoid B x N
-        X_batch_sparse = self.train_matrix_csr[user_ids.cpu().numpy()]
+        u_ids_np = user_ids.cpu().numpy()
+        X_batch_sparse = self.train_matrix_csr[u_ids_np]
+        X_batch_dense = torch.from_numpy(X_batch_sparse.toarray()).to(self.device)
         
         # Low-pass part: O(B * K)
-        proj = (torch.from_numpy(X_batch_sparse.toarray()).to(self.device) * self.d_mat_i.unsqueeze(0)) @ self.V # (B, K)
+        proj = (X_batch_dense * self.d_mat_i.unsqueeze(0)) @ self.V # (B, K)
         V_items = self.V[item_ids] # (B, K)
         scores_lp = (proj * V_items).sum(dim=1) * self.d_mat_i_inv[item_ids]
 
-        # Linear part: (X @ R_tilde^T @ R_tilde)_ui
-        # This is (r_u @ P)_i. Since P is not materialized, we do (r_u @ R_tilde_t) @ R_tilde_i
-        # Or just compute via Scipy if it's more reliable for single items
+        # Linear part: O(B * nnz_row)
         tmp = X_batch_sparse @ self.norm_adj_t_cpu
         scores_lin = []
         for b in range(len(u_ids_np)):
