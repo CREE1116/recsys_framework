@@ -89,8 +89,10 @@ class LightGCN(BaseModel):
 
         for _ in range(self.n_layers):
             if self._sparse_prop:
+                # Force float32 for sparse mm as CUDA doesn't support float16 for this operation
                 all_embeddings = torch.sparse.mm(
-                    self.norm_adj_matrix, all_embeddings.to(self._adj_device)
+                    self.norm_adj_matrix.float(), 
+                    all_embeddings.to(self._adj_device).float()
                 ).to(self.device)
             else:
                 all_embeddings = torch.matmul(self.norm_adj_matrix, all_embeddings)
