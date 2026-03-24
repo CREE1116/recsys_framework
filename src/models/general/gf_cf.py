@@ -113,6 +113,19 @@ class GF_CF(BaseModel):
             
         return scores
 
+    def predict_for_pairs(self, user_ids, item_ids):
+        """Predict for specific user-item pairs."""
+        if isinstance(user_ids, torch.Tensor):
+            u_ids_np = user_ids.cpu().numpy()
+        else:
+            u_ids_np = user_ids
+
+        X_batch_sparse = self.train_matrix_csr[u_ids_np]
+        X_batch = torch.from_numpy(X_batch_sparse.toarray()).float().to(self.device)
+        
+        scores_full = torch.matmul(X_batch, self.W)
+        return scores_full.gather(1, item_ids.unsqueeze(1)).squeeze(1)
+
     def get_final_item_embeddings(self):
         # W itself can be seen as item similarity/embeddings
         return self.W
