@@ -56,24 +56,20 @@ class IPS_LAE(BaseModel):
         self.train_matrix_csr = X
         dataset_name = self.config.get('dataset_name', 'unknown')
 
-        # 1. Get G = X^T X on device (with smart caching)
+        # 1. Get G = X^T X on device (No caching)
+        self._log(f"Computing Gram matrix G = X^T X on {self.device}...")
         if self.device.type in ('cuda', 'mps'):
-            G = GramMatrixCacheManager.get(X, dataset_name, device=self.device)
-            if G is None:
-                self._log(f"Computing Gram matrix G = X^T X on {self.device}...")
-                # Optimized: convert to sparse tensor first to save memory
-                n = X.shape[1]
-                I_n = torch.eye(n, device=self.device)
-                X_torch = torch.sparse_csr_tensor(
-                    torch.from_numpy(X.indptr).long(),
-                    torch.from_numpy(X.indices).long(),
-                    torch.from_numpy(X.data).float(),
-                    size=X.shape,
-                    device=self.device
-                )
-                G = torch.sparse.mm(X_torch.transpose(0, 1), torch.sparse.mm(X_torch, I_n))
-                GramMatrixCacheManager.put(X, G, dataset_name)
-                del X_torch, I_n
+            # Optimized: avoid identity matrix trick
+            n = X.shape[1]
+            X_torch_csr = torch.sparse_csr_tensor(
+                torch.from_numpy(X.indptr).long(),
+                torch.from_numpy(X.indices).long(),
+                torch.from_numpy(X.data).float(),
+                size=X.shape,
+                device=self.device
+            )
+            G = torch.sparse.mm(X_torch_csr.transpose(0, 1), X_torch_csr.to_dense())
+            del X_torch_csr
         else:
             G = (X.T @ X).toarray().astype(np.float32)
             G = torch.from_numpy(G).to(self.device)

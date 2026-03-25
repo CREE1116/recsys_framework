@@ -338,19 +338,15 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer("t_half", torch.tensor(lambda_max / 2.0, device=dev))
 
         n = X_sparse.shape[1]
-        L = _GramCache.get(X_sparse, dataset_name, device=dev)
+        L = None
         
         # ML-20M (18k items) fits easily in 16GB VRAM as a dense N x N matrix (1.3GB).
         # We increase threshold to 25000 (~2.5GB).
-        if L is None and n <= 25000:
+        if n <= 25000:
             try:
                 print(f"[ChebyASPIRE] Computing dense Gram matrix G = X^T X (Items={n})...")
-                # Optimized: convert to sparse tensor first to save memory
-                I_n = torch.eye(n, device=dev)
-                # G = X^T (X I)
-                L = torch.sparse.mm(self.Xt_torch_csr.to(dev), torch.sparse.mm(self.X_torch_csr.to(dev), I_n))
-                del I_n
-                if dataset_name: _GramCache.put(X_sparse, L, dataset_name)
+                # Optimized: avoid identity matrix trick
+                L = torch.sparse.mm(self.Xt_torch_csr.to(dev), self.X_torch_csr.to(dev).to_dense())
             except Exception as e:
                 print(f"[ChebyASPIRE] Dense Gram build failed: {e}")
                 L = None
