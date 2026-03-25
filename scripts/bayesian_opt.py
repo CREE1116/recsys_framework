@@ -77,7 +77,7 @@ class BayesianOptimizer:
         for param in self.params_list:
             if param['type'] == 'int_min_dim':
                 # 하드 캡: SVD/임베딩 차원은 너무 높으면 계산 비용 급증
-                MAX_DIM_CAP = 4096
+                MAX_DIM_CAP = 12288
                 effective_max = min(max_dim, MAX_DIM_CAP)
                 
                 if 'range' not in param:
