@@ -166,19 +166,21 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
     EIGEN_THRESHOLD = 15000
     dev = get_device(device)
 
-    # 1. Eigen Path (Bypassed caching)
-    # cache = _GramEigenCache.get(X_sparse, dataset_name, device=dev)
-    # if cache is not None:
-    #     V, eigvals = cache
-    #     t0 = time.time()
-    #     inv_eig = 1.0 / (eigvals + reg_lambda)
-    #     if rhs is None:
-    #         P = (V * inv_eig.unsqueeze(0)) @ V.t()
-    #     else:
-    #         rhs_t = torch.from_numpy(rhs).float().to(dev) if isinstance(rhs, np.ndarray) else rhs.to(dev)
-    #         P = (V * inv_eig.unsqueeze(0)) @ (V.t() @ rhs_t)
-    #     print(f"[gpu_accel] Eigen solve [Tensor] Cache Hit on {dev}: {time.time()-t0:.2f}s")
-    #     return P if return_tensor else P.cpu().numpy()
+    # 1. Eigen Path (Smart Caching)
+    # Eigen solve는 λ가 바뀌어도 재계산이 필요 없으므로 효율적입니다.
+    if M <= EIGEN_THRESHOLD:
+        cache = _GramEigenCache.get(X_sparse, dataset_name, device=dev)
+        if cache is not None:
+            V, eigvals = cache
+            t0 = time.time()
+            inv_eig = 1.0 / (eigvals + reg_lambda)
+            if rhs is None:
+                P = (V * inv_eig.unsqueeze(0)) @ V.t()
+            else:
+                rhs_t = torch.from_numpy(rhs).float().to(dev) if isinstance(rhs, np.ndarray) else rhs.to(dev)
+                P = (V * inv_eig.unsqueeze(0)) @ (V.t() @ rhs_t)
+            print(f"[gpu_accel] Eigen solve [Tensor] Cache Hit on {dev}: {time.time()-t0:.2f}s")
+            return P if return_tensor else P.cpu().numpy()
 
     # 2. Eigen Path
     if M <= EIGEN_THRESHOLD:
@@ -197,7 +199,7 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
 
                 eigvals_t, V_t = torch.linalg.eigh(G_t)
                 del G_t
-                # _GramEigenCache.put(X_sparse, V_t, eigvals_t, dataset_name)
+                _GramEigenCache.put(X_sparse, V_t, eigvals_t, dataset_name)
 
                 print(f"[gpu_accel] {dev.type.upper()} torch.linalg.eigh done: {time.time()-t0:.2f}s")
                 V, eigvals = V_t, eigvals_t
@@ -207,14 +209,14 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
                 from scipy.linalg import eigh
                 eigvals_np, V_np = eigh(G)
                 V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-                # _GramEigenCache.put(X_sparse, V, eigvals, dataset_name)
+                _GramEigenCache.put(X_sparse, V, eigvals, dataset_name)
                 del G
         else:
             G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
             from scipy.linalg import eigh
             eigvals_np, V_np = eigh(G)
             V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-            # _GramEigenCache.put(X_sparse, V, eigvals, dataset_name)
+            _GramEigenCache.put(X_sparse, V, eigvals, dataset_name)
             del G
 
         return gpu_gram_solve(X_sparse, reg_lambda, rhs, device, dataset_name, return_tensor)
@@ -224,20 +226,29 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
     # λ가 바뀌어도 X^T X 재계산을 생략하고, G_cached + λI 후 Cholesky만 수행.
     if dev.type in ('cuda', 'mps'):
         try:
-            # G_t = _GramMatrixCache.get(X_sparse, dataset_name, device=dev)
-            G_t = None # Bypassed caching
+            G_t = _GramMatrixCache.get(X_sparse, dataset_name, device=dev)
             if G_t is None:
                 print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on {dev.type}...")
                 t0 = time.time()
                 if isinstance(X_sparse, csr_matrix):
-                    X_torch_dense = torch.from_numpy(X_sparse.toarray()).float().to(dev)
-                    G_t = torch.mm(X_torch_dense.t(), X_torch_dense)
-                    del X_torch_dense
+                    # Sparse-Dense MM to avoid dense intermediate X
+                    # G = X^T (X I)
+                    I_n = torch.eye(M, device=dev)
+                    X_torch = torch.sparse_csr_tensor(
+                        torch.from_numpy(X_sparse.indptr).long(),
+                        torch.from_numpy(X_sparse.indices).long(),
+                        torch.from_numpy(X_sparse.data).float(),
+                        size=X_sparse.shape,
+                        device=dev
+                    )
+                    G_t = torch.sparse.mm(X_torch.transpose(0, 1), torch.sparse.mm(X_torch, I_n))
+                    del I_n, X_torch
                 else:
                     X_t = torch.from_numpy(X_sparse).float().to(dev) if isinstance(X_sparse, np.ndarray) else X_sparse.to(dev)
                     G_t = torch.mm(X_t.t(), X_t)
-                # _GramMatrixCache.put(X_sparse, G_t, dataset_name)
-                print(f"[gpu_accel] Gram X^T X computed ({time.time()-t0:.2f}s)")
+                
+                _GramMatrixCache.put(X_sparse, G_t, dataset_name)
+                print(f"[gpu_accel] Gram X^T X cached ({time.time()-t0:.2f}s)")
             else:
                 print(f"[gpu_accel] Gram ({M}x{M}) X^T X cache hit, Cholesky with λ={reg_lambda}")
 
@@ -251,15 +262,14 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
         except Exception as e:
             print(f"[gpu_accel] {dev.type.upper()} Gram+Cholesky prep failed ({e}), fallback to CPU...")
 
-    # Fallback / CPU (Bypassed caching)
-    # G_np = _GramMatrixCache.get_numpy(X_sparse, dataset_name)
-    G_np = None 
+    # Fallback / CPU
+    G_np = _GramMatrixCache.get_numpy(X_sparse, dataset_name)
     if G_np is None:
         print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on CPU...")
         t0 = time.time()
         G_np = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
-        # _GramMatrixCache.put_numpy(X_sparse, G_np, dataset_name)
-        print(f"[gpu_accel] Gram X^T X computed ({time.time()-t0:.2f}s)")
+        _GramMatrixCache.put_numpy(X_sparse, G_np, dataset_name)
+        print(f"[gpu_accel] Gram X^T X cached ({time.time()-t0:.2f}s)")
     else:
         print(f"[gpu_accel] Gram ({M}x{M}) X^T X cache hit (CPU), Cholesky with λ={reg_lambda}")
 

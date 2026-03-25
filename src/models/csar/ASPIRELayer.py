@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager
+from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager, GramMatrixCacheManager
 from src.models.csar.aspire_visualizer import ASPIREVisualizer
 from src.utils.cache_manager import GlobalCacheManager
 
@@ -99,46 +99,6 @@ class ChebyBasisCacheManager(GlobalCacheManager):
 
 _BasisCache = ChebyBasisCacheManager
 
-
-# ==============================================================================
-# Gram Matrix Cache (XᵀX)
-# ==============================================================================
-
-class GramMatrixCacheManager(GlobalCacheManager):
-    _mem_cache: dict = {}
-    _cache_dir: str  = "data_cache"
-
-    @classmethod
-    def _get_path(cls, dataset_name):
-        if not dataset_name: return None
-        os.makedirs(cls._cache_dir, exist_ok=True)
-        return os.path.join(cls._cache_dir, f"gram_{dataset_name}.pt")
-
-    @classmethod
-    def get(cls, dataset_name, device="cpu"):
-        if not dataset_name: return None
-        if dataset_name in cls._mem_cache:
-            return cls._mem_cache[dataset_name].to(device)
-        path = cls._get_path(dataset_name)
-        if path and os.path.exists(path):
-            try:
-                val = torch.load(path, map_location=device, weights_only=True)
-                cls._mem_cache[dataset_name] = val.cpu()
-                return val
-            except Exception:
-                return None
-        return None
-
-    @classmethod
-    def put(cls, dataset_name, val: torch.Tensor):
-        if not dataset_name: return
-        cls._mem_cache[dataset_name] = val.cpu()
-        path = cls._get_path(dataset_name)
-        if path:
-            try:
-                torch.save(val.cpu(), path)
-            except Exception as e:
-                print(f"[GramCache] save failed: {e}")
 
 _GramCache = GramMatrixCacheManager
 
@@ -378,19 +338,19 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer("t_half", torch.tensor(lambda_max / 2.0, device=dev))
 
         n = X_sparse.shape[1]
-        L = None
+        L = _GramCache.get(X_sparse, dataset_name, device=dev)
         
         # ML-20M (18k items) fits easily in 16GB VRAM as a dense N x N matrix (1.3GB).
         # We increase threshold to 25000 (~2.5GB).
-        # [MEMORY FIX] Bypassed Gram caching to prevent OOM on larger datasets.
-        if n <= 25000:
+        if L is None and n <= 25000:
             try:
                 print(f"[ChebyASPIRE] Computing dense Gram matrix G = X^T X (Items={n})...")
-                # Use sparse-dense MM to build G = X^T X instead of to_dense().t() @ to_dense()
+                # Optimized: convert to sparse tensor first to save memory
                 I_n = torch.eye(n, device=dev)
                 # G = X^T (X I)
                 L = torch.sparse.mm(self.Xt_torch_csr.to(dev), torch.sparse.mm(self.X_torch_csr.to(dev), I_n))
                 del I_n
+                if dataset_name: _GramCache.put(X_sparse, L, dataset_name)
             except Exception as e:
                 print(f"[ChebyASPIRE] Dense Gram build failed: {e}")
                 L = None
