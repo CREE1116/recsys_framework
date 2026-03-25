@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from src.models.base_model import BaseModel
-from src.utils.gpu_accel import EVDCacheManager
+from src.utils.gpu_accel import EVDCacheManager, SVDCacheManager
 from scipy.sparse import csr_matrix
 
 class AspireFilter_Test:
@@ -51,23 +51,23 @@ class ASPIRELayer_Test(nn.Module):
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None, device=None):
         dev = device if device is not None else torch.device("cpu")
-        manager = EVDCacheManager(device=dev)
-        _, s, v, _ = manager.get_evd(X_sparse, dataset_name=dataset_name)
+        manager = SVDCacheManager(device=dev)
+        # --- Optimization: Pass k to manager to enable shared SVD cache ---
+        _, s, v, _ = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
 
-        if self.k is None and self.target_energy is not None:
-            cumsum_ev = torch.cumsum(s, dim=0)
-            k_energy = torch.where(cumsum_ev / (cumsum_ev[-1] + 1e-12) >= self.target_energy)[0]
-            if len(k_energy) > 0:
-                self.k = int(k_energy[0]) + 1
-                s, v = s[:self.k], v[:, :self.k]
+        # --- Truncation: Always use k (Requested: cap at 10000, must be <= min_dim) ---
+        if self.k is None:
+            self.k = min(10000, len(s))
+            print(f"  [ASPIRE] No k provided. Defaulting to k={self.k}")
+        else:
+            self.k = min(int(self.k), len(s), 10000)
         
-        self.k = len(s)
-        # Normalize singular values so that s_max = 1.0 for consistent lambda scale
-        s_norm = s / (s.max() + 1e-10)
-        self.register_buffer("singular_values", s_norm.to(dev))
-        self.register_buffer("V_raw", v.to(dev))
+        # Use raw singular values (DO NOT NORMALIZE to preserved top signal power)
+        self.register_buffer("singular_values", s[:self.k].to(dev))
+        self.register_buffer("V_raw", v[:, :self.k].to(dev))
 
-        # Use is_gram=False to match core framework's ASPIRELayer logic (s^gamma where s=sigma^2).
+        # Apply filter on raw singular values.
+        # h = s^gamma / (s^gamma + alpha)
         h, _, _ = AspireFilter_Test.apply_filter(
             self.singular_values, gamma=self.gamma, alpha=self.alpha, 
             mode=self.filter_mode, is_gram=False, skip_top_k=self.skip_top_k
@@ -178,3 +178,6 @@ class EASE_Test(BaseModel):
 
     def get_final_item_embeddings(self):
         return self.B
+
+
+

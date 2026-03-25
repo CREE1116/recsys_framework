@@ -47,7 +47,7 @@ def fit_beta(s_vals, k_start, total_energy_sum):
     
     return beta_ols, beta_head, beta_tail
 
-def run_exp9(dataset_name, n_trials=30):
+def run_exp9(dataset_name, n_trials=30, k=None):
     print(f"Running Exp 9: Gamma Stability Analysis on {dataset_name}...")
     config = load_config(dataset_name)
     loader = DataLoader(config)
@@ -76,6 +76,7 @@ def run_exp9(dataset_name, n_trials=30):
             m_cfg = {
                 "name": "aspire_test", 
                 "gamma": params['gamma'], 
+                "k": params.get('k', None),
                 "skip_top_k": skip_n,
                 "filter_mode": "gamma_only", 
                 "target_energy": 1.0
@@ -85,7 +86,11 @@ def run_exp9(dataset_name, n_trials=30):
             metrics = evaluate_metrics(model, loader, eval_cfg, model.device, test_loader)
             return metrics["NDCG@20"]
 
-        hpo = AspireHPO([{'name': 'gamma', 'type': 'float', 'range': '0.0 2.0'}], n_trials=n_trials, patience=15)
+        min_dim = min(loader.n_users, loader.n_items)
+        hpo = AspireHPO([
+            {'name': 'gamma', 'type': 'float', 'range': '0.0 2.0'},
+            {'name': 'k', 'type': 'int_min_dim', 'log': True}
+        ], n_trials=n_trials, patience=15, min_dim=min_dim)
         best_p, best_score = hpo.search(objective, study_name=f"Exp8_Skip{skip_n}_{dataset_name}")
         
         gamma_best = best_p['gamma']
@@ -104,12 +109,13 @@ def run_exp9(dataset_name, n_trials=30):
         results.append({
             "skip_n": skip_n,
             "gamma_best": float(gamma_best),
+            "k_best": int(best_p['k']),
             "gamma_ols": float(gamma_ols),
             "gamma_head": float(gamma_head),
             "gamma_tail": float(gamma_tail),
             "ndcg": float(best_score)
         })
-        print(f"  Result: Skip={skip_n}, G_best={gamma_best:.4f}, G_ols={gamma_ols:.4f}, G_head={gamma_head:.4f}, G_tail={gamma_tail:.4f}")
+        print(f"  Result: Skip={skip_n}, G_best={gamma_best:.4f}, K_best={best_p['k']}, G_ols={gamma_ols:.4f}, G_head={gamma_head:.4f}, G_tail={gamma_tail:.4f}")
 
     # Plotting
     skips = [r["skip_n"] for r in results]
@@ -143,5 +149,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
     parser.add_argument("--trials", type=int, default=20)
+    parser.add_argument("--k", type=int, default=None, help="Rank k for ASPIRE")
     args = parser.parse_args()
-    run_exp9(args.dataset, n_trials=args.trials)
+    run_exp9(args.dataset, n_trials=args.trials, k=args.k)

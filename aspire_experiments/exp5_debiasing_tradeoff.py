@@ -16,7 +16,7 @@ from src.data_loader import DataLoader
 from src.evaluation import evaluate_metrics
 from src.models import get_model
 
-def run_exp5(dataset_name, quick=False):
+def run_exp5(dataset_name, quick=False, k=None):
     print(f"Running Exp 5 Visualizations on {dataset_name}...")
     config = load_config(dataset_name)
     loader = DataLoader(config)
@@ -39,7 +39,7 @@ def run_exp5(dataset_name, quick=False):
     # --- ASPIRE Sweep ---
     print(f"  Sweeping ASPIRE gammas: {gammas}")
     for g in tqdm(gammas):
-        m_cfg = {"name": "aspire_test", "gamma": g, "filter_mode": "gamma_only", "target_energy": 1.0}
+        m_cfg = {"name": "aspire_test", "gamma": g, "k": k, "filter_mode": "gamma_only", "target_energy": 1.0}
         cfg = config.copy()
         cfg['device'] = 'auto'
         cfg['model'] = m_cfg
@@ -47,6 +47,7 @@ def run_exp5(dataset_name, quick=False):
         metrics = evaluate_metrics(model, loader, eval_cfg, model.device, test_loader)
         results["ASPIRE"].append({
             "param": g,
+            "k": k,
             "NDCG@20": metrics["NDCG@20"],
             "Coverage@20": metrics["Coverage@20"],
             "LongTailNDCG@20": metrics["LongTailNDCG@20"],
@@ -90,7 +91,7 @@ def run_exp5(dataset_name, quick=False):
     # --- Save Results ---
     out_dir = ensure_dir(f"aspire_experiments/output/exp5/{dataset_name}")
     with open(os.path.join(out_dir, "results.json"), "w") as f:
-        json.dump(results, f, indent=4)
+        json.dump({"gammas": gammas, "k": k if k is not None else min(10000, loader.n_items), "results": results}, f, indent=4)
 
     # --- Plotting 1: Trade-off Curve ---
     plt.figure(figsize=(8, 6))
@@ -151,6 +152,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k", help="Dataset name")
     parser.add_argument("--quick", action="store_true", help="Quick mode with fewer parameters")
+    parser.add_argument("--k", type=int, default=None, help="Rank k for ASPIRE")
     args = parser.parse_args()
     
-    run_exp5(args.dataset, quick=args.quick)
+    run_exp5(args.dataset, quick=args.quick, k=args.k)

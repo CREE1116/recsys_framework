@@ -15,7 +15,7 @@ from aspire_experiments.proof_models import ASPIRE_Test
 from src.data_loader import DataLoader
 from src.evaluation import evaluate_metrics
 
-def run_exp3(dataset_name, override_gamma=None):
+def run_exp3(dataset_name, override_gamma=None, k=None):
     print(f"Running Exp 3 on {dataset_name}...")
     config = load_config(dataset_name)
     loader = DataLoader(config)
@@ -37,8 +37,8 @@ def run_exp3(dataset_name, override_gamma=None):
 
     # Define models
     models_to_test = {
-        f"ASPIRE (γ={gamma_to_use:.2f})": {"name": "aspire_test", "gamma": gamma_to_use, "filter_mode": "gamma_only", "target_energy": 1.0},
-        "LIRA (Pure Wiener)": {"name": "aspire_test", "gamma": 2.0, "filter_mode": "gamma_only", "target_energy": 1.0},
+        f"ASPIRE (γ={gamma_to_use:.2f})": {"name": "aspire_test", "gamma": gamma_to_use, "k": config.get('k'), "filter_mode": "gamma_only", "target_energy": 1.0},
+        "LIRA (Pure Wiener)": {"name": "aspire_test", "gamma": 2.0, "k": config.get('k'), "filter_mode": "gamma_only", "target_energy": 1.0},
         "EASE": {"name": "ease_test", "alpha": 138.76453930062902} 
     }
     
@@ -150,6 +150,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml1m", help="Dataset name")
     parser.add_argument("--gamma", type=float, default=None, help="Explicit gamma for ASPIRE (default: from Exp 2 results)")
+    parser.add_argument("--k", type=int, default=None, help="Rank k for ASPIRE")
     args = parser.parse_args()
     
-    run_exp3(args.dataset, override_gamma=args.gamma)
+    run_exp3(args.dataset, override_gamma=args.gamma, k=args.k)

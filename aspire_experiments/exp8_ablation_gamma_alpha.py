@@ -17,10 +17,11 @@ from aspire_experiments.proof_models import ASPIRE_Test
 from src.data_loader import DataLoader
 from src.evaluation import evaluate_metrics
 
-def run_exp8(dataset_name, n_trials=30):
+def run_exp8(dataset_name, n_trials=30, k=None):
     print(f"Running Exp 8: Gamma-Alpha Ablation on {dataset_name}...")
     config = load_config(dataset_name)
     loader = DataLoader(config)
+    min_dim = min(loader.n_users, loader.n_items)
     eval_cfg = get_eval_config(loader, {"top_k": [20], "metrics": ["NDCG"]})
     valid_loader = loader.get_validation_loader(batch_size=2048)
     test_loader = loader.get_final_loader(batch_size=2048)
@@ -28,13 +29,22 @@ def run_exp8(dataset_name, n_trials=30):
     # 1. Theoretical Gamma
     zeta = estimate_zeta(loader)
     gamma_theory = 2.0 - zeta
+    eff_k = k if k is not None else min(10000, loader.n_items)
     default_alpha = 1.0
     
     print(f"  [Theory] Gamma: {gamma_theory:.4f}, Alpha (Default): {default_alpha}")
 
     # Helper for evaluation
-    def evaluate(gamma, alpha, loader_set="test"):
-        cfg = {**config, 'model': {'name': 'aspire_test', 'gamma': gamma, 'alpha': alpha, 'filter_mode': 'gamma_only', 'target_energy': 1.0}, 'device': 'auto'}
+    def evaluate(gamma, alpha, loader_set="test", k=None):
+        m_cfg = {
+            'name': 'aspire_test', 
+            'gamma': gamma, 
+            'alpha': alpha, 
+            'k': k,
+            'filter_mode': 'gamma_only', 
+            'target_energy': 1.0
+        }
+        cfg = {**config, 'model': m_cfg, 'device': 'auto'}
         model = ASPIRE_Test(cfg, loader)
         ldr = test_loader if loader_set == "test" else valid_loader
         metrics = evaluate_metrics(model, loader, eval_cfg, model.device, ldr)
@@ -48,8 +58,16 @@ def run_exp8(dataset_name, n_trials=30):
     eval_cfg_full = get_eval_config(loader, {"top_k": [20], "metrics": ["NDCG", "Coverage"]})
 
     # Helper for evaluation
-    def evaluate(gamma, alpha, loader_set="test"):
-        cfg = {**config, 'model': {'name': 'aspire_test', 'gamma': gamma, 'alpha': alpha, 'filter_mode': 'gamma_only', 'target_energy': 1.0}, 'device': 'auto'}
+    def evaluate(gamma, alpha, loader_set="test", k=None):
+        m_cfg = {
+            'name': 'aspire_test', 
+            'gamma': gamma, 
+            'alpha': alpha, 
+            'k': k,
+            'filter_mode': 'gamma_only', 
+            'target_energy': 1.0
+        }
+        cfg = {**config, 'model': m_cfg, 'device': 'auto'}
         model = ASPIRE_Test(cfg, loader)
         ldr = test_loader if loader_set == "test" else valid_loader
         
@@ -59,7 +77,7 @@ def run_exp8(dataset_name, n_trials=30):
         # Tail NDCG calculation (custom)
         # We'll sample 2000 users for speed or use all
         test_users = torch.arange(loader.n_users).to(model.device)
-        scores = model.forward(test_users)
+        scores = model.forward(test_users).detach() # Added detach for memory safety
         
         # Mask train history speed/memory efficient way
         rows = torch.from_numpy(loader.train_df['user_id'].values).to(model.device)
@@ -116,33 +134,50 @@ def run_exp8(dataset_name, n_trials=30):
     final_results["V1"] = evaluate(gamma_theory, default_alpha)
     final_results["V1"]["gamma"] = float(gamma_theory)
     final_results["V1"]["alpha"] = float(default_alpha)
+    final_results["V1"]["k"] = int(eff_k)
 
-    # V2 (HPO G, Def A)
-    print("  Evaluating V2 (HPO Gamma)...")
-    hpo_g = AspireHPO([{'name': 'gamma', 'type': 'float', 'range': '0.0 2.0'}], n_trials=n_trials, patience=20)
-    best_g_params, _ = hpo_g.search(lambda p: evaluate(p['gamma'], default_alpha, "valid")["NDCG@20"], study_name=f"Exp8_G_{dataset_name}")
-    final_results["V2"] = evaluate(best_g_params['gamma'], default_alpha)
+    # V2 (HPO G + K, Def A)
+    print("  Evaluating V2 (HPO Gamma + Rank)...")
+    hpo_g = AspireHPO([
+        {'name': 'gamma', 'type': 'float', 'range': '0.0 2.0'},
+        {'name': 'k', 'type': 'int_min_dim', 'log': True}
+    ], n_trials=n_trials, patience=20, min_dim=min_dim)
+    best_g_params, _ = hpo_g.search(lambda p: evaluate(p['gamma'], default_alpha, "valid", k=p['k'])["NDCG@20"], study_name=f"Exp8_G_{dataset_name}")
+    final_results["V2"] = evaluate(best_g_params['gamma'], default_alpha, k=best_g_params['k'])
     final_results["V2"]["gamma"] = float(best_g_params['gamma'])
     final_results["V2"]["alpha"] = float(default_alpha)
+    final_results["V2"]["k"] = int(best_g_params['k'])
 
-    # V3 (Theory G, HPO A)
-    print("  Evaluating V3 (HPO Alpha)...")
-    hpo_a = AspireHPO([{'name': 'alpha', 'type': 'float', 'range': '1e-3 1e3', 'log': True}], n_trials=n_trials, patience=20)
-    best_a_params, _ = hpo_a.search(lambda p: evaluate(gamma_theory, p['alpha'], "valid")["NDCG@20"], study_name=f"Exp8_A_{dataset_name}")
-    final_results["V3"] = evaluate(gamma_theory, best_a_params['alpha'])
+    # V3 (Theory G, HPO A + K)
+    print("  Evaluating V3 (HPO Alpha + Rank)...")
+    hpo_a = AspireHPO([
+        {'name': 'alpha', 'type': 'float', 'range': '1e-3 1e3', 'log': True},
+        {'name': 'k', 'type': 'int_min_dim', 'log': True}
+    ], n_trials=n_trials, patience=20, min_dim=min_dim)
+    best_a_params, _ = hpo_a.search(lambda p: evaluate(gamma_theory, p['alpha'], "valid", k=p['k'])["NDCG@20"], study_name=f"Exp8_A_{dataset_name}")
+    final_results["V3"] = evaluate(gamma_theory, best_a_params['alpha'], k=best_a_params['k'])
     final_results["V3"]["gamma"] = float(gamma_theory)
     final_results["V3"]["alpha"] = float(best_a_params['alpha'])
+    final_results["V3"]["k"] = int(best_a_params['k'])
 
-    # V4 (Joint HPO Both)
-    print("  Evaluating V4 (Joint HPO Both)...")
-    hpo_both = AspireHPO([
+    # V4 (Joint HPO Both + Rank k)
+    print("  Evaluating V4 (Joint HPO Both + Rank k)...")
+    hpo_joint = AspireHPO([
         {'name': 'gamma', 'type': 'float', 'range': '0.0 2.0'},
-        {'name': 'alpha', 'type': 'float', 'range': '1e-3 1e3', 'log': True}
-    ], n_trials=max(n_trials * 2, 30), patience=30)
-    best_both_params, _ = hpo_both.search(lambda p: evaluate(p['gamma'], p['alpha'], "valid")["NDCG@20"], study_name=f"Exp8_Both_{dataset_name}")
-    final_results["V4"] = evaluate(best_both_params['gamma'], best_both_params['alpha'])
-    final_results["V4"]["gamma"] = float(best_both_params['gamma'])
-    final_results["V4"]["alpha"] = float(best_both_params['alpha'])
+        {'name': 'alpha', 'type': 'float', 'range': '1e-3 1e3', 'log': True},
+        {'name': 'k',     'type': 'int_min_dim', 'log': True}
+    ], n_trials=max(n_trials * 2, 30), patience=30, min_dim=min_dim)
+    
+    def objective_v4(p):
+        res = evaluate(p['gamma'], p['alpha'], "valid", k=p['k'])
+        return res["NDCG@20"]
+
+    best_v4_params, _ = hpo_joint.search(objective_v4, study_name=f"Exp8_Joint_{dataset_name}")
+    
+    final_results["V4"] = evaluate(best_v4_params['gamma'], best_v4_params['alpha'], "test", k=best_v4_params['k'])
+    final_results["V4"]["gamma"] = float(best_v4_params['gamma'])
+    final_results["V4"]["alpha"] = float(best_v4_params['alpha'])
+    final_results["V4"]["k"] = int(best_v4_params['k'])
 
     # --- Plotting ---
     descriptions = {
@@ -214,5 +249,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k")
     parser.add_argument("--trials", type=int, default=20)
+    parser.add_argument("--k", type=int, default=None, help="Rank k for ASPIRE")
     args = parser.parse_args()
-    run_exp8(args.dataset, n_trials=args.trials)
+    run_exp8(args.dataset, n_trials=args.trials, k=args.k)

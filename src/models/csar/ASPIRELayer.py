@@ -190,8 +190,15 @@ class ASPIRELayer(nn.Module):
         return self.V_raw
 
     @torch.no_grad()
-    def build(self, X_sparse, dataset_name: str | None = None, verbose: bool = True):
-        dev = next((p.device for p in self.parameters()), torch.device("cpu"))
+    def build(self, X_sparse, dataset_name: str | None = None, device=None, verbose: bool = True):
+        # Determine device: priority = explicit > buffers > cpu
+        if device is not None:
+            dev = torch.device(device)
+        else:
+            try:
+                dev = next(self.buffers()).device
+            except StopIteration:
+                dev = torch.device("cpu")
         
         # 1. SVD (Shared Cache Support)
         manager = SVDCacheManager(device=dev)

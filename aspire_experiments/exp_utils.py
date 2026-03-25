@@ -141,19 +141,29 @@ class AspireHPO:
         ]
     """
 
-    def __init__(self, params_spec, n_trials=30, patience=10, seed=42, direction="maximize"):
+    def __init__(self, params_spec, n_trials=30, patience=10, seed=42, direction="maximize", min_dim=None):
         self.params_spec = params_spec
         self.n_trials = n_trials
         self.patience = patience
         self.seed = seed
         self.maximize = (direction == "maximize")
         self.study = None
+        self.min_dim = min_dim
 
     def _suggest(self, trial, p_def):
         name   = p_def['name']
         p_type = p_def.get('type', 'float')
         p_range = p_def.get('range') or p_def.get('choices')
         p_log  = p_def.get('log', False)
+
+        if p_type == 'int_min_dim':
+            # Hard cap: Rank should not exceed 10000 (User request / System stability)
+            MAX_DIM_CAP = 10000
+            eff_max = self.min_dim if self.min_dim else 8192
+            if isinstance(eff_max, str):
+                 eff_max = int(eff_max.split()[-1])
+            eff_max = min(float(eff_max), MAX_DIM_CAP)
+            return trial.suggest_int(name, 1, int(eff_max), log=p_log)
 
         if p_range is None:
             raise KeyError(f"Parameter '{name}' must have 'range' or 'choices'.")

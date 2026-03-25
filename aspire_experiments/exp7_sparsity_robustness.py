@@ -17,7 +17,7 @@ from src.data_loader import DataLoader
 from src.evaluation import evaluate_metrics
 from src.models import get_model
 
-def run_exp7(dataset_name, ratios=[0.0, 0.2, 0.4, 0.6]):
+def run_exp7(dataset_name, ratios=[0.0, 0.2, 0.4, 0.6], k=None):
     print(f"Running Exp 7: Sparsity Robustness on {dataset_name}...")
     config = load_config(dataset_name)
     loader = DataLoader(config)
@@ -29,7 +29,7 @@ def run_exp7(dataset_name, ratios=[0.0, 0.2, 0.4, 0.6]):
     # Model configs with assumed "best" params for ml100k (from prior runs)
     model_configs = {
         "EASE": {"name": "ease_test", "alpha": 100.0},
-        "ASPIRE (\u03b3=0.1)": {"name": "aspire_test", "gamma": 0.1, "filter_mode": "gamma_only", "target_energy": 1.0},
+        "ASPIRE (\u03b3=0.1)": {"name": "aspire_test", "gamma": 0.1, "k": k, "filter_mode": "gamma_only", "target_energy": 1.0},
         "IPS-LAE": {"name": "ips_lae", "backbone": "ease", "wtype": "powerlaw", "wbeta": 0.4, "reg_lambda": 500.0}
     }
     
@@ -99,13 +99,14 @@ def run_exp7(dataset_name, ratios=[0.0, 0.2, 0.4, 0.6]):
     plt.close()
     
     with open(os.path.join(out_dir, "results.json"), "w") as f:
-        json.dump({"ratios": ratios, "results": results}, f, indent=4)
+        json.dump({"ratios": ratios, "k": k if k is not None else min(1024, loader.n_items), "results": results}, f, indent=4)
         
     print(f"\nExp 7 finished. Results saved to {out_dir}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml100k", help="Dataset name")
+    parser.add_argument("--k", type=int, default=None, help="Rank k for ASPIRE")
     args = parser.parse_args()
     
-    run_exp7(args.dataset)
+    run_exp7(args.dataset, k=args.k)

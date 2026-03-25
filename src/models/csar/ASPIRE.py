@@ -47,7 +47,7 @@ class ASPIRE(BaseModel):
         
         # Build Low-Rank Model immediately
         dataset_name = config.get('dataset_name', 'unknown')
-        self.lira_layer.build(self.train_matrix_csr, dataset_name=dataset_name)
+        self.lira_layer.build(self.train_matrix_csr, dataset_name=dataset_name, device=self.device)
         self.lira_layer.to(self.device)
 
         # Cache managers 등록

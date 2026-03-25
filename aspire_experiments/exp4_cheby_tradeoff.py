@@ -17,9 +17,10 @@ from src.evaluation import evaluate_metrics
 
 class LiteSVDASPIRE:
     """Minimal SVD-based ASPIRE for timing."""
-    def __init__(self, n_users, n_items, gamma=1.0, target_energy=1.0):
+    def __init__(self, n_users, n_items, k=None, gamma=1.0, target_energy=1.0):
         self.n_users = n_users
         self.n_items = n_items
+        self.k = k
         self.gamma = gamma
         self.target_energy = target_energy
         self.V = None
@@ -39,11 +40,13 @@ class LiteSVDASPIRE:
         idx = np.argsort(S)[::-1]
         S, V = S[idx], V[:, idx]
         
-        # Truncate by energy
-        if self.target_energy < 1.0:
+        # Truncate by k or energy
+        if self.k is not None:
+             S, V = S[:self.k], V[:, :self.k]
+        elif self.target_energy < 1.0:
             cumsum = np.cumsum(S)
-            k = np.where(cumsum / cumsum[-1] >= self.target_energy)[0][0] + 1
-            S, V = S[:k], V[:, :k]
+            k_val = np.where(cumsum / (cumsum[-1] + 1e-12) >= self.target_energy)[0][0] + 1
+            S, V = S[:k_val], V[:, :k_val]
         
         # 2. Filter
         s_gamma = np.power(np.maximum(S, 1e-12), self.gamma / 2.0)
@@ -104,8 +107,8 @@ class LiteChebyASPIRE:
         f_nodes = s_gamma / (s_gamma + s_gamma.max() + 1e-10)
         
         self.coeffs = np.zeros(K + 1)
-        for k in range(K + 1):
-            self.coeffs[k] = (2.0 / (K + 1)) * np.sum(f_nodes * np.cos(k * theta))
+        for k_idx in range(K + 1): # Renamed k to k_idx to avoid conflict with function parameter k
+            self.coeffs[k_idx] = (2.0 / (K + 1)) * np.sum(f_nodes * np.cos(k_idx * theta))
         self.coeffs[0] /= 2.0
         self.coeffs = torch.from_numpy(self.coeffs).float().to(self.device)
         self.train_matrix = R_sparse
@@ -121,15 +124,15 @@ class LiteChebyASPIRE:
         T_curr = (temp - self.t_mid * T_prev) / self.t_half
         
         W = self.coeffs[0] * T_prev + self.coeffs[1] * T_curr
-        for k in range(2, self.degree + 1):
+        for k_idx in range(2, self.degree + 1): # Renamed k to k_idx to avoid conflict with function parameter k
             temp = torch.sparse.mm(self.Xt_sparse, torch.sparse.mm(self.X_sparse, T_curr))
             T_next = 2.0 * (temp - self.t_mid * T_curr) / self.t_half - T_prev
-            W += self.coeffs[k] * T_next
+            W += self.coeffs[k_idx] * T_next
             T_prev, T_curr = T_curr, T_next
         
         return W.t()
 
-def run_exp4(dataset_name):
+def run_exp4(dataset_name, k=None):
     print(f"Running Exp 4 on {dataset_name} (Lite Models)...")
     config = load_config(dataset_name)
     loader = DataLoader(config)
@@ -147,11 +150,11 @@ def run_exp4(dataset_name):
     def get_peak_mem():
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024) # MB (on Mac, ru_maxrss is bytes)
 
-    # 1. Full SVD Baseline
-    print("  Testing Full SVD ASPIRE baseline...")
+    # 1. Full SVD Baseline (or Truncated k)
+    print(f"  Testing SVD ASPIRE baseline (k={k})...")
     t0 = time.time()
     mem0 = get_peak_mem()
-    svd_model = LiteSVDASPIRE(loader.n_users, loader.n_items, gamma=1.0, target_energy=1.0)
+    svd_model = LiteSVDASPIRE(loader.n_users, loader.n_items, k=k, gamma=1.0, target_energy=1.0)
     svd_model.fit(R_sparse)
     svd_build_time = time.time() - t0
     svd_peak_mem = get_peak_mem() - mem0
@@ -221,12 +224,13 @@ def run_exp4(dataset_name):
     plt.close()
     
     with open(os.path.join(out_dir, "results.json"), "w") as f:
-        json.dump(results, f, indent=4)
+        json.dump({"k": k if k is not None else min(10000, loader.n_items), "results": results}, f, indent=4)
         
     print(f"Exp 4 on {dataset_name} finished.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="ml1m", help="Dataset name")
+    parser.add_argument("--k", type=int, default=None, help="Rank k for SVD baseline")
     args = parser.parse_args()
-    run_exp4(args.dataset)
+    run_exp4(args.dataset, k=args.k)
