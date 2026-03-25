@@ -56,18 +56,15 @@ class IPS_LAE(BaseModel):
         self.train_matrix_csr = X
         dataset_name = self.config.get('dataset_name', 'unknown')
 
-        # 1. Get G = X^T X on device (with caching)
+        # 1. Get G = X^T X on device (No caching)
+        self._log(f"Computing Gram matrix G = X^T X on {self.device}...")
         if self.device.type in ('cuda', 'mps'):
-            G = GramMatrixCacheManager.get(X, dataset_name, device=self.device)
-            if G is None:
-                self._log(f"Computing Gram matrix G = X^T X on {self.device}...")
-                # Optimized: convert block-wise if needed, but for now simple toarray()
-                # If n_items is very large, this might OOM. 
-                # But IPS_LAE typically assumes we can hold G in memory.
-                X_torch = torch.from_numpy(X.toarray()).to(self.device).float()
-                G = torch.mm(X_torch.t(), X_torch)
-                GramMatrixCacheManager.put(X, G, dataset_name)
-                del X_torch
+            # Optimized: convert block-wise if needed, but for now simple toarray()
+            # If n_items is very large, this might OOM. 
+            # But IPS_LAE typically assumes we can hold G in memory.
+            X_torch = torch.from_numpy(X.toarray()).to(self.device).float()
+            G = torch.mm(X_torch.t(), X_torch)
+            del X_torch
         else:
             G = (X.T @ X).toarray().astype(np.float32)
             G = torch.from_numpy(G).to(self.device)

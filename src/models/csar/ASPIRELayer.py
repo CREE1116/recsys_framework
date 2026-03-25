@@ -240,7 +240,7 @@ class ASPIRELayer(nn.Module):
 
         # 2. Energy-based or K-based Truncation
         if self.k is None and self.target_energy is not None:
-            cumsum_ev = torch.cumsum(s**2, dim=0)
+            cumsum_ev = torch.cumsum(s, dim=0)
             k_energy = torch.where(cumsum_ev / (cumsum_ev[-1] + 1e-12) >= self.target_energy)[0]
             if len(k_energy) > 0:
                 self.k = int(k_energy[0]) + 1
@@ -378,18 +378,19 @@ class ChebyASPIRELayer(nn.Module):
         self.register_buffer("t_half", torch.tensor(lambda_max / 2.0, device=dev))
 
         n = X_sparse.shape[1]
-        L = _GramCache.get(dataset_name, device=dev)
+        L = None
         
         # ML-20M (18k items) fits easily in 16GB VRAM as a dense N x N matrix (1.3GB).
         # We increase threshold to 25000 (~2.5GB).
-        if L is None and n <= 25000:
+        # [MEMORY FIX] Bypassed Gram caching to prevent OOM on larger datasets.
+        if n <= 25000:
             try:
+                print(f"[ChebyASPIRE] Computing dense Gram matrix G = X^T X (Items={n})...")
                 # Use sparse-dense MM to build G = X^T X instead of to_dense().t() @ to_dense()
                 I_n = torch.eye(n, device=dev)
                 # G = X^T (X I)
                 L = torch.sparse.mm(self.Xt_torch_csr.to(dev), torch.sparse.mm(self.X_torch_csr.to(dev), I_n))
                 del I_n
-                if dataset_name: _GramCache.put(dataset_name, L)
             except Exception as e:
                 print(f"[ChebyASPIRE] Dense Gram build failed: {e}")
                 L = None
@@ -420,17 +421,20 @@ class ChebyASPIRELayer(nn.Module):
         # Optimization: In-place addition and pre-computed constants
         X_t = X.t().to(self.sparse_device)
         T_prev = X_t
+        mid_val = self.t_mid.to(self.sparse_device)
+        half_val = self.t_half.to(self.sparse_device)
+        inv_half = 1.0 / half_val
+        
         with torch.no_grad():
-            T_curr = (torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_prev)) - self.t_mid * T_prev) / self.t_half
+            T_curr = (torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_prev)) - mid_val * T_prev) * inv_half
             W = float(self.cheby_coeffs[0]) * T_prev + float(self.cheby_coeffs[1]) * T_curr
             
-            inv_half = 2.0 / self.t_half
-            mid_val = self.t_mid
+            coeff_inv_half = 2.0 * inv_half
             
             for k in range(2, self.degree + 1):
                 # T_next = (2.0 * (L @ T_curr - mid * T_curr) / half) - T_prev
                 temp = torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_curr))
-                T_next = inv_half * (temp - mid_val * T_curr) - T_prev
+                T_next = coeff_inv_half * (temp - mid_val * T_curr) - T_prev
                 W.add_(T_next, alpha=float(self.cheby_coeffs[k]))
                 T_prev, T_curr = T_curr, T_next
         return W.t().to(X.device)
