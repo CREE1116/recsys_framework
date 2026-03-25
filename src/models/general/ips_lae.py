@@ -59,7 +59,7 @@ class IPS_LAE(BaseModel):
         # 1. Get G = X^T X on device (No caching)
         self._log(f"Computing Gram matrix G = X^T X on {self.device}...")
         if self.device.type in ('cuda', 'mps'):
-            # Optimized: avoid identity matrix trick
+            # Optimized: bfloat16 for memory efficiency (ADA GPU)
             n = X.shape[1]
             X_torch_csr = torch.sparse_csr_tensor(
                 torch.from_numpy(X.indptr).long(),
@@ -68,8 +68,11 @@ class IPS_LAE(BaseModel):
                 size=X.shape,
                 device=self.device
             )
-            G = torch.sparse.mm(X_torch_csr.transpose(0, 1), X_torch_csr.to_dense())
+            X_dense = X_torch_csr.to_dense().bfloat16()
             del X_torch_csr
+            G = (X_dense.t() @ X_dense).float()
+            del X_dense
+            if self.device.type == 'cuda': torch.cuda.empty_cache()
         else:
             G = (X.T @ X).toarray().astype(np.float32)
             G = torch.from_numpy(G).to(self.device)

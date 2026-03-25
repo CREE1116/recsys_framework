@@ -159,33 +159,24 @@ def _cpu_cholesky(G_np, rhs_np, block_size=2000):
         result = cho_solve((cho, low), rhs_np, check_finite=False)
         print(f"[gpu_accel] CPU Cholesky Solve ({M}x{rhs_np.shape[1]}): {time.time()-t0:.2f}s")
     
-    return result
-
-
 def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=None, return_tensor=False):
     """
     Compute (X^T X + λI)^-1 @ rhs.
-
-    캐싱 전략:
-    - M <= EIGEN_THRESHOLD: eigendecomposition 캐시 (_GramEigenCache). λ-agnostic.
-    - M >  EIGEN_THRESHOLD: Gram matrix G=X^TX 캐시 (_GramMatrixCache) + Cholesky.
-      G는 λ-agnostic하게 메모리 캐싱되며, Cholesky는 매번 새로 실행된다.
+    [REFINED] Caching removed as per user request. Always compute and solve on-the-fly.
     """
     M = X_sparse.shape[1]
     EIGEN_THRESHOLD = 15000
     dev = get_device(device)
-
-    # [REFINED] Caching removed as per user request. Always compute and solve on-the-fly.
 
     # 1. Eigen Path (M <= EIGEN_THRESHOLD)
     if M <= EIGEN_THRESHOLD:
         print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition on {dev.type}...")
         t0 = time.time()
         
-        # Optimize: reuse sparse MM logic if available, or just convert to array for small M
         if dev.type in ('cuda', 'mps'):
+            try:
                 if isinstance(X_sparse, csr_matrix):
-                    # Optimized Gram build: sparse-dense mm
+                    # Optimized Gram build: bfloat16 (user recommendation for ADA)
                     X_torch_csr = torch.sparse_csr_tensor(
                         torch.from_numpy(X_sparse.indptr).long(),
                         torch.from_numpy(X_sparse.indices).long(),
@@ -193,12 +184,15 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
                         size=X_sparse.shape,
                         device=dev
                     )
-                    # G = X^T X
-                    G_t = torch.sparse.mm(X_torch_csr.transpose(0, 1), X_torch_csr.to_dense())
+                    X_dense = X_torch_csr.to_dense().bfloat16()
                     del X_torch_csr
+                    G_t = (X_dense.t() @ X_dense).float()
+                    del X_dense
+                    if dev.type == 'cuda': torch.cuda.empty_cache()
                 else:
-                    X_torch = torch.tensor(X_sparse, device=dev, dtype=torch.float32)
-                    G_t = torch.mm(X_torch.t(), X_torch)
+                    X_t = torch.tensor(X_sparse, device=dev, dtype=torch.bfloat16)
+                    G_t = (X_t.t() @ X_t).float()
+                    del X_t
                 
                 eigvals, V = torch.linalg.eigh(G_t)
                 del G_t
@@ -225,12 +219,13 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
 
         return P if return_tensor else P.cpu().numpy()
 
-    # 3. Cholesky Path (M > EIGEN_THRESHOLD)
+    # 2. Cholesky Path (M > EIGEN_THRESHOLD)
     if dev.type in ('cuda', 'mps'):
         try:
             print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on {dev.type}...")
             t0 = time.time()
             if isinstance(X_sparse, csr_matrix):
+                # Optimized Gram build: bfloat16 (user recommendation for ADA)
                 X_torch_csr = torch.sparse_csr_tensor(
                     torch.from_numpy(X_sparse.indptr).long(),
                     torch.from_numpy(X_sparse.indices).long(),
@@ -238,12 +233,15 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
                     size=X_sparse.shape,
                     device=dev
                 )
-                # G = X^T X
-                G_t = torch.sparse.mm(X_torch_csr.transpose(0, 1), X_torch_csr.to_dense())
+                X_dense = X_torch_csr.to_dense().bfloat16()
                 del X_torch_csr
+                G_t = (X_dense.t() @ X_dense).float()
+                del X_dense
+                if dev.type == 'cuda': torch.cuda.empty_cache()
             else:
-                X_t = torch.from_numpy(X_sparse).float().to(dev) if isinstance(X_sparse, np.ndarray) else X_sparse.to(dev)
-                G_t = torch.mm(X_t.t(), X_t)
+                X_t = torch.from_numpy(X_sparse).bfloat16().to(dev) if isinstance(X_sparse, np.ndarray) else X_sparse.to(dev).bfloat16()
+                G_t = (X_t.t() @ X_t).float()
+                del X_t
             
             print(f"[gpu_accel] Gram X^T X computed ({time.time()-t0:.2f}s)")
 

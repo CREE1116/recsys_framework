@@ -344,9 +344,12 @@ class ChebyASPIRELayer(nn.Module):
         # We increase threshold to 25000 (~2.5GB).
         if n <= 25000:
             try:
-                print(f"[ChebyASPIRE] Computing dense Gram matrix G = X^T X (Items={n})...")
-                # Optimized: avoid identity matrix trick
-                L = torch.sparse.mm(self.Xt_torch_csr.to(dev), self.X_torch_csr.to(dev).to_dense())
+                print(f"[ChebyASPIRE] Computing dense Gram matrix G = X^T X (Items={n}) in bfloat16...")
+                # Optimized: bfloat16 for memory efficiency (ADA GPU)
+                X_dense = self.X_torch_csr.to(dev).to_dense().bfloat16()
+                L = (X_dense.t() @ X_dense).float()
+                del X_dense
+                if dev.type == 'cuda': torch.cuda.empty_cache()
             except Exception as e:
                 print(f"[ChebyASPIRE] Dense Gram build failed: {e}")
                 L = None
