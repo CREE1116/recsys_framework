@@ -2,9 +2,9 @@ import os
 # [Windows/Mac 환경 안정성 최적화]
 # Windows 환경에서 OpenMP 스레드 충돌로 인한 silent crash 방지를 위해 
 # 스레드 수를 4개 정도로 보수적으로 제한합니다. (필요 시 조절 가능)
-os.environ['OPENBLAS_NUM_THREADS'] = '4'
-os.environ['OMP_NUM_THREADS'] = '4'
-os.environ['MKL_NUM_THREADS'] = '4'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'  # 4 → 1
+os.environ['OMP_NUM_THREADS'] = '1'        # 4 → 1
+os.environ['MKL_NUM_THREADS'] = '1'        # 4 → 1
 
 import torch
 import torch.nn as nn
@@ -51,6 +51,8 @@ class iALS(BaseModel):
             alpha=self.alpha,
             iterations=self.max_iter,
             calculate_training_loss=False,  
+            use_cg=True,          # ← 추가: Conjugate Gradient solver, 더 안정적
+            num_threads=1,         # ← 추가: OpenMP 충돌 방지   
             random_state=self.seed
         )
 
