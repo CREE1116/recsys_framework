@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 import scipy.sparse as sp
 from ..base_model import BaseModel
+from src.utils.gpu_accel import gpu_gram_solve, gpu_cholesky_solve, GramMatrixCacheManager
 
 class IPS_LAE(BaseModel):
     """
@@ -53,38 +54,66 @@ class IPS_LAE(BaseModel):
         
         X = sp.csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items), dtype=np.float32)
         self.train_matrix_csr = X
-        
-        # 1. Compute G = X^T X
-        G = (X.T @ X).toarray().astype(np.float32)
-        diag_idx = np.diag_indices(G.shape[0])
+        dataset_name = self.config.get('dataset_name', 'unknown')
 
-        # 2. Backbone specific fit
+        # 1. Get G = X^T X on device (with caching)
+        if self.device.type in ('cuda', 'mps'):
+            G = GramMatrixCacheManager.get(X, dataset_name, device=self.device)
+            if G is None:
+                self._log(f"Computing Gram matrix G = X^T X on {self.device}...")
+                # Optimized: convert block-wise if needed, but for now simple toarray()
+                # If n_items is very large, this might OOM. 
+                # But IPS_LAE typically assumes we can hold G in memory.
+                X_torch = torch.from_numpy(X.toarray()).to(self.device).float()
+                G = torch.mm(X_torch.t(), X_torch)
+                GramMatrixCacheManager.put(X, G, dataset_name)
+                del X_torch
+        else:
+            G = (X.T @ X).toarray().astype(np.float32)
+            G = torch.from_numpy(G).to(self.device)
+
+        # 2. Backbone specific fit (on device)
         if self.backbone == 'ease':
-            G[diag_idx] += self.reg_lambda
-            P = np.linalg.inv(G)
-            B = P / (-np.diag(P) + 1e-12)
+            G_reg = G.clone()
+            G_reg.diagonal().add_(self.reg_lambda)
+            P = gpu_cholesky_solve(G_reg, rhs_np=None, device=self.device, return_tensor=True)
+            del G_reg
+            B = P / (-torch.diag(P) + 1e-12)
+            del P
         elif self.backbone == 'edlae':
-            gamma = np.diag(G) * self.drop_p / (1 - self.drop_p) + self.reg_lambda
-            G[diag_idx] += gamma
-            P = np.linalg.inv(G)
-            B = P / (-np.diag(P) + 1e-12)
+            diag_G = torch.diag(G)
+            gamma = diag_G * self.drop_p / (1 - self.drop_p) + self.reg_lambda
+            G_reg = G.clone()
+            G_reg.diagonal().add_(gamma)
+            P = gpu_cholesky_solve(G_reg, rhs_np=None, device=self.device, return_tensor=True)
+            del G_reg
+            B = P / (-torch.diag(P) + 1e-12)
+            del P
         elif self.backbone == 'rdlae':
-            gamma = np.diag(G) * self.drop_p / (1 - self.drop_p) + self.reg_lambda
-            G[diag_idx] += gamma
-            P = np.linalg.inv(G)
-            diag_P = np.diag(P)
+            diag_G = torch.diag(G)
+            gamma = diag_G * self.drop_p / (1 - self.drop_p) + self.reg_lambda
+            G_reg = G.clone()
+            G_reg.diagonal().add_(gamma)
+            P = gpu_cholesky_solve(G_reg, rhs_np=None, device=self.device, return_tensor=True)
+            del G_reg
+            diag_P = torch.diag(P)
             cond = (1 - gamma * diag_P) > self.alpha
-            lag = ((1 - self.alpha) / (diag_P + 1e-12) - gamma) * cond.astype(float)
-            B = P * -(gamma + lag)
+            lag = ((1 - self.alpha) / (diag_P + 1e-12) - gamma) * cond.float()
+            # B = P * -(gamma + lag) [Column-wise scaling]
+            B = P * -(gamma + lag).view(1, -1)
+            del P
         else:
             raise ValueError(f"Unknown backbone: {self.backbone}")
 
         # 3. Propensity weighting
-        w = self._compute_inv_propensity(X)
-        B = B * w
-        B[diag_idx] = 0
+        w_np = self._compute_inv_propensity(X)
+        w = torch.from_numpy(w_np).to(self.device).float()
+        
+        # B = B * w [Column-wise scaling]
+        B = B * w.view(1, -1)
+        B.fill_diagonal_(0)
 
-        self.weight_matrix = torch.from_numpy(B).float().to(self.device)
+        self.weight_matrix = B
         self._log(f"Fitted IPS_LAE on {self.device}.")
 
     def forward(self, user_ids, item_ids=None):
