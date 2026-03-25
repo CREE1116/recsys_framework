@@ -15,26 +15,30 @@ class LightGCN(BaseModel):
         self.n_users = self.data_loader.n_users
         self.n_items = self.data_loader.n_items
 
-        self.register_buffer('adj_matrix', self.data_loader.get_interaction_graph().to(self.device), persistent=False)
-        self.register_buffer('norm_adj_matrix', self._get_normalized_adj_matrix(), persistent=False)
+        # adj_matrix is used to build norm_adj_matrix; we don't need to keep it as a buffer
+        adj_matrix = self.data_loader.get_interaction_graph().to(self.device).float()
+        self.norm_adj_matrix = self._get_normalized_adj_matrix(adj_matrix)
 
         # Small graphs: convert sparse to dense for faster GPU matmul
         total_nodes = self.n_users + self.n_items
         if total_nodes < 15000:
             self._log(f"Node count {total_nodes} < 15000 — converting to dense for GPU matmul.")
-            self.register_buffer('norm_adj_matrix', self.norm_adj_matrix.to_dense(), persistent=False)
+            self.norm_adj_matrix = self.norm_adj_matrix.to_dense()
 
         # Pre-resolve propagation strategy to avoid per-iteration checks in forward.
         # MPS does not reliably support sparse mm; keep sparse matrix on CPU and move
         # results back to device after each propagation step.
+        # Use regular attribute instead of register_buffer to prevent model.to(device) from moving it.
         if self.norm_adj_matrix.is_sparse and self.device.type == 'mps':
-            self.register_buffer('norm_adj_matrix', self.norm_adj_matrix.cpu(), persistent=False)
+            self.norm_adj_matrix = self.norm_adj_matrix.cpu()
             self._adj_device = torch.device('cpu')
             self._sparse_prop = True
         elif self.norm_adj_matrix.is_sparse:
-            self._adj_device = self.norm_adj_matrix.device
+            self.norm_adj_matrix = self.norm_adj_matrix.to(self.device)
+            self._adj_device = self.device
             self._sparse_prop = True
         else:
+            self.norm_adj_matrix = self.norm_adj_matrix.to(self.device)
             self._adj_device = self.device
             self._sparse_prop = False
 
@@ -47,10 +51,8 @@ class LightGCN(BaseModel):
         self._final_user_emb = None
         self._final_item_emb = None
 
-    def _get_normalized_adj_matrix(self):
+    def _get_normalized_adj_matrix(self, A):
         """Compute symmetric normalized adjacency D^{-0.5} A D^{-0.5}."""
-        A = self.adj_matrix
-
         if A.is_sparse:
             A = A.coalesce()
             row_sum = torch.sparse.sum(A, dim=1).to_dense()
@@ -59,13 +61,13 @@ class LightGCN(BaseModel):
 
             indices = A.indices()
             values = A.values() * D_inv_sqrt[indices[0]] * D_inv_sqrt[indices[1]]
-            return torch.sparse_coo_tensor(indices, values, A.shape)
+            return torch.sparse_coo_tensor(indices, values, A.shape).float()
         else:
             D = A.sum(1)
             D_inv_sqrt = torch.pow(D, -0.5)
             D_inv_sqrt[torch.isinf(D_inv_sqrt)] = 0.
             # D^{-0.5} A D^{-0.5} via broadcasting: (N,1) * (N,N) * (1,N)
-            return A * D_inv_sqrt.unsqueeze(1) * D_inv_sqrt.unsqueeze(0)
+            return (A * D_inv_sqrt.unsqueeze(1) * D_inv_sqrt.unsqueeze(0)).float()
 
     def _init_weights(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)

@@ -29,6 +29,7 @@ from .general.infinity_ae import Infinity_AE
 from .general.svd_ae import SVD_AE
 from .general.svd_ease import SVDEASE
 from .general.nc_ease import NCEASE
+from .general.ips_lae import IPS_LAE
 
 # General Models - Graph & Others
 from .general.ultragcn import UltraGCN
@@ -88,6 +89,7 @@ MODEL_REGISTRY = {
     'svd_ae': SVD_AE,
     'svd_ease': SVDEASE,
     'nc_ease': NCEASE,
+    'ips_lae': IPS_LAE,
 
     # Graph & Others
     'ultragcn': UltraGCN,

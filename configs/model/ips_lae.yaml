@@ -1,0 +1,8 @@
+model:
+  name: ips_lae
+  reg_lambda: 500.0
+  wtype: logsigmoid # logsigmoid | powerlaw
+  wbeta: 0.4
+  backbone: ease # ease | edlae | rdlae
+  drop_p: 0.5
+  alpha: 0.5
