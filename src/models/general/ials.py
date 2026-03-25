@@ -52,7 +52,6 @@ class iALS(BaseModel):
             iterations=self.max_iter,
             calculate_training_loss=False,  
             use_cg=True,          # ← 추가: Conjugate Gradient solver, 더 안정적
-            num_threads=1,         # ← 추가: OpenMP 충돌 방지   
             random_state=self.seed
         )
 
