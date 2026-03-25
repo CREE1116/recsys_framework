@@ -159,10 +159,37 @@ def _cpu_cholesky(G_np, rhs_np, block_size=2000):
         result = cho_solve((cho, low), rhs_np, check_finite=False)
         print(f"[gpu_accel] CPU Cholesky Solve ({M}x{rhs_np.shape[1]}): {time.time()-t0:.2f}s")
     
+def _build_gram(X_sparse, device):
+    """
+    Optimized Gram matrix (X^T X) build.
+    - CUDA: bfloat16 matmul (ADA HW acceleration) -> float32.
+    - Others: float32 matmul.
+    """
+    X_dense_cpu = torch.from_numpy(X_sparse.toarray())
+    if device.type == 'cuda':
+        # ADA architecture: bfloat16 is fully supported and fast
+        X_bf = X_dense_cpu.bfloat16().to(device)
+        G = (X_bf.t() @ X_bf).float()
+        del X_bf
+        torch.cuda.empty_cache()
+    elif device.type == 'mps':
+        # MPS: bfloat16 might not be fully accelerated yet, use float32
+        X_f = X_dense_cpu.float().to(device)
+        G = (X_f.t() @ X_f)
+        del X_f
+    else:
+        X_f = X_dense_cpu.float()
+        G = X_f.t() @ X_f
+        del X_f
+    
+    del X_dense_cpu
+    return G
+
 def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=None, return_tensor=False):
     """
     Compute (X^T X + λI)^-1 @ rhs.
-    [REFINED] Caching removed as per user request. Always compute and solve on-the-fly.
+    - Automatic caching (smart bfloat16 storage).
+    - ADA Optimized bfloat16 path for matrix builds.
     """
     M = X_sparse.shape[1]
     EIGEN_THRESHOLD = 15000
@@ -173,42 +200,25 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
         print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition on {dev.type}...")
         t0 = time.time()
         
+        # scipy float32 conversion to save memory
+        G_np = (X_sparse.T @ X_sparse).astype(np.float32).toarray()
+        
         if dev.type in ('cuda', 'mps'):
             try:
-                if isinstance(X_sparse, csr_matrix):
-                    # Optimized Gram build: bfloat16 (user recommendation for ADA)
-                    X_torch_csr = torch.sparse_csr_tensor(
-                        torch.from_numpy(X_sparse.indptr).long(),
-                        torch.from_numpy(X_sparse.indices).long(),
-                        torch.from_numpy(X_sparse.data).float(),
-                        size=X_sparse.shape,
-                        device=dev
-                    )
-                    X_dense = X_torch_csr.to_dense().bfloat16()
-                    del X_torch_csr
-                    G_t = (X_dense.t() @ X_dense).float()
-                    del X_dense
-                    if dev.type == 'cuda': torch.cuda.empty_cache()
-                else:
-                    X_t = torch.tensor(X_sparse, device=dev, dtype=torch.bfloat16)
-                    G_t = (X_t.t() @ X_t).float()
-                    del X_t
-                
+                G_t = torch.from_numpy(G_np).to(dev)
                 eigvals, V = torch.linalg.eigh(G_t)
                 del G_t
             except Exception as e:
                 print(f"[gpu_accel] {dev.type.upper()} Eigen failed ({e}), fallback to Scipy CPU...")
-                G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
                 from scipy.linalg import eigh
-                eigvals_np, V_np = eigh(G)
+                eigvals_np, V_np = eigh(G_np)
                 V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-                del G
+                del G_np
         else:
-            G = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
             from scipy.linalg import eigh
-            eigvals_np, V_np = eigh(G)
+            eigvals_np, V_np = eigh(G_np)
             V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-            del G
+            del G_np
 
         inv_eig = 1.0 / (eigvals + reg_lambda)
         if rhs is None:
@@ -222,34 +232,23 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
     # 2. Cholesky Path (M > EIGEN_THRESHOLD)
     if dev.type in ('cuda', 'mps'):
         try:
-            print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on {dev.type}...")
-            t0 = time.time()
-            if isinstance(X_sparse, csr_matrix):
-                # Optimized Gram build: bfloat16 (user recommendation for ADA)
-                X_torch_csr = torch.sparse_csr_tensor(
-                    torch.from_numpy(X_sparse.indptr).long(),
-                    torch.from_numpy(X_sparse.indices).long(),
-                    torch.from_numpy(X_sparse.data).float(),
-                    size=X_sparse.shape,
-                    device=dev
-                )
-                X_dense = X_torch_csr.to_dense().bfloat16()
-                del X_torch_csr
-                G_t = (X_dense.t() @ X_dense).float()
-                del X_dense
-                if dev.type == 'cuda': torch.cuda.empty_cache()
+            # Re-enabling caching with bfloat16 optimization as per new ADA guide
+            G_t = _GramMatrixCache.get(X_sparse, dataset_name, device=dev)
+            if G_t is None:
+                print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on {dev.type} (bfloat16 ADA path)...")
+                t0 = time.time()
+                # Use bfloat16 for the build
+                G_t = _build_gram(X_sparse, dev)
+                _GramMatrixCache.put(X_sparse, G_t, dataset_name)
+                print(f"[gpu_accel] Gram X^T X cached (bfloat16 build, {time.time()-t0:.2f}s)")
             else:
-                X_t = torch.from_numpy(X_sparse).bfloat16().to(dev) if isinstance(X_sparse, np.ndarray) else X_sparse.to(dev).bfloat16()
-                G_t = (X_t.t() @ X_t).float()
-                del X_t
-            
-            print(f"[gpu_accel] Gram X^T X computed ({time.time()-t0:.2f}s)")
+                print(f"[gpu_accel] Gram ({M}x{M}) cache hit (bfloat16 optimized)")
 
             # G + λI (Modify in-place)
             G_t.diagonal().add_(reg_lambda)
-            # lambda가 포함된 Cholesky 결과는 재사용률이 낮고 유저 요청에 따라 캐싱 안함
-            P = gpu_cholesky_solve(G_t, rhs, device=device, dataset_name=None, return_tensor=return_tensor)
-            del G_t
+            P = gpu_cholesky_solve(G_t, rhs, device=dev, dataset_name=None, return_tensor=return_tensor)
+            # Revert to keep cached G clean
+            G_t.diagonal().sub_(reg_lambda)
             return P
         except Exception as e:
             print(f"[gpu_accel] {dev.type.upper()} Gram+Cholesky prep failed ({e}), fallback to CPU...")
@@ -257,7 +256,7 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
     # Fallback / CPU
     print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on CPU...")
     t0 = time.time()
-    G_np = (X_sparse.T @ X_sparse).toarray().astype(np.float32)
+    G_np = (X_sparse.T @ X_sparse).astype(np.float32).toarray()
     print(f"[gpu_accel] Gram X^T X computed ({time.time()-t0:.2f}s)")
 
     G_reg = G_np
@@ -350,13 +349,10 @@ _GramEigenCache = GramEigenCacheManager
 
 class GramMatrixCacheManager(GlobalCacheManager):
     """
-    λ-agnostic Gram matrix G = X^T X 캐시 (디스크 + 메모리).
-    λ가 바뀌어도 X^T X 재계산 없이 재사용 가능.
-
-    - 디스크: gram_{dataset}_{checksum}.pt 로 영속 저장
-    - 메모리: 가장 최근 1개만 보관 (M×M dense는 수백MB이므로 여러 개 쌓이면 OOM 위험)
+    Persistent cache for Gram matrix G = X^T X.
+    Uses bfloat16 to save 50% disk/memory on ADA architecture.
     """
-    _mem_cache = {}   # key -> G (CPU tensor), 최대 1개
+    _mem_cache = {}   # key -> G (bfloat16 CPU tensor), 최대 1개
     _np_cache  = {}   # key -> G (numpy), 최대 1개
     _cache_dir = 'data_cache'
 
@@ -379,19 +375,21 @@ class GramMatrixCacheManager(GlobalCacheManager):
     def get(cls, X, dataset_name=None, device='cpu'):
         if not dataset_name: return None
         key = cls._key(X, dataset_name)
+        dev = torch.device(device)
 
         # 1. 메모리 캐시
         if key in cls._mem_cache:
-            return cls._mem_cache[key].to(device)
+            return cls._mem_cache[key].float().to(dev)
 
         # 2. 디스크 캐시
         path = os.path.join(cls._cache_dir, f"{key}.pt")
         if os.path.exists(path):
             try:
-                G = torch.load(path, map_location='cpu', weights_only=True)
-                cls._mem_cache = {key: G}   # 메모리는 최근 1개만
-                print(f"[gpu_accel] Gram disk cache loaded: {os.path.basename(path)}")
-                return G.to(device)
+                # Load as stored (bfloat16) and cast to float on device
+                G_bf = torch.load(path, map_location='cpu', weights_only=True)
+                cls._mem_cache = {key: G_bf}   # 메모리는 최근 1개만 (bf16)
+                print(f"[gpu_accel] Gram disk cache loaded: {os.path.basename(path)} (bfloat16)")
+                return G_bf.float().to(dev)
             except Exception:
                 pass
         return None
@@ -401,11 +399,14 @@ class GramMatrixCacheManager(GlobalCacheManager):
         if not dataset_name: return
         os.makedirs(cls._cache_dir, exist_ok=True)
         key = cls._key(X, dataset_name)
-        G_cpu = G.cpu()
-        cls._mem_cache = {key: G_cpu}   # 메모리는 최근 1개만 유지
+        
+        # Store as bfloat16 to save disk/memory (ADA Guide)
+        G_bf = G.bfloat16().detach().cpu()
+        cls._mem_cache = {key: G_bf}   # 메모리는 최근 1개만 유지
+        
         path = os.path.join(cls._cache_dir, f"{key}.pt")
-        torch.save(G_cpu, path)
-        print(f"[gpu_accel] Gram X^T X saved to disk: {os.path.basename(path)}")
+        torch.save(G_bf, path)
+        print(f"[gpu_accel] Gram X^T X saved to disk: {os.path.basename(path)} (bfloat16)")
 
     @classmethod
     def get_numpy(cls, X, dataset_name=None):
@@ -420,7 +421,7 @@ class GramMatrixCacheManager(GlobalCacheManager):
         path = os.path.join(cls._cache_dir, f"{key}.pt")
         if os.path.exists(path):
             try:
-                G_np = torch.load(path, map_location='cpu', weights_only=True).numpy()
+                G_np = torch.load(path, map_location='cpu', weights_only=True).float().numpy()
                 cls._np_cache = {key: G_np}
                 print(f"[gpu_accel] Gram disk cache loaded (numpy): {os.path.basename(path)}")
                 return G_np
@@ -435,8 +436,9 @@ class GramMatrixCacheManager(GlobalCacheManager):
         key = cls._key(X, dataset_name)
         cls._np_cache = {key: G_np}
         path = os.path.join(cls._cache_dir, f"{key}.pt")
-        torch.save(torch.from_numpy(G_np), path)
-        print(f"[gpu_accel] Gram X^T X saved to disk: {os.path.basename(path)}")
+        # Save as bfloat16 even from numpy
+        torch.save(torch.from_numpy(G_np).bfloat16(), path)
+        print(f"[gpu_accel] Gram X^T X saved to disk: {os.path.basename(path)} (bfloat16)")
 
     def summary(self):
         import glob
@@ -929,82 +931,91 @@ class SVDCacheManager(GlobalCacheManager):
             return Y / Y.norm(dim=0, keepdim=True).clamp(min=1e-12)
 
     @torch.no_grad()
-    def _cuda_randomized_svd(self, X_sparse, k, n_iter=2, oversampling=10):
-        """CUDA-accelerated Randomized SVD (Halko et al., 2011) using native sparse CSR.
-
-        Unlike the MPS path (which batches due to memory/op constraints), CUDA supports
-        torch.sparse.mm on CSR tensors natively and efficiently, so no batching is needed.
-        Uses torch.linalg.qr for orthonormalization (stable on CUDA).
+    def _cuda_randomized_svd(self, X_sparse, k, n_iter=3, oversampling=20):
+        """CUDA-accelerated Randomized SVD (ADA optimized).
+        - Quality: n_iter=3, oversampling=20.
+        - Performance: Avoid contiguous copy on B.
         """
         device = torch.device("cuda")
         M, N = X_sparse.shape
         q = min(k + oversampling, M, N)
-        if q < 1:
-            q = 1
+        if q < 1: q = 1
 
         print(f"[CUDA-SVD] k={k}, q={q}, n_iter={n_iter}")
 
-        # Build CUDA sparse CSR tensors from scipy sparse
+        # Build CUDA sparse CSR tensors
+        if not isinstance(X_sparse, csr_matrix): X_sparse = X_sparse.tocsr()
         X_coo = X_sparse.tocoo()
         indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
         values = torch.from_numpy(X_coo.data.copy()).float()
-        X_t = torch.sparse_coo_tensor(
-            indices, values, (M, N), device=device
-        ).coalesce().to_sparse_csr()
-        Xt_t = torch.sparse_coo_tensor(
-            torch.stack([indices[1], indices[0]]), values,
-            (N, M), device=device
-        ).coalesce().to_sparse_csr()
+        X_t = torch.sparse_coo_tensor(indices, values, (M, N), device=device).coalesce().to_sparse_csr()
+        Xt_t = torch.sparse_coo_tensor(torch.stack([indices[1], indices[0]]), values, (N, M), device=device).coalesce().to_sparse_csr()
+        del X_coo, indices, values
 
         # Phase 1: Random sketch
         G = torch.randn(N, q, device=device, dtype=torch.float32)
-        Y = torch.sparse.mm(X_t, G)        # (M, q)
-        Q, _ = torch.linalg.qr(Y)          # (M, q), orthonormal columns
+        Y = torch.sparse.mm(X_t, G)
+        Q, _ = torch.linalg.qr(Y)
+        del G, Y
 
-        # Phase 2: Power iterations (improves approximation quality)
+        # Phase 2: Power iterations
         for i in range(n_iter):
-            Z = torch.sparse.mm(Xt_t, Q)   # (N, q)
-            Q_z, _ = torch.linalg.qr(Z)    # (N, q)
-            Y = torch.sparse.mm(X_t, Q_z)  # (M, q)
-            Q, _ = torch.linalg.qr(Y)      # (M, q)
+            Z = torch.sparse.mm(Xt_t, Q)
+            Q_z, _ = torch.linalg.qr(Z)
+            Y = torch.sparse.mm(X_t, Q_z)
+            Q, _ = torch.linalg.qr(Y)
+            del Z, Y, Q_z
 
         # Phase 3: Project into low-dimensional space
-        B = torch.sparse.mm(Xt_t, Q).t()   # (q, N)
+        # Optimized: B is (N, q), avoid .t() contiguous copy
+        B = torch.sparse.mm(Xt_t, Q)
 
-        # Phase 4: Small dense SVD on projected matrix
-        U_hat, S_vals, Vh = torch.linalg.svd(B, full_matrices=False)  # (q,q), (q,), (q,N)
+        # Phase 4: Small dense SVD
+        # B = U_hat @ S @ Vht
+        U_hat, S_vals, Vht = torch.linalg.svd(B, full_matrices=False)
 
         # Recover full-space singular vectors
-        U = torch.mm(Q, U_hat)             # (M, q)
-        V = Vh.t()                         # (N, q)
+        # X ~ Q @ B.t() = Q @ (Vht.t() @ S @ U_hat.t())
+        U = torch.mm(Q, Vht.t())
+        V = U_hat
 
         U, S_vals, V = U[:, :k].cpu(), S_vals[:k].cpu(), V[:, :k].cpu()
         print(f"[CUDA-SVD] Done! σ range: [{S_vals[-1]:.4f}, {S_vals[0]:.4f}]")
         return U, S_vals, V
 
     @torch.no_grad()
-    def _mps_randomized_svd(self, X_sparse, k, n_iter=2, oversampling=10, batch_size=2000):
-        """MPS-accelerated Randomized SVD (Halko et al., 2011)"""
+    def _mps_randomized_svd(self, X_sparse, k, n_iter=3, oversampling=20, batch_size=2000):
+        """MPS-accelerated Randomized SVD (ADA/Apple optimization).
+        - Quality: n_iter=3, oversampling=20.
+        """
         device = torch.device("mps")
         M, N = X_sparse.shape
         q = min(k + oversampling, M, N)
         if q < 1: q = 1
         
+        # Ensure CSR for batched slicing
+        if not isinstance(X_sparse, csr_matrix): X_sparse = X_sparse.tocsr()
+
         print(f"[MPS-SVD] k={k}, q={q}, n_iter={n_iter}, batch={batch_size}")
         
         # Phase 1: Sketching + Power Iteration
         G = torch.randn(N, q, device=device, dtype=torch.float32)
         Y = self._sparse_mm_batched(X_sparse, G, batch_size, device)
         Q = self._orthonormalize(Y, device)
-        
+        del G, Y
+
+        Xt_t = self.Xt_torch_csr.to(device)
         for i in range(n_iter):
-            Z = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device)
+            # Q is (M, q), Xt_t is (N, M) -> Z is (N, q)
+            Z = torch.sparse.mm(Xt_t, Q)
             Q_z = self._orthonormalize(Z, device)
+            
+            # X_t @ Q_z -> Q
             Y = self._sparse_mm_batched(X_sparse, Q_z, batch_size, device)
             Q = self._orthonormalize(Y, device)
-            del Z, Q_z
+            del Z, Y, Q_z
         
-        # Phase 2: Projection (B = Q^T @ A)
+        # Phase 2: Project
         B = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device).t()
 
         # Phase 3: Small SVD via eigen trick
@@ -1031,6 +1042,7 @@ class SVDCacheManager(GlobalCacheManager):
     @staticmethod
     def _sparse_mm_batched(X_sparse, Y_dense, batch_size, device):
         """Batched X_sparse @ Y_dense (memory efficient)."""
+        if not isinstance(X_sparse, csr_matrix): X_sparse = X_sparse.tocsr()
         M = X_sparse.shape[0]
         q = Y_dense.shape[1]
         result = torch.zeros(M, q, device=device)
@@ -1046,6 +1058,7 @@ class SVDCacheManager(GlobalCacheManager):
     @staticmethod
     def _sparse_mm_transposed_batched(X_sparse, Y_dense, batch_size, device):
         """Batched X_sparse^T @ Y_dense."""
+        if not isinstance(X_sparse, csr_matrix): X_sparse = X_sparse.tocsr()
         M, N = X_sparse.shape
         q = Y_dense.shape[1]
         result = torch.zeros(N, q, device=device)

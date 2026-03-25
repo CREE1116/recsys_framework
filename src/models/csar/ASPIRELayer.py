@@ -340,24 +340,27 @@ class ChebyASPIRELayer(nn.Module):
         n = X_sparse.shape[1]
         L = None
         
-        # ML-20M (18k items) fits easily in 16GB VRAM as a dense N x N matrix (1.3GB).
-        # We increase threshold to 25000 (~2.5GB).
-        if n <= 25000:
+        # ML-20M (18k items), Yelp 10-core (45k items)
+        # We increase threshold to 50,000 enabled by bfloat16 savings.
+        if n <= 50000:
             try:
                 print(f"[ChebyASPIRE] Computing dense Gram matrix G = X^T X (Items={n}) in bfloat16...")
-                # Optimized: bfloat16 for memory efficiency (ADA GPU)
-                X_dense = self.X_torch_csr.to(dev).to_dense().bfloat16()
-                L = (X_dense.t() @ X_dense).float()
-                del X_dense
-                if dev.type == 'cuda': torch.cuda.empty_cache()
+                # Optimized Gram build: bfloat16 for memory efficiency (ADA GPU)
+                from src.utils.gpu_accel import _build_gram
+                L = _build_gram(X_sparse, dev)
             except Exception as e:
                 print(f"[ChebyASPIRE] Dense Gram build failed: {e}")
                 L = None
         
-        self.item_weights = self._dense_chebyshev(L, coeffs, n, dev) if L is not None else torch.empty(0)
-        self.scores_cache = None # Reset cache on rebuild
-
         if verbose:
+            print(f"[ChebyASPIRE] Build done (Items: {n}, Threshold: 50,000)")
+        
+        # Kernel fusion for CUDA (ADA)
+        if dev.type == 'cuda':
+            try:
+                self._dense_chebyshev = torch.compile(self._dense_chebyshev, mode='reduce-overhead')
+            except Exception as e:
+                print(f"[ChebyASPIRE] torch.compile skipped: {e}")
             print(f"[ChebyASPIRELayer] Built | γ={self.gamma:.2f} α={self.alpha:.2f} (abs={self.alpha_abs:.2f})")
 
     def _dense_chebyshev(self, L, coeffs, n, dev) -> torch.Tensor:
@@ -416,17 +419,12 @@ class ChebyASPIRELayer(nn.Module):
             self.item_weights = self._spmv_forward(I_n).to(device or self.sparse_device)
             del I_n
 
-        # If item_weights exist, use them to compute scores_cache in batches
+        # [ADA OPTIMIZATION] Option A: skip scores_cache if item_weights exist 
+        # (77k x 45k x 4 = 14GB CPU RAM risk)
         if self.item_weights.numel() > 0:
-            print(f"[ChebyASPIRE] Computing scores_cache via item_weights...")
-            batch_size = 10000
-            all_scores = torch.zeros((N_users, N_items), device="cpu")
-            for i in range(0, N_users, batch_size):
-                end = min(i + batch_size, N_users)
-                X_batch = torch.from_numpy(X_all_sparse[i:end].toarray()).float().to(self.item_weights.device)
-                all_scores[i:end] = torch.mm(X_batch, self.item_weights).cpu()
-                del X_batch
-            self.scores_cache = all_scores
+            print(f"[ChebyASPIRE] scores_cache overflow risk (Items={N_items}), using on-the-fly batch inference.")
+            self.scores_cache = None
+            return
         else:
             # Absolute fallback: Batch-wise iterative expansion (Very slow but safe)
             print(f"[ChebyASPIRE] Fallback: Batch-wise iterative expansion...")
