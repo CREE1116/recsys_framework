@@ -193,10 +193,10 @@ class ASPIRELayer(nn.Module):
     def build(self, X_sparse, dataset_name: str | None = None, verbose: bool = True):
         dev = next((p.device for p in self.parameters()), torch.device("cpu"))
         
-        # 1. SVD
-        manager = EVDCacheManager(device=dev)
+        # 1. SVD (Shared Cache Support)
+        manager = SVDCacheManager(device=dev)
         # [Optimization] Pass k=self.k to enable early truncation in cache manager
-        _, s, v, _ = manager.get_evd(X_sparse, k=self.k, dataset_name=dataset_name)
+        _, s, v, _ = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
 
         # 2. Energy-based or K-based Truncation
         if self.k is None and self.target_energy is not None:
