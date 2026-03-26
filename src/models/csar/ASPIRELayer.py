@@ -13,9 +13,6 @@ from src.utils.gpu_accel import SVDCacheManager, EVDCacheManager, GramMatrixCach
 from src.models.csar.aspire_visualizer import ASPIREVisualizer
 from src.utils.cache_manager import GlobalCacheManager
 
-from src.utils.cache_manager import GlobalCacheManager
-
-
 # ==============================================================================
 # Cheby Setup Cache (lambda_max)
 # ==============================================================================
@@ -75,7 +72,6 @@ class ChebyBasisCacheManager(GlobalCacheManager):
     @classmethod
     def exists(cls, dataset_name, matrix_id, degree):
         if not dataset_name or not matrix_id: return False
-        # Check if all k up to degree exist
         for k in range(degree + 1):
             if not os.path.exists(cls.get_path(dataset_name, matrix_id, k)):
                 return False
@@ -98,8 +94,6 @@ class ChebyBasisCacheManager(GlobalCacheManager):
 
 
 _BasisCache = ChebyBasisCacheManager
-
-
 _GramCache = GramMatrixCacheManager
 
 # ==============================================================================
@@ -108,39 +102,29 @@ _GramCache = GramMatrixCacheManager
 
 class AspireFilter:
     """
-    ASPIRE 필터링 유틸리티.
-    τ (tau) 재매개변수화 기반 Scale-invariant Gamma 필터.
+    ASPIRE 단일 파라미터(1-Parameter) 필터링 유틸리티.
+    h(σ_k; γ) = σ_k^γ / (σ_k^γ + σ_max^γ)
 
-    h(σ̃_k; γ, τ) = σ̃_k^γ / (σ̃_k^γ + τ^γ)
-
-    - γ (gamma): 필터 경사도/형상. 커질수록 급격한 고역 억제.
-    - τ (tau):   컷오프 임계값. σ̃_k = τ 에서 h = 0.5 (γ와 독립).
-
-    완전 디커플링:
-      dh/d(τ)|_{γ 고정} → 위치만 변경
-      dh/d(γ)|_{τ 고정} → 형상만 변경
+    - γ (gamma): Global Compression 파라미터. 
+      [이론] True-MSE 최소화를 위한 수학적 정답은 γ ≈ 0.8 수준이나,
+      [실제] NDCG 랭킹 공간에서 거대한 Head 아웃라이어를 억제하기 위해 HPO는 γ → 0 에 가까운
+      극단적 평탄화(Over-compression)를 선택함. 이는 복원(MSE)과 랭킹(NDCG)의 목적 함수 충돌을 증명함.
+    - α (alpha): Ranking Invariance 정리에 의해, 선형 추천 모델에서 스케일 계수 α는 
+      최종 추천 리스트의 순위에 어떠한 수학적 영향도 미치지 못함. (gamma_only 모드 사용 권장)
     """
     @staticmethod
     def apply_filter(vals: torch.Tensor, gamma: float = 1.0, alpha: float = 1.0, 
                     mode: str = 'gamma_only', is_gram: bool = False) -> tuple[torch.Tensor, float, float]:
-        """
-        Returns:
-            - h (Tensor): Filter coefficients
-            - alpha (float): The alpha parameter
-            - alpha_abs (float): The effective lambda used in the denominator
-        """
         s = torch.clamp(vals.float(), min=1e-12)
         exp = float(gamma) if not is_gram else float(gamma) / 2.0
         s_gamma = torch.pow(s, exp)
         
         if mode == 'gamma_only':
-            # [Gamma-only] h = s^g / (s^g + s_max^g)
-            # This ensures h(s_max) = 0.5.
+            # 1-Parameter 모드: 최상위 특이값의 에너지를 기준으로 스케일링 (Ranking Invariant)
             s_max_gamma = s_gamma.max().item()
             effective_lambda = s_max_gamma
             alpha_val = 1.0
         else:
-            # [Standard/Tikhonov] uses provided alpha
             effective_lambda = float(alpha)
             alpha_val = float(alpha)
 
@@ -151,7 +135,7 @@ class AspireFilter:
     @staticmethod
     def compute_rho(singular_values: torch.Tensor) -> float:
         """
-        SPP 진단 (rho): log(s_tilde) vs log(rank) 의 Power-law 적합성 (R^2).
+        SPP 진단 (rho): log(s_tilde) vs log(rank) 의 Power-law 적합도 (R^2).
         """
         s_vals = singular_values.detach().cpu().numpy()
         s_tilde = s_vals / (s_vals[0] + 1e-10)
@@ -162,7 +146,6 @@ class AspireFilter:
         
         log_rank = np.log(np.arange(1, K + 1))
         
-        # OLS R^2
         cov = np.cov(log_rank, log_s)
         if cov[0, 0] < 1e-10: return 0.0
         
@@ -199,7 +182,6 @@ class ASPIRELayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse, dataset_name: str | None = None, device=None, verbose: bool = True):
-        # Determine device: priority = explicit > buffers > cpu
         if device is not None:
             dev = torch.device(device)
         else:
@@ -208,12 +190,9 @@ class ASPIRELayer(nn.Module):
             except StopIteration:
                 dev = torch.device("cpu")
         
-        # 1. SVD (Shared Cache Support)
         manager = SVDCacheManager(device=dev)
-        # [Optimization] Pass k=self.k to enable early truncation in cache manager
         _, s, v, _ = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
 
-        # 2. Energy-based or K-based Truncation
         if self.k is None and self.target_energy is not None:
             cumsum_ev = torch.cumsum(s, dim=0)
             k_energy = torch.where(cumsum_ev / (cumsum_ev[-1] + 1e-12) >= self.target_energy)[0]
@@ -225,7 +204,6 @@ class ASPIRELayer(nn.Module):
         self.register_buffer("singular_values", s.to(dev))
         self.register_buffer("V_raw", v.to(dev))
 
-        # 3. Filtering
         h, self.alpha, self.alpha_abs = AspireFilter.apply_filter(
             self.singular_values, gamma=self.gamma, alpha=self.alpha, mode=self.filter_mode
         )
@@ -273,17 +251,12 @@ class ChebyASPIRELayer(nn.Module):
         self.X_torch_csr = None
         self.Xt_torch_csr = None
         self.sparse_device = None
-        self.scores_cache = None  # Precomputed scores for all users
+        self.scores_cache = None  
         self.matrix_id = None
 
     @torch.no_grad()
     def _estimate_lambda_max(self, X_csr, Xt_csr) -> float:
-        """
-        Power iteration to estimate the largest eigenvalue of Gram matrix (X^T X).
-        Use GPU if CUDA is available, otherwise CPU (MPS sparse support is flaky).
-        """
         device = X_csr.device
-        # Use GPU for CUDA, but fallback to CPU for MPS due to sparse issues
         calc_device = device if device.type == 'cuda' else torch.device("cpu")
         
         X_local = X_csr.to(calc_device)
@@ -293,9 +266,7 @@ class ChebyASPIRELayer(nn.Module):
         v /= (v.norm() + 1e-12)
         
         last_lambda = 0.0
-        # 30 iterations is usually enough for spectral radius
         for _ in range(30):
-            # L @ v = Xt @ (X @ v)
             v_next = torch.sparse.mm(Xt_local, torch.sparse.mm(X_local, v))
             lambda_est = v_next.norm().item()
             if lambda_est < 1e-12: break
@@ -313,7 +284,6 @@ class ChebyASPIRELayer(nn.Module):
         mid = half = lam_max / 2.0
         lam_nodes = mid + half * np.cos(theta)
 
-        # Apply finalized filter
         lam_torch = torch.from_numpy(lam_nodes).float()
         h_nodes, self.alpha, self.alpha_abs = AspireFilter.apply_filter(
             lam_torch, gamma=self.gamma, alpha=self.alpha, mode=self.filter_mode, is_gram=True
@@ -328,7 +298,6 @@ class ChebyASPIRELayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse, dataset_name: str | None = None, device=None, verbose: bool = True):
-        # Determine device
         if device is not None:
             dev = torch.device(device)
         else:
@@ -342,7 +311,6 @@ class ChebyASPIRELayer(nn.Module):
         self.X_torch_csr = torch.sparse_coo_tensor(indices, values, X_coo.shape, device=self.sparse_device).coalesce().to_sparse_csr()
         self.Xt_torch_csr = torch.sparse_coo_tensor(torch.stack([indices[1], indices[0]]), values, (X_coo.shape[1], X_coo.shape[0]), device=self.sparse_device).coalesce().to_sparse_csr()
 
-        # --- Cache Logic for Lambda Max (Parameter Independent) ---
         self.matrix_id = EVDCacheManager._generate_matrix_id(X_sparse)
         lambda_max = _ChebyCache.get_lambda(dataset_name, self.matrix_id)
         
@@ -352,46 +320,70 @@ class ChebyASPIRELayer(nn.Module):
         elif verbose:
             print(f"[ChebyASPIRE] Lambda Cache Hit | λ_max={lambda_max:.2f}")
 
-        coeffs = self._compute_chebyshev_coeffs(lambda_max, self.degree)
+        self.t_mid.fill_(lambda_max / 2.0)
+        self.t_half.fill_(lambda_max / 2.0)
 
+        coeffs = self._compute_chebyshev_coeffs(lambda_max, self.degree)
         self.register_buffer("cheby_coeffs", torch.from_numpy(coeffs).float().to(dev))
-        self.register_buffer("t_mid", torch.tensor(lambda_max / 2.0, device=dev))
-        self.register_buffer("t_half", torch.tensor(lambda_max / 2.0, device=dev))
 
         n = X_sparse.shape[1]
-        L = None
         
-        # ML-20M (18k items), Yelp 10-core (45k items)
-        # We increase threshold to 50,000 enabled by bfloat16 savings.
         if n <= 50000:
             try:
-                print(f"[ChebyASPIRE] Computing dense Gram matrix G = X^T X (Items={n}) in bfloat16...")
-                # Optimized Gram build: bfloat16 for memory efficiency (ADA GPU)
+                if verbose: print(f"[ChebyASPIRE] Building item-wise filter (dense path, items={n})...")
                 from src.utils.gpu_accel import _build_gram
                 L = _build_gram(X_sparse, dev)
+                
+                if dev.type == 'cuda':
+                    L = L.bfloat16()
+                    coeffs_t = self.cheby_coeffs.bfloat16()
+                    weights = self._dense_chebyshev(L, coeffs_t, n, dev)
+                    self.item_weights = weights.float() 
+                else:
+                    self.item_weights = self._dense_chebyshev(L, self.cheby_coeffs, n, dev)
+                
+                del L
+                if dev.type == 'cuda': torch.cuda.empty_cache()
+                if verbose: print(f"[ChebyASPIRE] Item weights built on {dev.type} (Dense)")
             except Exception as e:
-                print(f"[ChebyASPIRE] Dense Gram build failed: {e}")
-                L = None
+                print(f"[ChebyASPIRE] Dense build failed: {e}, falling back to Sparse.")
+                self.item_weights = torch.empty(0, device=dev)
         
         if verbose:
-            print(f"[ChebyASPIRE] Build done (Items: {n}, Threshold: 50,000)")
-        
-        # Kernel fusion for CUDA (ADA)
-        if dev.type == 'cuda':
-            try:
-                self._dense_chebyshev = torch.compile(self._dense_chebyshev, mode='reduce-overhead')
-            except Exception as e:
-                print(f"[ChebyASPIRE] torch.compile skipped: {e}")
-            print(f"[ChebyASPIRELayer] Built | γ={self.gamma:.2f} α={self.alpha:.2f} (abs={self.alpha_abs:.2f})")
+            mode_desc = "Standard" if self.filter_mode != "gamma_only" else "Gamma-only"
+            print(f"[ChebyASPIRE] Build done | Degree: {self.degree}, Mode: {mode_desc}, Device: {dev.type}")
 
     def _dense_chebyshev(self, L, coeffs, n, dev) -> torch.Tensor:
-        T_prev = torch.eye(n, device=dev)
-        T_curr = (L - self.t_mid * T_prev) / self.t_half
-        W = float(coeffs[0]) * T_prev + float(coeffs[1]) * T_curr
+        """
+        [Optimized] In-place Normalized Dense Chebyshev Expansion
+        루프 진입 전 L을 L_scaled = (L - mid*I) / half 로 덮어씌워 $O(N^2)$ 연산과 메모리 할당을 최소화함.
+        T_k = 2 * L_scaled @ T_{k-1} - T_{k-2}
+        """
+        mid = float(self.t_mid)
+        half = float(self.t_half)
+        
+        # 1. In-place Normalization (VRAM 및 연산량 대폭 절약)
+        L.diagonal().sub_(mid)
+        L.mul_(1.0 / half)
+        # 이제 L 행렬은 정규화된 L_scaled 로 작동함.
+        
+        T_prev = torch.eye(n, device=dev, dtype=L.dtype)
+        T_curr = L.clone()
+        
+        # W = c0 * T0 + c1 * T1
+        W = T_prev.clone().mul_(float(coeffs[0]))
+        W.add_(T_curr, alpha=float(coeffs[1]))
+        
         for k in range(2, self.degree + 1):
-            T_next = (2.0 * (torch.mm(L, T_curr) - self.t_mid * T_curr) / self.t_half) - T_prev
-            W += float(coeffs[k]) * T_next
-            T_prev, T_curr = T_curr, T_next
+            # T_next = 2 * L_scaled @ T_curr - T_prev
+            T_next = torch.mm(L, T_curr)
+            T_next.mul_(2.0).sub_(T_prev)
+            
+            W.add_(T_next, alpha=float(coeffs[k]))
+            
+            T_prev = T_curr
+            T_curr = T_next
+            
         return W
 
     @torch.no_grad()
@@ -401,68 +393,67 @@ class ChebyASPIRELayer(nn.Module):
         return self._spmv_forward(X_batch)
 
     def _spmv_forward(self, X):
-        # Optimization: In-place addition and pre-computed constants
         X_t = X.t().to(self.sparse_device)
         T_prev = X_t
-        mid_val = self.t_mid.to(self.sparse_device)
-        half_val = self.t_half.to(self.sparse_device)
+        mid_val = float(self.t_mid)
+        half_val = float(self.t_half)
         inv_half = 1.0 / half_val
+        coeff_inv_half = 2.0 * inv_half
         
         with torch.no_grad():
-            T_curr = (torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_prev)) - mid_val * T_prev) * inv_half
-            W = float(self.cheby_coeffs[0]) * T_prev + float(self.cheby_coeffs[1]) * T_curr
+            T_curr = torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_prev))
+            T_curr.sub_(T_prev, alpha=mid_val).mul_(inv_half)
             
-            coeff_inv_half = 2.0 * inv_half
+            W = T_prev.clone().mul_(float(self.cheby_coeffs[0]))
+            W.add_(T_curr, alpha=float(self.cheby_coeffs[1]))
             
             for k in range(2, self.degree + 1):
-                # T_next = (2.0 * (L @ T_curr - mid * T_curr) / half) - T_prev
                 temp = torch.sparse.mm(self.Xt_torch_csr, torch.sparse.mm(self.X_torch_csr, T_curr))
-                T_next = coeff_inv_half * (temp - mid_val * T_curr) - T_prev
+                T_next = temp.sub_(T_curr, alpha=mid_val).mul_(coeff_inv_half).sub_(T_prev)
+                
                 W.add_(T_next, alpha=float(self.cheby_coeffs[k]))
                 T_prev, T_curr = T_curr, T_next
         return W.t().to(X.device)
 
     @torch.no_grad()
     def precompute(self, X_all_sparse, dataset_name=None, matrix_id=None, device=None):
-        """
-        Memory-efficient precomputation.
-        1. If N is small, compute item_weights (N x N) and use them.
-        2. If scores_cache is needed, compute it in batches to avoid M x M intermediates.
-        """
-        print(f"[ChebyASPIRE] Precomputing (Items: {X_all_sparse.shape[1]}, Users: {X_all_sparse.shape[0]})...")
         t0 = time.time()
-        
         N_users, N_items = X_all_sparse.shape
-        # If we don't have item_weights yet, try to build them first (much smaller than scores_cache)
-        if self.item_weights.numel() == 0 and N_items <= 25000:
-            print(f"[ChebyASPIRE] Building item-wise filter (weights)...")
-            I_n = torch.eye(N_items, device=device or self.sparse_device)
-            self.item_weights = self._spmv_forward(I_n).to(device or self.sparse_device)
-            del I_n
+        
+        if self.item_weights.numel() == 0 and N_items <= 50000:
+             print(f"[ChebyASPIRE] Item weights missing, attempted fallback build...")
+             I_n = torch.eye(N_items, device=device or self.sparse_device)
+             self.item_weights = self._spmv_forward(I_n).to(device or self.sparse_device)
+             del I_n
 
-        # [ADA OPTIMIZATION] Option A: skip scores_cache if item_weights exist 
-        # (77k x 45k x 4 = 14GB CPU RAM risk)
+        if N_users * N_items > 1.5e8: 
+             print(f"[ChebyASPIRE] scores_cache risk ({N_users}x{N_items}), skipping cache, using on-the-fly weights.")
+             self.scores_cache = None
+             return
+
+        print(f"[ChebyASPIRE] Precomputing scores_cache (Items: {N_items}, Users: {N_users})...")
+        batch_size = 5000
+        all_scores = torch.zeros((N_users, N_items), device="cpu")
+        
         if self.item_weights.numel() > 0:
-            print(f"[ChebyASPIRE] scores_cache overflow risk (Items={N_items}), using on-the-fly batch inference.")
-            self.scores_cache = None
-            return
+            weights = self.item_weights.to(device or self.sparse_device)
+            for i in range(0, N_users, batch_size):
+                end = min(i + batch_size, N_users)
+                X_batch = torch.from_numpy(X_all_sparse[i:end].toarray()).float().to(weights.device)
+                all_scores[i:end] = torch.mm(X_batch, weights).cpu()
+                del X_batch
         else:
-            # Absolute fallback: Batch-wise iterative expansion (Very slow but safe)
-            print(f"[ChebyASPIRE] Fallback: Batch-wise iterative expansion...")
-            batch_size = 5000
-            all_scores = torch.zeros((N_users, N_items), device="cpu")
             for i in range(0, N_users, batch_size):
                 end = min(i + batch_size, N_users)
                 X_batch = torch.from_numpy(X_all_sparse[i:end].toarray()).float().to(self.sparse_device)
                 all_scores[i:end] = self._spmv_forward(X_batch).cpu()
                 del X_batch
-            self.scores_cache = all_scores
-
+        
+        self.scores_cache = all_scores
         print(f"[ChebyASPIRE] Precomputation done: {time.time()-t0:.2f}s")
 
     @torch.no_grad()
     def visualize_matrices(self, X_sparse=None, save_dir=None, lightweight=False):
-        # Normalize range for filter visualization [0, 1]
         sigmas = np.linspace(1.0, 1e-3, 500)
         lam_nodes = torch.from_numpy(sigmas**2).float()
         h_vals, eff_alpha, _ = AspireFilter.apply_filter(

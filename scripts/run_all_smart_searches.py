@@ -120,6 +120,26 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                 print(f"  -> Seeds to evaluate independently: {seeds_to_run}")
 
                 for seed in seeds_to_run:
+                    # [Resumption] Check if BEST result for this seed already exists
+                    dataset_name_clean = dataset_name # already cleaned above
+                    best_dir_candidate = os.path.join('trained_model', dataset_name_clean, f"BEST_{model_name}_seed_{seed}")
+                    metrics_path = os.path.join(best_dir_candidate, "final_metrics.json")
+                    
+                    if os.path.exists(metrics_path):
+                        print(f"\n   [SKIP] BEST result for Seed {seed} already exists at {best_dir_candidate}. Skipping search.")
+                        # Load existing metrics for aggregation
+                        try:
+                            with open(metrics_path, 'r', encoding='utf-8') as f:
+                                final_metrics = json.load(f)
+                            best_metrics_per_seed[seed] = final_metrics.get(getattr(args, 'metric', 'NDCG@10'), None)
+                            best_params_per_seed[seed] = {"status": "reused_existing"}
+                            best_dirs_per_seed[seed] = best_dir_candidate
+                            for k, v in final_metrics.items():
+                                all_seed_metrics[k].append(v)
+                        except Exception as e:
+                            print(f"   [Warning] Could not load existing metrics: {e}. Proceeding with search.")
+                        continue
+
                     print(f"\n   --- Starting Independent Search for Seed: {seed} ---")
                     # Update config for this specific run
                     args.seeds = seed 
