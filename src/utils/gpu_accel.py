@@ -159,6 +159,7 @@ def _cpu_cholesky(G_np, rhs_np, block_size=2000):
         result = cho_solve((cho, low), rhs_np, check_finite=False)
         print(f"[gpu_accel] CPU Cholesky Solve ({M}x{rhs_np.shape[1]}): {time.time()-t0:.2f}s")
     
+    return result
 def _build_gram(X_sparse, device):
     """
     Optimized Gram matrix (X^T X) build.

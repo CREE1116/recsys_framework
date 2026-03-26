@@ -327,9 +327,14 @@ class ChebyASPIRELayer(nn.Module):
         return coeffs
 
     @torch.no_grad()
-    def build(self, X_sparse, dataset_name: str | None = None, verbose: bool = True):
-        dev = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-        self.sparse_device = torch.device("cpu" if "mps" in dev else dev)
+    def build(self, X_sparse, dataset_name: str | None = None, device=None, verbose: bool = True):
+        # Determine device
+        if device is not None:
+            dev = torch.device(device)
+        else:
+            dev = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+        
+        self.sparse_device = torch.device("cpu" if "mps" in dev.type else dev)
         
         X_coo = X_sparse.tocoo()
         indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()

@@ -79,7 +79,7 @@ class ChebyASPIRE(BaseModel):
         
         # 2. Build Layer
         dataset_name = self.config.get('dataset_name', 'unknown')
-        self.lira_layer.build(X_sparse, dataset_name=dataset_name)
+        self.lira_layer.build(X_sparse, dataset_name=dataset_name, device=self.device)
         self.lira_layer.to(self.device)
         
         # 3. Precompute Full Scores (Optimization for evaluation speed)
