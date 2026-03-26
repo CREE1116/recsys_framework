@@ -42,7 +42,7 @@ def run_exp8(dataset_name, n_trials=30, k=None):
             'alpha': alpha, 
             'k': k,
             'filter_mode': 'gamma_only', 
-            'target_energy': 1.0
+            # 'target_energy': 1.0
         }
         cfg = {**config, 'model': m_cfg, 'device': 'auto'}
         model = ASPIRE_Test(cfg, loader)
@@ -58,14 +58,14 @@ def run_exp8(dataset_name, n_trials=30, k=None):
     eval_cfg_full = get_eval_config(loader, {"top_k": [20], "metrics": ["NDCG", "Coverage"]})
 
     # Helper for evaluation
-    def evaluate(gamma, alpha, loader_set="test", k=None):
+    def evaluate(gamma, alpha, loader_set="test", k=None, filter_mode='gamma_only'):
         m_cfg = {
             'name': 'aspire_test', 
             'gamma': gamma, 
             'alpha': alpha, 
             'k': k,
-            'filter_mode': 'gamma_only', 
-            'target_energy': 1.0
+            'filter_mode': filter_mode, 
+            # 'target_energy': 1.0
         }
         cfg = {**config, 'model': m_cfg, 'device': 'auto'}
         model = ASPIRE_Test(cfg, loader)
@@ -131,7 +131,7 @@ def run_exp8(dataset_name, n_trials=30, k=None):
     # Sequential HPOs and evaluations
     # V1 (Theory G, Def A)
     print("  Evaluating V1 (Theory G, Def A)...")
-    final_results["V1"] = evaluate(gamma_theory, default_alpha)
+    final_results["V1"] = evaluate(gamma_theory, default_alpha, filter_mode='gamma_only')
     final_results["V1"]["gamma"] = float(gamma_theory)
     final_results["V1"]["alpha"] = float(default_alpha)
     final_results["V1"]["k"] = int(eff_k)
@@ -142,8 +142,8 @@ def run_exp8(dataset_name, n_trials=30, k=None):
         {'name': 'gamma', 'type': 'float', 'range': '0.0 2.0'},
         {'name': 'k', 'type': 'int_min_dim', 'log': True}
     ], n_trials=n_trials, patience=20, min_dim=min_dim)
-    best_g_params, _ = hpo_g.search(lambda p: evaluate(p['gamma'], default_alpha, "valid", k=p['k'])["NDCG@20"], study_name=f"Exp8_G_{dataset_name}")
-    final_results["V2"] = evaluate(best_g_params['gamma'], default_alpha, k=best_g_params['k'])
+    best_g_params, _ = hpo_g.search(lambda p: evaluate(p['gamma'], default_alpha, "valid", k=p['k'], filter_mode='gamma_only')["NDCG@20"], study_name=f"Exp8_G_{dataset_name}")
+    final_results["V2"] = evaluate(best_g_params['gamma'], default_alpha, k=best_g_params['k'], filter_mode='gamma_only')
     final_results["V2"]["gamma"] = float(best_g_params['gamma'])
     final_results["V2"]["alpha"] = float(default_alpha)
     final_results["V2"]["k"] = int(best_g_params['k'])
@@ -154,8 +154,8 @@ def run_exp8(dataset_name, n_trials=30, k=None):
         {'name': 'alpha', 'type': 'float', 'range': '1e-3 1e3', 'log': True},
         {'name': 'k', 'type': 'int_min_dim', 'log': True}
     ], n_trials=n_trials, patience=20, min_dim=min_dim)
-    best_a_params, _ = hpo_a.search(lambda p: evaluate(gamma_theory, p['alpha'], "valid", k=p['k'])["NDCG@20"], study_name=f"Exp8_A_{dataset_name}")
-    final_results["V3"] = evaluate(gamma_theory, best_a_params['alpha'], k=best_a_params['k'])
+    best_a_params, _ = hpo_a.search(lambda p: evaluate(gamma_theory, p['alpha'], "valid", k=p['k'], filter_mode='standard')["NDCG@20"], study_name=f"Exp8_A_{dataset_name}")
+    final_results["V3"] = evaluate(gamma_theory, best_a_params['alpha'], k=best_a_params['k'], filter_mode='standard')
     final_results["V3"]["gamma"] = float(gamma_theory)
     final_results["V3"]["alpha"] = float(best_a_params['alpha'])
     final_results["V3"]["k"] = int(best_a_params['k'])
@@ -169,12 +169,12 @@ def run_exp8(dataset_name, n_trials=30, k=None):
     ], n_trials=max(n_trials * 2, 30), patience=30, min_dim=min_dim)
     
     def objective_v4(p):
-        res = evaluate(p['gamma'], p['alpha'], "valid", k=p['k'])
+        res = evaluate(p['gamma'], p['alpha'], "valid", k=p['k'], filter_mode='standard')
         return res["NDCG@20"]
 
     best_v4_params, _ = hpo_joint.search(objective_v4, study_name=f"Exp8_Joint_{dataset_name}")
     
-    final_results["V4"] = evaluate(best_v4_params['gamma'], best_v4_params['alpha'], "test", k=best_v4_params['k'])
+    final_results["V4"] = evaluate(best_v4_params['gamma'], best_v4_params['alpha'], "test", k=best_v4_params['k'], filter_mode='standard')
     final_results["V4"]["gamma"] = float(best_v4_params['gamma'])
     final_results["V4"]["alpha"] = float(best_v4_params['alpha'])
     final_results["V4"]["k"] = int(best_v4_params['k'])

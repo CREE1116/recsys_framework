@@ -60,7 +60,7 @@ class ASPIRE(BaseModel):
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
         cols = train_df['item_id'].values
-        values = np.ones(len(train_df))
+        values = np.ones(len(train_df), dtype=np.float32)
         return csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items))
 
     def get_train_matrix(self, data_loader):

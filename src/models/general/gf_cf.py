@@ -62,19 +62,20 @@ class GF_CF(BaseModel):
         self.train_matrix_csr = R
 
         # 1. Normalization
-        rowsum = np.array(R.sum(axis=1)).flatten()
-        d_inv_row = np.power(rowsum, -0.5)
-        d_inv_row[np.isinf(d_inv_row)] = 0.
-        
-        colsum = np.array(R.sum(axis=0)).flatten()
-        d_inv_col = np.power(colsum, -0.5)
-        d_inv_col[np.isinf(d_inv_col)] = 0.
+        with np.errstate(divide='ignore'):
+            rowsum = np.array(R.sum(axis=1)).flatten()
+            d_inv_row = np.where(rowsum > 0, np.power(rowsum, -0.5), 0.)
+            
+            colsum = np.array(R.sum(axis=0)).flatten()
+            d_inv_col = np.where(colsum > 0, np.power(colsum, -0.5), 0.)
 
         norm_adj = sp.diags(d_inv_row) @ R @ sp.diags(d_inv_col)
         norm_adj = norm_adj.tocsc()
 
+        # D_i^-0.5 (d_inv_col) and D_i^0.5 (1/d_inv_col = colsum^0.5)
         self.d_mat_i     = torch.from_numpy(d_inv_col.astype(np.float32)).to(self.device)
-        self.d_mat_i_inv = torch.from_numpy(np.where(d_inv_col > 0, 1.0 / d_inv_col, 0.0).astype(np.float32)).to(self.device)
+        d_mat_i_inv_np = np.where(colsum > 0, np.power(colsum, 0.5), 0.)
+        self.d_mat_i_inv = torch.from_numpy(d_mat_i_inv_np.astype(np.float32)).to(self.device)
 
         # 2. SVD
         dataset_name = self.config.get('dataset_name', 'unknown')
