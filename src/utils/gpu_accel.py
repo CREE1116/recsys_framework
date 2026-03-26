@@ -473,41 +473,14 @@ class CholeskyCacheManager(GlobalCacheManager):
     _cache_dir = 'data_cache'
 
     @classmethod
-    def _checksum(cls, X):
-        # Similar to GramEigen but for dense matrices usually used in Cholesky
-        X_np = X.cpu().numpy() if torch.is_tensor(X) else X
-        return hash((X_np.shape, X_np.flatten()[:100].tobytes())) if X_np is not None else 0
-
-    @classmethod
     def get(cls, X, dataset_name=None, device='cpu'):
-        if not dataset_name: return None
-        checksum = cls._checksum(X)
-        key = f"chol_{dataset_name}_{checksum}"
-        
-        if key in cls._mem_cache:
-            return cls._mem_cache[key].to(device)
-            
-        path = os.path.join(cls._cache_dir, f"{key}.pt")
-        if os.path.exists(path):
-            try:
-                L = torch.load(path, map_location='cpu')
-                cls._mem_cache = {key: L} # Keep only recent
-                return L.to(device)
-            except Exception: pass
+        """[DISABLED] Persistent Cholesky caching is disabled to prevent disk bloat during HPO."""
         return None
 
     @classmethod
     def put(cls, X, L, dataset_name=None):
-        if not dataset_name: return
-        os.makedirs(cls._cache_dir, exist_ok=True)
-        checksum = cls._checksum(X)
-        key = f"chol_{dataset_name}_{checksum}"
-        
-        L_cpu = L.cpu()
-        cls._mem_cache = {key: L_cpu}  # Keep only recent
-        path = os.path.join(cls._cache_dir, f"{key}.pt")
-        torch.save(L_cpu, path)
-        print(f"[gpu_accel] Cholesky L cached to disk: {os.path.basename(path)}")
+        """[DISABLED] Persistent Cholesky caching is disabled to prevent disk bloat during HPO."""
+        return
 
     @classmethod
     def clear(cls):
