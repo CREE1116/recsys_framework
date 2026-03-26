@@ -35,6 +35,8 @@ class ASPIRE(BaseModel):
         self.lira_layer = ASPIRELayer(
             k=self.k,
             gamma=self.gamma,
+            alpha=self.alpha,
+            filter_mode=self.filter_mode,
             target_energy=self.target_energy,
             **layer_kwargs
         )

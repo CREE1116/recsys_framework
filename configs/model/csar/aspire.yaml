@@ -1,7 +1,8 @@
 model:
   name: "aspire"
   gamma: 1.0
-  tau: 0.3        # cut-off threshold. 'auto' 설정 시 MP 노이즈 에지로 자동 추정
+  alpha: 1.0
+  filter_mode: "standard"
   target_energy: 1.0
   visualize: true
 

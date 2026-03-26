@@ -121,24 +121,32 @@ class AspireFilter:
       dh/d(γ)|_{τ 고정} → 형상만 변경
     """
     @staticmethod
-    def apply_filter(vals: torch.Tensor, gamma: float = 1.0, is_gram: bool = False) -> tuple[torch.Tensor, float, float]:
+    def apply_filter(vals: torch.Tensor, gamma: float = 1.0, alpha: float = 1.0, 
+                    mode: str = 'gamma_only', is_gram: bool = False) -> tuple[torch.Tensor, float, float]:
         """
         Returns:
             - h (Tensor): Filter coefficients
-            - alpha (float): The alpha parameter (fixed to 1.0)
-            - alpha_abs (float): The effective lambda used in the denominator (s_max^gamma)
+            - alpha (float): The alpha parameter
+            - alpha_abs (float): The effective lambda used in the denominator
         """
         s = torch.clamp(vals.float(), min=1e-12)
         exp = float(gamma) if not is_gram else float(gamma) / 2.0
         s_gamma = torch.pow(s, exp)
         
-        # [Gamma-only] h = s^g / (s^g + s_max^g)
-        # This ensures h(s_max) = 0.5.
-        s_max_gamma = s_gamma.max().item()
-        effective_lambda = s_max_gamma
+        if mode == 'gamma_only':
+            # [Gamma-only] h = s^g / (s^g + s_max^g)
+            # This ensures h(s_max) = 0.5.
+            s_max_gamma = s_gamma.max().item()
+            effective_lambda = s_max_gamma
+            alpha_val = 1.0
+        else:
+            # [Standard/Tikhonov] uses provided alpha
+            effective_lambda = float(alpha)
+            alpha_val = float(alpha)
+
         h = s_gamma / (s_gamma + effective_lambda + 1e-10)
         
-        return h.float(), 1.0, float(effective_lambda)
+        return h.float(), float(alpha_val), float(effective_lambda)
 
     @staticmethod
     def compute_rho(singular_values: torch.Tensor) -> float:
@@ -171,13 +179,13 @@ class AspireFilter:
 # ==============================================================================
 
 class ASPIRELayer(nn.Module):
-    def __init__(self, k: int = 200, gamma: float = 1.0, **kwargs):
+    def __init__(self, k: int = 200, gamma: float = 1.0, alpha: float = 1.0, filter_mode: str = "gamma_only", **kwargs):
         super().__init__()
         self.k = k
         self.gamma = float(gamma)
-        self.alpha = 1.0  # Fixed in gamma_only mode
+        self.alpha = float(alpha)
         self.target_energy = kwargs.get("target_energy", 0.9)
-        self.filter_mode = "gamma_only"
+        self.filter_mode = filter_mode
 
         self.register_buffer("singular_values", torch.empty(0))
         self.register_buffer("V_raw",           torch.empty(0, 0))
@@ -219,7 +227,7 @@ class ASPIRELayer(nn.Module):
 
         # 3. Filtering
         h, self.alpha, self.alpha_abs = AspireFilter.apply_filter(
-            self.singular_values, gamma=self.gamma
+            self.singular_values, gamma=self.gamma, alpha=self.alpha, mode=self.filter_mode
         )
         self.register_buffer("filter_diag", h)
         self.rho = AspireFilter.compute_rho(self.singular_values)
@@ -246,13 +254,14 @@ class ASPIRELayer(nn.Module):
 
 class ChebyASPIRELayer(nn.Module):
     def __init__(self, degree: int = 20, gamma: float = 1.0, 
+                 alpha: float = 1.0, filter_mode: str = "gamma_only",
                  lambda_max_estimate: float | str = "auto", **kwargs):
         super().__init__()
         self.degree = int(degree)
         self.gamma = float(gamma)
         self.lambda_max_estimate = lambda_max_estimate
-        self.filter_mode = "gamma_only"
-        self.alpha = 1.0
+        self.filter_mode = filter_mode
+        self.alpha = float(alpha)
 
         self.register_buffer("cheby_coeffs", torch.empty(0))
         self.register_buffer("t_mid",        torch.tensor(0.0))
@@ -307,7 +316,7 @@ class ChebyASPIRELayer(nn.Module):
         # Apply finalized filter
         lam_torch = torch.from_numpy(lam_nodes).float()
         h_nodes, self.alpha, self.alpha_abs = AspireFilter.apply_filter(
-            lam_torch, gamma=self.gamma, is_gram=True
+            lam_torch, gamma=self.gamma, alpha=self.alpha, mode=self.filter_mode, is_gram=True
         )
 
         f_nodes = h_nodes.numpy()

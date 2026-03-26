@@ -36,6 +36,8 @@ class ChebyASPIRE(BaseModel):
         self.lira_layer = ChebyASPIRELayer(
             degree=self.degree,
             gamma=self.gamma,
+            alpha=self.alpha,
+            filter_mode=self.filter_mode,
             lambda_max_estimate=self.lambda_max_estimate,
             **layer_kwargs
         )
@@ -44,7 +46,7 @@ class ChebyASPIRE(BaseModel):
         # Build during fit
         self.train_matrix_csr = None
         
-        self._log(f"Initialized (degree={self.degree}, mode=gamma_only, gamma={self.gamma:.2f})")
+        self._log(f"Initialized (degree={self.degree}, mode={self.filter_mode}, gamma={self.gamma:.2f})")
 
     def _build_sparse_matrix(self, data_loader):
         train_df = data_loader.train_df

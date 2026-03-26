@@ -1004,13 +1004,12 @@ class SVDCacheManager(GlobalCacheManager):
         Q = self._orthonormalize(Y, device)
         del G, Y
 
-        Xt_t = self.Xt_torch_csr.to(device)
         for i in range(n_iter):
-            # Q is (M, q), Xt_t is (N, M) -> Z is (N, q)
-            Z = torch.sparse.mm(Xt_t, Q)
+            # Q is (M, q) -> Z is (N, q)
+            Z = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device)
             Q_z = self._orthonormalize(Z, device)
             
-            # X_t @ Q_z -> Q
+            # X @ Q_z -> Q
             Y = self._sparse_mm_batched(X_sparse, Q_z, batch_size, device)
             Q = self._orthonormalize(Y, device)
             del Z, Y, Q_z

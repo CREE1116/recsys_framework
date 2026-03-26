@@ -1,7 +1,10 @@
 model:
   name: "cheby_aspire"
   gamma: 1.0
-  alpha: 500.0
-  degree: 20
+  alpha: 1.0
+  filter_mode: "standard"
+  degree: 30
   lambda_max_estimate: "auto"
   visualize: true
+
+device: "auto"
