@@ -5,7 +5,7 @@ separator: '\t'
 columns: ["user_id", "item_id", "rating", "timestamp"]
 
 # 데이터 전처리 및 분할 설정
-rating_threshold: 4
+rating_threshold: 0
 min_user_interactions: 5
 min_item_interactions: 5
 split_method: "temporal_ratio"

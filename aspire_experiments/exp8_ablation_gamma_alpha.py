@@ -179,26 +179,45 @@ def run_exp8(dataset_name, n_trials=30, k=None):
     final_results["V4"]["alpha"] = float(best_v4_params['alpha'])
     final_results["V4"]["k"] = int(best_v4_params['k'])
 
+    # V5 (Joint HPO Both + Full EVD)
+    print("  Evaluating V5 (Joint HPO Both + Full EVD)...")
+    hpo_v5 = AspireHPO([
+        {'name': 'gamma', 'type': 'float', 'range': '0.0 2.0'},
+        {'name': 'alpha', 'type': 'float', 'range': '1e-3 1e3', 'log': True}
+    ], n_trials=n_trials, patience=20)
+    
+    # k=None triggers Full EVD in build()
+    best_v5_params, _ = hpo_v5.search(lambda p: evaluate(p['gamma'], p['alpha'], "valid", k=None, filter_mode='standard')["NDCG@20"], study_name=f"Exp8_V5_Full_{dataset_name}")
+    final_results["V5"] = evaluate(best_v5_params['gamma'], best_v5_params['alpha'], "test", k=None, filter_mode='standard')
+    final_results["V5"]["gamma"] = float(best_v5_params['gamma'])
+    final_results["V5"]["alpha"] = float(best_v5_params['alpha'])
+    final_results["V5"]["k"] = int(min_dim)
+
     # --- Plotting ---
     descriptions = {
         "V1": "Theory G, Default A",
         "V2": "HPO G, Default A",
         "V3": "Theory G, HPO A",
-        "V4": "Joint HPO Both"
+        "V4": "Joint HPO Both (Trunc)",
+        "V5": "Joint HPO Both (Full)"
     }
     
     v1_label = f"V1: {descriptions['V1']}\n(G={gamma_theory:.2f}, A=1)"
     v2_label = f"V2: {descriptions['V2']}\n(G={final_results['V2']['gamma']:.2f}, A=1)"
     v3_label = f"V3: {descriptions['V3']}\n(G={gamma_theory:.2f}, A={final_results['V3']['alpha']:.1f})"
-    v4_label = f"V4: {descriptions['V4']}\n(G={final_results['V4']['gamma']:.2f}, A={final_results['V4']['alpha']:.1f})"
+    v4_label = f"V4: {descriptions['V4']}\n(G={final_results['V4']['gamma']:.2f}, A={final_results['V4']['alpha']:.1f}, k={final_results['V4']['k']})"
+    v5_label = f"V5: {descriptions['V5']}\n(G={final_results['V5']['gamma']:.2f}, A={final_results['V5']['alpha']:.1f}, Full)"
     
-    labels = [v1_label, v2_label, v3_label, v4_label]
+    labels = [v1_label, v2_label, v3_label, v4_label, v5_label]
     ndcg = [final_results["V1"]["NDCG@20"], final_results["V2"]["NDCG@20"], 
-            final_results["V3"]["NDCG@20"], final_results["V4"]["NDCG@20"]]
+            final_results["V3"]["NDCG@20"], final_results["V4"]["NDCG@20"],
+            final_results["V5"]["NDCG@20"]]
     cov = [final_results["V1"]["Coverage@20"], final_results["V2"]["Coverage@20"], 
-           final_results["V3"]["Coverage@20"], final_results["V4"]["Coverage@20"]]
+           final_results["V3"]["Coverage@20"], final_results["V4"]["Coverage@20"],
+           final_results["V5"]["Coverage@20"]]
     tail_ndcg = [final_results["V1"]["Tail-NDCG@20"], final_results["V2"]["Tail-NDCG@20"], 
-                 final_results["V3"]["Tail-NDCG@20"], final_results["V4"]["Tail-NDCG@20"]]
+                 final_results["V3"]["Tail-NDCG@20"], final_results["V4"]["Tail-NDCG@20"],
+                 final_results["V5"]["Tail-NDCG@20"]]
     
     x = np.arange(len(labels))
     width = 0.25
@@ -219,9 +238,10 @@ def run_exp8(dataset_name, n_trials=30, k=None):
     explanation = (
         "Ablation Modes:\n"
         "- V1: No tuning, uses theoretical gamma (Bridge Lemma)\n"
-        "- V2: Tune gamma only, keep default alpha=1.0\n"
-        "- V3: Keep theoretical gamma, tune alpha only\n"
-        "- V4: Jointly tune both gamma and alpha"
+        "- V2: Tune gamma + rank k, keep default alpha=1.0\n"
+        "- V3: Keep theoretical gamma, tune alpha + rank k\n"
+        "- V4: Jointly tune both gamma and alpha + rank k\n"
+        "- V5: Jointly tune gamma and alpha using Full EVD (No truncation)"
     )
     plt.annotate(explanation, xy=(0.02, 0.98), xycoords='axes fraction', 
                  bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="gray", alpha=0.8),

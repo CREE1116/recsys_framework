@@ -1,0 +1,15 @@
+# Gowalla Dataset Config (Optimized Subset for EASE)
+dataset_name: "gowalla"
+data_path: "./data/gowalla/loc-gowalla_totalCheckins.txt"
+
+separator: "\t"
+has_header: False
+columns: ["user_id", "timestamp", "lat", "lon", "item_id"]
+
+rating_threshold: null
+min_user_interactions: 10 # Already filtered in subset script
+min_item_interactions: 10
+split_method: "temporal_ratio"
+train_ratio: 0.8
+valid_ratio: 0.1
+data_cache_path: "./data_cache/"

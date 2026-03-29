@@ -163,27 +163,33 @@ def _cpu_cholesky(G_np, rhs_np, block_size=2000):
 def _build_gram(X_sparse, device):
     """
     Optimized Gram matrix (X^T X) build.
-    - CUDA: bfloat16 matmul (ADA HW acceleration) -> float32.
-    - Others: float32 matmul.
+    Avoids large X.toarray() by using batched sparse-dense multiplication.
     """
-    X_dense_cpu = torch.from_numpy(X_sparse.toarray())
-    if device.type == 'cuda':
-        # ADA architecture: bfloat16 is fully supported and fast
-        X_bf = X_dense_cpu.bfloat16().to(device)
-        G = (X_bf.t() @ X_bf).float()
-        del X_bf
-        torch.cuda.empty_cache()
-    elif device.type == 'mps':
-        # MPS: bfloat16 might not be fully accelerated yet, use float32
-        X_f = X_dense_cpu.float().to(device)
-        G = (X_f.t() @ X_f)
-        del X_f
-    else:
-        X_f = X_dense_cpu.float()
-        G = X_f.t() @ X_f
-        del X_f
+    M, N = X_sparse.shape # U x I
+    # result is I x I
+    G = torch.zeros((N, N), device=device, dtype=torch.float32)
     
-    del X_dense_cpu
+    # Ensure CSR for efficient row slicing (X_sparse[i:end] is efficient)
+    if not isinstance(X_sparse, csr_matrix):
+        X_sparse = X_sparse.tocsr()
+        
+    # We want X^T @ X.
+    # X^T is (I x U), X is (U x I).
+    # G = sum_batch (X_batch^T @ X_batch)
+    batch_size = 2000
+    for i in range(0, M, batch_size):
+        end = min(i + batch_size, M)
+        # X_batch is (batch_size x I) dense
+        X_batch = torch.from_numpy(X_sparse[i:end].toarray()).float().to(device)
+        if device.type == 'cuda':
+            # ADA optimization: use bfloat16 for matmul
+            X_bf = X_batch.bfloat16()
+            G += (X_bf.t() @ X_bf).float()
+            del X_bf
+        else:
+            G += (X_batch.t() @ X_batch)
+        del X_batch
+        
     return G
 
 def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=None, return_tensor=False):
@@ -191,8 +197,9 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
     Compute (X^T X + λI)^-1 @ rhs.
     - Automatic caching (smart bfloat16 storage).
     - ADA Optimized bfloat16 path for matrix builds.
+    - Improved robustness for MPS and large matrices.
     """
-    M = X_sparse.shape[1]
+    M = X_sparse.shape[1] # Number of items
     EIGEN_THRESHOLD = 15000
     dev = get_device(device)
 
@@ -201,31 +208,57 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
         print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition on {dev.type}...")
         t0 = time.time()
         
-        # scipy float32 conversion to save memory
-        G_np = (X_sparse.T @ X_sparse).astype(np.float32).toarray()
-        
-        if dev.type in ('cuda', 'mps'):
+        # Use optimized build instead of (X.T @ X).toarray()
+        try:
+            G_t = _build_gram(X_sparse, dev)
+        except Exception as e:
+            print(f"[gpu_accel] GPU Gram build failed ({e}), fallback to CPU...")
+            G_np = (X_sparse.T @ X_sparse).astype(np.float32).toarray()
+            G_t = torch.from_numpy(G_np).to(dev)
+
+        if dev.type == 'mps':
+            # MPS: eigh is often not implemented or unstable. Use CPU for this part.
             try:
-                G_t = torch.from_numpy(G_np).to(dev)
-                eigvals, V = torch.linalg.eigh(G_t)
-                del G_t
+                print(f"[gpu_accel] MPS detected: performing eigh for {M}x{M} on CPU for stability...")
+                G_cpu = G_t.cpu()
+                eigvals, V = torch.linalg.eigh(G_cpu)
+                eigvals, V = eigvals.to(dev), V.to(dev)
+                del G_t, G_cpu
             except Exception as e:
-                print(f"[gpu_accel] {dev.type.upper()} Eigen failed ({e}), fallback to Scipy CPU...")
+                print(f"[gpu_accel] CPU Eigen failed ({e}), fallback to Scipy...")
+                G_np = G_t.cpu().numpy()
                 from scipy.linalg import eigh
                 eigvals_np, V_np = eigh(G_np)
                 V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-                del G_np
+                del G_t
+        elif dev.type == 'cuda':
+            try:
+                eigvals, V = torch.linalg.eigh(G_t)
+                del G_t
+            except Exception as e:
+                print(f"[gpu_accel] CUDA Eigen failed ({e}), fallback to Scipy CPU...")
+                G_np = G_t.cpu().numpy()
+                from scipy.linalg import eigh
+                eigvals_np, V_np = eigh(G_np)
+                V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
+                del G_t
         else:
+            G_np = G_t.cpu().numpy()
             from scipy.linalg import eigh
             eigvals_np, V_np = eigh(G_np)
             V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-            del G_np
+            del G_t
 
+        # Numerical stability: clamp eigenvalues to be non-negative
+        eigvals = torch.clamp(eigvals, min=0.0)
         inv_eig = 1.0 / (eigvals + reg_lambda)
+        
         if rhs is None:
+            # Full inverse matrix P = V @ diag(inv_eig) @ V.T
             P = (V * inv_eig.unsqueeze(0)) @ V.t()
         else:
             rhs_t = torch.from_numpy(rhs).float().to(dev) if isinstance(rhs, np.ndarray) else rhs.to(dev)
+            # P = V @ diag(inv_eig) @ V.T @ rhs
             P = (V * inv_eig.unsqueeze(0)) @ (V.t() @ rhs_t)
 
         return P if return_tensor else P.cpu().numpy()
@@ -540,13 +573,21 @@ class EVDCacheManager(GlobalCacheManager):
     def _generate_matrix_id(X_sparse):
         if not hasattr(X_sparse, 'shape'): return "unknown"
         meta = (X_sparse.shape, X_sparse.nnz)
-        d = X_sparse.data[:100].tobytes() if len(X_sparse.data) >= 100 else X_sparse.data.tobytes()
-        idx = X_sparse.indices[:100].tobytes() if len(X_sparse.indices) >= 100 else X_sparse.indices.tobytes()
+        
+        # 데이터의 앞, 중간, 끝을 샘플링하여 변화를 민감하게 감지 (특히 시뮬레이션에서 데이터 추가 시 중요)
+        d_len = len(X_sparse.data)
+        if d_len > 300:
+            d_sample = np.concatenate([X_sparse.data[:100], X_sparse.data[d_len//2:d_len//2+100], X_sparse.data[-100:]])
+            i_sample = np.concatenate([X_sparse.indices[:100], X_sparse.indices[d_len//2:d_len//2+100], X_sparse.indices[-100:]])
+        else:
+            d_sample = X_sparse.data
+            i_sample = X_sparse.indices
+
         import hashlib
         h = hashlib.md5()
         h.update(str(meta).encode())
-        h.update(d)
-        h.update(idx)
+        h.update(d_sample.tobytes())
+        h.update(i_sample.tobytes())
         return h.hexdigest()[:12]
 
     def get_evd(self, X_sparse, dataset_name=None, k=None, force_recompute=False):

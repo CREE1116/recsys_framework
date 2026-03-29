@@ -35,11 +35,13 @@ $$\tilde{p}_k = \sum_i V_{ki}^2 \cdot p_i, \quad p_i = n_i / n_{\max}$$
 | `exp9_filter_effect.py` | 9 | 효과 분석 | 필터 적용 후 아이템 점수가 어떻게 재분배되는가? |
 | `exp10_cross_dataset.py` | 10 | 일반화 검증 | Gini, η와 최적 β의 상관이 데이터셋 간에 일관되는가? |
 | `exp11_fixed_alpha_beta_sweep.py` | 11 | 시스템 분석 | α 고정 후 β만 스왼 — β의 순수 효과와 α와의 상호작용 분석 |
-| `exp12_mcar_hpo_tracking.py` | 12 | 이론 검증 | HPO가 않는 최적 β도 MNAR 강도에 따라 단조 변화하는가? |
+| `exp12_mcar_hpo_tracking.py` | 12 | 이론 검증 | HPO가 찾는 최적 β도 MNAR 강도에 따라 단조 변화하는가? |
+| `exp15_spectral_structure_proof.py` | 15 | 핵심 증명 | SPL이 피드백 루프의 산물임을 시뮬레이션+실제 데이터로 통합 증명 |
 
 ---
 
 ## 실험별 상세
+
 
 ### Exp 1: SLP Verification
 **파일:** `exp1_slp.py`  
@@ -215,6 +217,20 @@ uv run python aspire_experiments/exp12_mcar_hpo_tracking.py --dataset ml100k
 | `performance_tracking.png` | MCAR fraction vs. NDCG / LT-NDCG / Coverage |
 | `ols_vs_hpo.png` | β_OLS vs. β_HPO 산점도 (y=x 일치성) |
 | `filter_per_noise.png` | MCAR 수준별 필터 h(σ) 형태 |
+
+---
+
+### Exp 15: Spectral Structure Proof (Simulation + Yahoo R3)
+**파일:** `exp15_spectral_structure_proof.py`  
+**목적:** "스펙트럴 멱법칙(SPL)은 추천 시스템의 피드백 루프가 만들어낸 구조적 산물이다"라는 명제를 증명  
+**방법:**
+1.  **Simulation**: 무작위 데이터에서 시작해 10회 루프 후 SPL 구조($R^2 \uparrow$) 출현 확인
+2.  **Real Data**: Yahoo R3의 MNAR(편향) vs MCAR(비편향) 스펙트럼 직접 비교
+**출력:** `output/exp15/` — `spl_proof_master.png` (2패널), `results.json`  
+**실행:**
+```bash
+uv run python aspire_experiments/exp15_spectral_structure_proof.py --iter 10 --temp 0.1
+```
 
 ---
 

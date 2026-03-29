@@ -1,0 +1,18 @@
+# Yahoo! R3 Dataset - Explicit Rating (raw CSV, random split)
+# MCAR/MNAR 구분 없이 train.txt 전체를 random split으로 사용하는 설정
+# (단순 베이스라인 비교용)
+
+dataset_name: "yahoo_r3_explicit"
+data_path: "./data/yahooR3/train.txt"
+separator: ","
+columns: ["user_id", "item_id", "rating"]
+
+rating_threshold: 1
+min_user_interactions: 5
+min_item_interactions: 5
+split_method: "random"
+train_ratio: 0.8
+valid_ratio: 0.1
+seed: 42
+
+data_cache_path: "./data_cache/"

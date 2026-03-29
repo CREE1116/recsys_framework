@@ -2,18 +2,18 @@
 # 실행: uv run python scripts/run_all_smart_searches.py --config configs/paper_baselines_search.yaml --output_dir output/paper_baselines
 
 datasets:
-  - "configs/dataset/ml100k.yaml"
-  - "configs/dataset/ml1m.yaml"
-  # - "configs/dataset/ml20m.yaml"
-  - "configs/dataset/steam.yaml"
-  # - "configs/dataset/lastfm_2k.yaml"
-  # - "configs/dataset/amazon_music.yaml"
+  # - "configs/dataset/ml100k.yaml"
+  # - "configs/dataset/ml1m.yaml"
+  # - "configs/dataset/yahoo_r3.yaml"
+  # - "configs/dataset/steam.yaml"
+  - "configs/dataset/ml20m.yaml"
   # - "configs/dataset/gowalla.yaml"
   # - "configs/dataset/yelp2018.yaml"
-  # - "configs/dataset/amazon_electronics.yaml"
-  # - "configs/dataset/amazon_books.yaml"
+  # - "configs/dataset/gowalla_lightgcn.yaml"
+  # - "configs/dataset/yelp2018_lighgcn.yaml"
+  # - "configs/dataset/coat.yaml"
 
-seeds: [42, 43, 44]
+seeds: [42]
 # seeds: [42]
 
 # 데이터셋 요약 시 표시할 메트릭 (target metric은 항상 포함)
@@ -64,26 +64,15 @@ searches:
   #   params:
   #     - name: "model.reg_lambda"
   #       type: "float"
-  #       range: "1e-4 10000.0"
+  #       range: "1e-4 1000.0"
   #       log: true
   #     - name: "model.alpha"
   #       type: "float"
-  #       range: "1.0 10000.0"
+  #       range: "1.0 100.0"
   #       log: true
   #     - name: "model.embedding_dim"
   #       type: "categorical"
   #       range: "32 64 128"
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"
-
-  # - name: "ItemKNN"
-  #   method: "bayesian"
-  #   model_config: "configs/model/general/item_knn.yaml"
-  #   params:
-  #     - name: "model.k"
-  #       type: "int"
-  #       range: "10 1000"
   #   n_trials: 60
   #   patience: 20
   #   metric: "NDCG@20"
@@ -112,9 +101,6 @@ searches:
   #       log: true
   #     - name: "model.alpha"
   #       type: "float"
-  #       range: "0.0 2.0"
-  #     - name: "model.norm_weight"
-  #       type: "float"
   #       range: "0.0 1.0"
   #   n_trials: 60
   #   patience: 20
@@ -124,65 +110,45 @@ searches:
   # # Baselines: EASE Variants
   # # ============================================================
 
-  # - name: "RLAE"
+  # - name: "IPS-LAE"
   #   method: "bayesian"
-  #   model_config: "configs/model/general/rlae.yaml"
+  #   model_config: "configs/model/ips_lae.yaml"
   #   params:
   #     - name: "model.reg_lambda"
   #       type: "float"
-  #       range: "0.1 100000"
+  #       range: "0.1 10000.0"
   #       log: true
-  #     - name: "model.b"
+  #     - name: "model.wbeta"
   #       type: "float"
   #       range: "0.0 1.0"
   #   n_trials: 60
   #   patience: 20
   #   metric: "NDCG@20"
 
-  # - name: "SANSA"
-  #   method: "bayesian"
-  #   model_config: "configs/model/general/sansa.yaml"
-  #   params:
-  #     - name: "model.reg_lambda"
-  #       type: "float"
-  #       range: "0.1 100000"
-  #       log: true
-  #     - name: "model.density"
-  #       type: "float"
-  #       range: "0.01 0.5"
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"
+  # # ============================================================
+  # # Baselines: Deep Learning / GCN
+  # # ============================================================
 
-  # - name: "SVD_AE"
-  #   method: "bayesian"
-  #   model_config: "configs/model/general/svd_ae.yaml"
-  #   params:
-  #     - name: "model.gamma"
-  #       type: "float"
-  #       range: "0.01 1.0"
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"
-
-  # # - name: "SVD-EASE"
+  # # - name: "LightGCN"
   # #   method: "bayesian"
-  # #   model_config: "configs/model/general/svd_ease.yaml"
+  # #   model_config: "configs/model/general/lightgcn.yaml"
   # #   params:
-  # #     - name: "model.reg_lambda"
-  # #       type: "float"
-  # #       range: "0.1 100000"
-  # #       log: true
-  # #     - name: "model.k"
-  # #       type: "int"
-  # #       range: "64 1024"
+  # #     - name: "train.embedding_l2"
+  # #       type: "categorical"
+  # #       choices: [1e-4]
+  # #     - name: "model.embedding_dim"
+  # #       type: "categorical"
+  # #       choices: [64]
+  # #     - name: "model.n_layers"
+  # #       type: "categorical"
+  # #       choices: [3]
   # #   n_trials: 60
   # #   patience: 20
   # #   metric: "NDCG@20"
 
-  # # # ============================================================
-  # # # Ours: LIRA Family
-  # # # ============================================================
+  # # ============================================================
+  # # Ours: LIRA Family
+  # # ============================================================
 
   # - name: "LIRA"
   #   method: "bayesian"
@@ -196,65 +162,30 @@ searches:
   #   patience: 20
   #   metric: "NDCG@20"
 
-  # - name: "LightLIRA"
-  #   method: "bayesian"
-  #   model_config: "configs/model/csar/light_lira.yaml"
-  #   params:
-  #     - name: "model.reg_lambda"
-  #       type: "float"
-  #       range: "0.1 10000.0"
-  #       log: true
-  #     - name: "model.k"
-  #       type: "int_min_dim"
-  #       log: true
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"
-
   - name: "ASPIRE"
     method: "bayesian"
     model_config: "configs/model/csar/aspire.yaml"
     params:
-      - name: "model.alpha"
+      - name: "model.gamma"
         type: "float"
-        range: "1.0 10000.0"
+        range: "0.01 2.0"
+      - name: "model.k"
+        type: "int_min_dim"
         log: true
-      - name: "model.estimator_type"
+  #   n_trials: 60
+  #   patience: 20
+  #   metric: "NDCG@20"
+
+  - name: "ChebyASPIRE"
+    method: "bayesian"
+    model_config: "configs/model/csar/cheby_aspire.yaml"
+    params:
+      - name: "model.gamma"
+        type: "float"
+        range: "0.01 2.0"
+      - name: "model.degree"
         type: "categorical"
-        choices: ["dynamic_derivative"]
-      - name: "model.q"
-        type: "categorical"
-        choices: ["auto"]
+        choices: [10, 20, 30, 40]
     n_trials: 60
     patience: 20
     metric: "NDCG@20"
-
-  # - name: "ASPIRE-Norm"
-  #   method: "bayesian"
-  #   model_config: "configs/model/csar/aspire_norm.yaml"
-  #   params:
-  #     - name: "model.alpha"
-  #       type: "float"
-  #       range: "1.0 10000.0"
-  #       log: true
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"
-
-  # - name: "ChebyASPIRE"
-  #   method: "bayesian"
-  #   model_config: "configs/model/csar/cheby_aspire.yaml"
-  #   params:
-  #     - name: "model.alpha"
-  #       type: "float"
-  #       range: "1.0 10000.0"
-  #       log: true
-  #     - name: "model.estimator_type"
-  #       type: "categorical"
-  #       choices: ["dynamic_derivative"]
-  #     - name: "model.q"
-  #       type: "float"
-  #       range: "0.4 0.6"
-  #   n_trials: 60
-  #   patience: 20
-  #   metric: "NDCG@20"

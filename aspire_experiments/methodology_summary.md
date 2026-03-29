@@ -37,3 +37,10 @@
 ## 실험 9: Beta-Gamma Stability Analysis
 - **목적**: 최상위 특이값(Goliath components)이 이론적 파라미터 추정 안정성에 미치는 영향 분석.
 - **방법**: 최상위 특이값($\sigma_1 \sim \sigma_k$)을 의도적으로 제외(Skip)하며 HPO를 수행하고, 이 과정에서 도출되는 최적 $\gamma$와 이론적 예측치 간의 수렴 여부를 분석.
+
+## 실험 15: Spectral Structure Proof (Master)
+- **목적**: "스펙트럴 멱법칙(SPL)은 임의적 가정이 아니라 추천 피드백 루프의 구조적 산물이다"라는 논문의 핵심 논리를 시뮬레이션과 실제 데이터를 통해 통합 증명.
+- **방법**: 
+    - **Panel A (Simulation)**: 무작위 초기 행렬에서 Top-K Softmax 피드백 루프를 반복하여, 구조가 없던 데이터에서 SPL($R^2$ 상승)이 자생적으로 출현하는 과정을 시각화.
+    - **Panel B (Real Data)**: Yahoo! R3 데이터셋의 MNAR(Train)과 MCAR(Test) 데이터를 직접 비교하여, 편향이 존재하는 데이터에서만 가파른 SPL 기울기가 나타남을 입증.
+- **분석**: LAD(Least Absolute Deviations) 피팅을 통해 특이값($\sigma_k$)과 스펙트럴 인기도($p_k$) 사이의 로그-로그 선형성을 정량화.

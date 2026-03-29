@@ -1,0 +1,17 @@
+# Coat Shopping Dataset - MNAR 연구용
+# 출처: Schnabel et al., 2016 "Recommendations as Treatments: Debiasing Learning and Evaluation"
+#
+# train.ascii : MNAR (유저 직접 선택, 편향됨)
+# test.ascii  : MCAR (무작위 배정, 편향 없음) → 비편향 평가에 사용
+#
+# presplit 모드: 프레임워크가 train/test를 자동 분할하지 않고
+# 아래 파일을 그대로 train/test로 사용합니다.
+
+dataset_name: "coat"
+split_method: "presplit"
+
+# 전처리 후 생성된 파일 (먼저 preprocess_coat.py 실행 필요)
+train_file: "./data/coat/processed/train_implicit.txt"
+test_file:  "./data/coat/processed/test_implicit.txt"
+
+data_cache_path: "./data_cache/"

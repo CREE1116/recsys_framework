@@ -51,15 +51,16 @@ class ASPIRELayer_Test(nn.Module):
     @torch.no_grad()
     def build(self, X_sparse, dataset_name=None, device=None):
         dev = device if device is not None else torch.device("cpu")
-        manager = SVDCacheManager(device=dev)
-        # --- Optimization: Pass k to manager to enable shared SVD cache ---
-        _, s, v, _ = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
-
-        # --- Truncation: Always use k (Requested: cap at 10000, must be <= min_dim) ---
+        
+        # --- Optimization: Use EVDCacheManager for k=None (Full) or SVDCacheManager for truncated ---
         if self.k is None:
-            self.k = min(10000, len(s))
-            print(f"  [ASPIRE] No k provided. Defaulting to k={self.k}")
+            print(f"  [ASPIRE] No k provided. Requesting Full EVD...")
+            manager = EVDCacheManager(device=str(dev))
+            _, s, v, _ = manager.get_evd(X_sparse, k=None, dataset_name=dataset_name)
+            self.k = len(s)
         else:
+            manager = SVDCacheManager(device=dev)
+            _, s, v, _ = manager.get_svd(X_sparse, k=self.k, dataset_name=dataset_name)
             self.k = min(int(self.k), len(s), 10000)
         
         # Use raw singular values (DO NOT NORMALIZE to preserved top signal power)

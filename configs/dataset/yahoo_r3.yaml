@@ -1,0 +1,18 @@
+# Yahoo! R3 Dataset - MNAR 연구용 (Implicit)
+# 출처: Marlin et al., 2009 "Collaborative Prediction and Ranking with Non-Random Missing Data"
+#
+# presplit 모드: MNAR train / MCAR test 구조를 그대로 보존
+#
+# rating_threshold: 0 = ml100k와 동일, 평점이 있으면 모두 positive로 취급
+# (다른 임계값 원할 시: preprocess_yahoo_r3.py --threshold 3 후 파일 교체)
+
+dataset_name: "yahoo_r3"
+split_method: "presplit"
+
+# 암묵적 피드백 변환 임계값 (0 = ml100k와 동일, 관찰되면 모두 positive)
+rating_threshold: 0
+
+train_file: "./data/yahooR3/processed/train_implicit_th0.txt"
+test_file: "./data/yahooR3/processed/test_implicit_th0.txt"
+
+data_cache_path: "./data_cache/"

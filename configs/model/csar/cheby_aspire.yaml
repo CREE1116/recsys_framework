@@ -2,7 +2,8 @@ model:
   name: "cheby_aspire"
   gamma: 1.0
   alpha: 1.0
-  filter_mode: "standard"
+  filter_mode: "gamma_only"
+  precompute_scores: true
   degree: 30
   lambda_max_estimate: "auto"
   visualize: true

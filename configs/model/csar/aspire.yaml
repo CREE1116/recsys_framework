@@ -2,7 +2,7 @@ model:
   name: "aspire"
   gamma: 1.0
   alpha: 1.0
-  filter_mode: "standard"
+  filter_mode: "gamma_only"
   target_energy: 1.0
   visualize: true
 
