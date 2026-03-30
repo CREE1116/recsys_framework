@@ -474,7 +474,7 @@ class DataLoader:
     # 로더 팩토리
     # ----------------------------------------------------------
 
-    def _get_loader_kwargs(self):
+    def _get_loader_kwargs(self, is_train=False):
         device = self.config.get('device', 'cpu')
         if device == 'auto':
             if torch.cuda.is_available():
@@ -483,7 +483,7 @@ class DataLoader:
                 device = 'mps'
             else:
                 device = 'cpu'
-        num_workers = self.config.get('num_workers', 4)
+        num_workers = self.config.get('num_workers', 4) if is_train else 0
         if sys.platform == 'darwin':
             num_workers = 0
         prefetch_factor = self.config.get('prefetch_factor', 2)
@@ -497,7 +497,7 @@ class DataLoader:
             self.num_negatives, self.sampling_weights,
             train_user_history=self.train_user_history
         )
-        num_workers, prefetch_factor, pin_memory = self._get_loader_kwargs()
+        num_workers, prefetch_factor, pin_memory = self._get_loader_kwargs(is_train=True)
         return _make_loader(train_dataset, batch_size, shuffle=True,
                             num_workers=num_workers, prefetch_factor=prefetch_factor,
                             pin_memory=pin_memory, collate_fn=train_dataset.collate_fn)
