@@ -371,6 +371,14 @@ class BayesianOptimizer:
 
         metric, exp_dir = self.run_experiment(current_params)
 
+        # Force memory cleanup between HPO trials
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+
         # Update global best
         if self.is_better(metric, self.best_global_metric):
             self.best_global_metric = metric

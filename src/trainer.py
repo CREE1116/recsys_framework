@@ -51,7 +51,7 @@ class Trainer:
             config_to_save.pop('run_name', None)
             yaml.dump(config_to_save, f, default_flow_style=False)
 
-        self.is_trainable = 'train' in self.config
+        self.is_trainable = ('train' in self.config) and (not hasattr(self.model, 'fit'))
         self.train_losses = collections.defaultdict(list)
         self.eval_metrics = collections.defaultdict(list)
         self.tracked_params = collections.defaultdict(list)
