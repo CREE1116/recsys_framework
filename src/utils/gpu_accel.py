@@ -181,13 +181,8 @@ def _build_gram(X_sparse, device):
         end = min(i + batch_size, M)
         # X_batch is (batch_size x I) dense
         X_batch = torch.from_numpy(X_sparse[i:end].toarray()).float().to(device)
-        if device.type == 'cuda':
-            # ADA optimization: use bfloat16 for matmul
-            X_bf = X_batch.bfloat16()
-            G += (X_bf.t() @ X_bf).float()
-            del X_bf
-        else:
-            G += (X_batch.t() @ X_batch)
+        # Using FP32 universally. Removed bfloat16 to prevent power spikes / PC shutdown on CUDA.
+        G += (X_batch.t() @ X_batch)
         del X_batch
         
     return G
@@ -269,9 +264,9 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
             # Re-enabling caching with bfloat16 optimization as per new ADA guide
             G_t = _GramMatrixCache.get(X_sparse, dataset_name, device=dev)
             if G_t is None:
-                print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on {dev.type} (bfloat16 ADA path)...")
+                print(f"[gpu_accel] Gram ({M}x{M}) X^T X computing on {dev.type} (safe FP32 path)...")
                 t0 = time.time()
-                # Use bfloat16 for the build
+                # Use safe FP32 for the build
                 G_t = _build_gram(X_sparse, dev)
                 _GramMatrixCache.put(X_sparse, G_t, dataset_name)
                 print(f"[gpu_accel] Gram X^T X cached (bfloat16 build, {time.time()-t0:.2f}s)")
@@ -946,56 +941,57 @@ class SVDCacheManager(GlobalCacheManager):
             return Y / Y.norm(dim=0, keepdim=True).clamp(min=1e-12)
 
     @torch.no_grad()
-    def _cuda_randomized_svd(self, X_sparse, k, n_iter=3, oversampling=20):
-        """CUDA-accelerated Randomized SVD (ADA optimized).
+    def _cuda_randomized_svd(self, X_sparse, k, n_iter=3, oversampling=20, batch_size=2000):
+        """CUDA-accelerated Randomized SVD (Hardware Safe Batched Path).
         - Quality: n_iter=3, oversampling=20.
-        - Performance: Avoid contiguous copy on B.
+        - Fixes transient power spikes (microsecond OCP trips) by throttling GPU memory bandwidth.
         """
         device = torch.device("cuda")
         M, N = X_sparse.shape
         q = min(k + oversampling, M, N)
         if q < 1: q = 1
-
-        print(f"[CUDA-SVD] k={k}, q={q}, n_iter={n_iter}")
-
-        # Build CUDA sparse CSR tensors
+        
+        # Ensure CSR for batched slicing
         if not isinstance(X_sparse, csr_matrix): X_sparse = X_sparse.tocsr()
-        X_coo = X_sparse.tocoo()
-        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col))).long()
-        values = torch.from_numpy(X_coo.data.copy()).float()
-        X_t = torch.sparse_coo_tensor(indices, values, (M, N), device=device).coalesce().to_sparse_csr()
-        Xt_t = torch.sparse_coo_tensor(torch.stack([indices[1], indices[0]]), values, (N, M), device=device).coalesce().to_sparse_csr()
-        del X_coo, indices, values
 
-        # Phase 1: Random sketch
+        print(f"[CUDA-SVD-Safe] k={k}, q={q}, n_iter={n_iter}, batch={batch_size}")
+        
+        # Phase 1: Sketching + Power Iteration
         G = torch.randn(N, q, device=device, dtype=torch.float32)
-        Y = torch.sparse.mm(X_t, G)
-        Q, _ = torch.linalg.qr(Y)
+        Y = self._sparse_mm_batched(X_sparse, G, batch_size, device)
+        Q = self._orthonormalize(Y, device)
         del G, Y
 
-        # Phase 2: Power iterations
         for i in range(n_iter):
-            Z = torch.sparse.mm(Xt_t, Q)
-            Q_z, _ = torch.linalg.qr(Z)
-            Y = torch.sparse.mm(X_t, Q_z)
-            Q, _ = torch.linalg.qr(Y)
+            Z = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device)
+            Q_z = self._orthonormalize(Z, device)
+            
+            Y = self._sparse_mm_batched(X_sparse, Q_z, batch_size, device)
+            Q = self._orthonormalize(Y, device)
             del Z, Y, Q_z
+        
+        # Phase 2: Project
+        B = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device).t()
 
-        # Phase 3: Project into low-dimensional space
-        # Optimized: B is (N, q), avoid .t() contiguous copy
-        B = torch.sparse.mm(Xt_t, Q)
+        # Phase 3: Small SVD via eigen trick
+        C = torch.mm(B, B.t())
+        try:
+            S2, U_hat = torch.linalg.eigh(C.cpu())
+            idx = torch.argsort(S2, descending=True)
+            S2, U_hat = S2[idx], U_hat[:, idx]
+            S_vals = torch.sqrt(torch.clamp(S2, min=0.0))
+        except Exception:
+            U_hat, S_vals, _ = torch.linalg.svd(C.cpu(), full_matrices=False)
 
-        # Phase 4: Small dense SVD
-        # B = U_hat @ S @ Vht
-        U_hat, S_vals, Vht = torch.linalg.svd(B, full_matrices=False)
-
-        # Recover full-space singular vectors
-        # X ~ Q @ B.t() = Q @ (Vht.t() @ S @ U_hat.t())
-        U = torch.mm(Q, Vht.t())
-        V = U_hat
-
+        U_hat, S_vals = U_hat.to(device), S_vals.to(device)
+        
+        # Recover V and U
+        S_inv = torch.where(S_vals > 1e-12, 1.0 / S_vals, torch.zeros_like(S_vals))
+        V = torch.mm(B.t(), U_hat) * S_inv
+        U = torch.mm(Q, U_hat)
+        
         U, S_vals, V = U[:, :k].cpu(), S_vals[:k].cpu(), V[:, :k].cpu()
-        print(f"[CUDA-SVD] Done! σ range: [{S_vals[-1]:.4f}, {S_vals[0]:.4f}]")
+        print(f"[CUDA-SVD-Safe] Done! σ range: [{S_vals[-1]:.4f}, {S_vals[0]:.4f}]")
         return U, S_vals, V
 
     @torch.no_grad()
