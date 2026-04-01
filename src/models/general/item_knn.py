@@ -254,24 +254,18 @@ class ItemKNN(BaseModel):
     def predict_for_pairs(self, user_ids, item_ids):
         """
         주어진 (사용자, 아이템) 쌍에 대한 점수를 계산합니다.
+        [Vectorized] unique users에 대해 forward() (GPU SpMM) 한 번 호출 후 gather.
+        uni99에서 user_ids = user_ids.repeat_interleave(100) 식으로 반복되므로
+        torch.unique로 중복 제거해 forward 호출 횟수를 최소화.
         """
-        scores = []
-        user_ids_np = user_ids.cpu().numpy()
-        item_ids_np = item_ids.cpu().numpy()
+        # De-duplicate users so forward() runs once per unique user, not per pair
+        unique_users, inverse_idx = torch.unique(user_ids, sorted=True, return_inverse=True)
+        all_scores = self.forward(unique_users)  # (|unique|, N_items) — GPU SpMM
 
-        for user_id, item_id in zip(user_ids_np, item_ids_np):
-            interacted_items = self.user_item_matrix[user_id].indices
-            
-            if len(interacted_items) == 0:
-                score = 0.0
-            else:
-                # 특정 아이템(item_id)과 상호작용한 아이템들 간의 유사도 합
-                sim_scores = self.item_similarity_matrix[item_id, interacted_items].sum()
-                score = sim_scores
-            
-            scores.append(score)
-            
-        return torch.FloatTensor(scores).to(self.device)
+        # Expand back to original order and gather specific item scores
+        user_scores = all_scores[inverse_idx]  # (B, N_items)
+        item_ids_dev = item_ids.to(user_scores.device)
+        return user_scores[torch.arange(len(user_ids), device=user_scores.device), item_ids_dev]
 
     def get_final_item_embeddings(self):
         """Item-Item similarity is used as item 'embeddings'."""

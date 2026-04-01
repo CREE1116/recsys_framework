@@ -8,6 +8,10 @@ import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
 import pandas as pd
 
+# Precomputed 1/log2(rank+2) table for NDCG (covers K up to 10000).
+# Module-level constant — built once, used in every get_ndcg call.
+_LOG2_RECIP = (1.0 / np.log2(np.arange(2, 10002, dtype=np.float64))).astype(np.float32)
+
 
 def get_hit_rate(pred_list, ground_truth):
     """
@@ -36,25 +40,19 @@ def get_precision(pred_list, ground_truth):
 
 def get_ndcg(pred_list, ground_truth):
     """
-    NDCG for Multi-item setting.
-    DCG = sum(1 / log2(rank + 2)) for each hit.
-    IDCG = sum(1 / log2(i + 2)) for i in range(min(len(GT), K)).
+    NDCG for Multi-item setting — vectorized with precomputed log2 table.
+    DCG  = sum(1/log2(rank+2)) for each hit.
+    IDCG = sum(1/log2(i+2))   for i in range(min(|GT|, K)).
     """
     if not ground_truth:
         return 0.0
-    
-    # Calculate DCG
-    dcg = 0.0
-    for i, item in enumerate(pred_list):
-        if item in ground_truth:
-            dcg += 1.0 / np.log2(i + 2)
-            
-    # Calculate IDCG
-    idcg = 0.0
-    n_relevant = min(len(ground_truth), len(pred_list))
-    for i in range(n_relevant):
-        idcg += 1.0 / np.log2(i + 2)
-        
+    gt_set = ground_truth if isinstance(ground_truth, (set, frozenset)) else set(ground_truth)
+    k = len(pred_list)
+    # One Python comprehension for hit-mask; numpy dot for weighted sum (no per-element np.log2 call)
+    hits = np.array([1 if item in gt_set else 0 for item in pred_list], dtype=np.float32)
+    dcg  = float(np.dot(hits, _LOG2_RECIP[:k]))
+    n_relevant = min(len(gt_set), k)
+    idcg = float(_LOG2_RECIP[:n_relevant].sum())
     return dcg / idcg if idcg > 0 else 0.0
 
 def get_pop_ratio(target_item, item_popularity, mean_pop):
@@ -334,15 +332,20 @@ def _evaluate_full(model, test_loader, top_k_list, metrics_list, device, user_hi
             
             all_item_scores = model.forward(user_tensor) # [B, N_ITEMS]
             
-            # [Standard Masking]
+            # [Standard Masking] Single-scatter: collect all (row, col) indices first,
+            # then apply ONE GPU write instead of one kernel-launch per user.
             if not mask_after_topk:
+                mask_rows, mask_cols = [], []
                 for idx, u_id in enumerate(user_batch_ids):
                     items_seen = user_history.get(u_id, set())
                     if items_seen:
-                        target_items_set = set(user_test_ground_truth[u_id])
-                        to_exclude = list(items_seen - target_items_set)
+                        gt_set = set(user_test_ground_truth[u_id])
+                        to_exclude = [it for it in items_seen if it not in gt_set]
                         if to_exclude:
-                            all_item_scores[idx, to_exclude] = -1e9
+                            mask_rows.extend([idx] * len(to_exclude))
+                            mask_cols.extend(to_exclude)
+                if mask_rows:
+                    all_item_scores[mask_rows, mask_cols] = -1e9
 
             _, top_indices = torch.topk(all_item_scores, k=k_fetch, dim=1)
             del all_item_scores

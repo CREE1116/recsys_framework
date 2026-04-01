@@ -1,0 +1,8 @@
+model:
+  name: "aspire_zero"
+  lambda_base: 10.0      # Input numeric value for HPO (e.g. 0.01 ~ 100.0)
+  k: null               # null for Full EVD | or int for truncation
+  max_iter: 30          # Fixed-point iteration limit
+  visualize: true       # Generate spectral analysis plots
+
+device: "auto"

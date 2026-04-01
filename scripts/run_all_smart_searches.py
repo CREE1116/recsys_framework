@@ -119,6 +119,10 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                 print(f"  -> Base Output directory: {search_output_dir}")
                 print(f"  -> Seeds to evaluate independently: {seeds_to_run}")
 
+                target_metric = getattr(args, 'metric', 'NDCG@10')
+                if target_metric.startswith('val_'):
+                    target_metric = target_metric[4:]
+
                 for seed in seeds_to_run:
                     # [Resumption] Check if BEST result for this seed already exists
                     dataset_name_clean = dataset_name # already cleaned above
@@ -179,10 +183,6 @@ def run_all_searches(config_path, output_dir_base, cli_args=None):
                         with open(os.path.join(best_dir, "final_metrics.json"), 'r', encoding='utf-8') as f:
                             final_metrics = json.load(f)
                             
-                    target_metric = getattr(args, 'metric', 'NDCG@10')
-                    if target_metric.startswith('val_'):
-                        target_metric = target_metric[4:]
-                    
                     best_metrics_per_seed[seed] = final_metrics.get(target_metric, best_metric)
                     best_params_per_seed[seed] = best_params
                     best_dirs_per_seed[seed] = best_dir

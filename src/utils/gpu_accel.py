@@ -713,24 +713,38 @@ class EVDCacheManager(GlobalCacheManager):
         s = torch.sqrt(torch.clamp(eigvals, min=0.0))
         
         # 3. Reconstruct Singular Vectors
-        # Avoid creating dense X. Use Sparse-Dense MM (MatVec style) in batches.
+        # CUDA: X_sparse → CUDA sparse tensor one-time upload (no per-batch CPU loop)
         print(f"[EVD-Manager] Reconstructing Singular Vectors via Sparse-Dense MM...")
         s_inv = torch.where(s > 1e-12, 1.0 / s, torch.zeros_like(s))
-        
-        # Force GC before heavy reconstruction
+
         import gc; gc.collect()
+
+        # Prepare sparse MM helpers (CUDA: native sparse; otherwise: batched)
+        if self.device.type == 'cuda':
+            try:
+                X_cuda = SVDCacheManager._to_cuda_sparse(X_sparse)
+                def _mm(Y):   return SVDCacheManager._cuda_spmm(X_cuda, Y)
+                def _mm_t(Y): return SVDCacheManager._cuda_spmm_t(X_cuda, Y)
+            except Exception as e:
+                print(f"[EVD-Manager] CUDA sparse upload failed ({e}), batched fallback")
+                X_cuda = None
+                def _mm(Y):   return SVDCacheManager._sparse_mm_batched(X_sparse, Y, 2000, self.device)
+                def _mm_t(Y): return SVDCacheManager._sparse_mm_transposed_batched(X_sparse, Y, 2000, self.device)
+        else:
+            def _mm(Y):   return SVDCacheManager._sparse_mm_batched(X_sparse, Y, 2000, self.device)
+            def _mm_t(Y): return SVDCacheManager._sparse_mm_transposed_batched(X_sparse, Y, 2000, self.device)
 
         if side == 'item':
             v_k = eigvecs
             # u_k = X @ v_k * s_inv
-            u_k = SVDCacheManager._sparse_mm_batched(X_sparse, v_k, batch_size=2000, device=self.device)
+            u_k = _mm(v_k)
             u_k = u_k * s_inv.unsqueeze(0)
         else:
             u_k = eigvecs
             # v_k = X^T @ u_k * s_inv
-            v_k = SVDCacheManager._sparse_mm_transposed_batched(X_sparse, u_k, batch_size=2000, device=self.device)
+            v_k = _mm_t(u_k)
             v_k = v_k * s_inv.unsqueeze(0)
-            
+
         print(f"[EVD-Manager] Done in {time.time()-t0:.2f}s (Full Components: {len(s)})")
         return u_k, s, v_k, len(s)
 
@@ -940,40 +954,84 @@ class SVDCacheManager(GlobalCacheManager):
             print(f"[SVD-Manager] Orthonormalization failed ({e}), simple scaling fallback")
             return Y / Y.norm(dim=0, keepdim=True).clamp(min=1e-12)
 
+    @staticmethod
+    def _to_cuda_sparse(X_sparse):
+        """
+        Convert scipy CSR sparse matrix to CUDA sparse CSR tensor (one-time upload).
+        This avoids repeated per-batch .toarray() → GPU transfers in SpMM loops.
+        """
+        X_csr = X_sparse.tocsr().astype(np.float32)
+        crow = torch.from_numpy(X_csr.indptr.astype(np.int64))
+        col  = torch.from_numpy(X_csr.indices.astype(np.int64))
+        val  = torch.from_numpy(X_csr.data)
+        return torch.sparse_csr_tensor(crow, col, val,
+                                       size=X_csr.shape,
+                                       dtype=torch.float32,
+                                       device='cuda')
+
+    @staticmethod
+    def _cuda_spmm(X_cuda_sparse, Y_dense):
+        """X_sparse @ Y_dense entirely on CUDA (no CPU round-trip)."""
+        return torch.mm(X_cuda_sparse, Y_dense)
+
+    @staticmethod
+    def _cuda_spmm_t(X_cuda_sparse, Y_dense):
+        """X_sparse^T @ Y_dense entirely on CUDA.
+        CSR^T is effectively CSC; PyTorch handles this via .t().
+        """
+        return torch.mm(X_cuda_sparse.t(), Y_dense)
+
     @torch.no_grad()
     def _cuda_randomized_svd(self, X_sparse, k, n_iter=3, oversampling=20, batch_size=2000):
-        """CUDA-accelerated Randomized SVD (Hardware Safe Batched Path).
-        - Quality: n_iter=3, oversampling=20.
-        - Fixes transient power spikes (microsecond OCP trips) by throttling GPU memory bandwidth.
+        """CUDA-accelerated Randomized SVD.
+        - GPU SpMM path: X_sparse는 CUDA sparse tensor로 한 번만 업로드.
+        - CPU .toarray() 루프 병목 제거 → GPU utilization 정상화.
+        - Fallback: CUDA sparse 변환 실패 시 기존 batched CPU-transfer path 사용.
         """
         device = torch.device("cuda")
         M, N = X_sparse.shape
         q = min(k + oversampling, M, N)
         if q < 1: q = 1
-        
-        # Ensure CSR for batched slicing
-        if not isinstance(X_sparse, csr_matrix): X_sparse = X_sparse.tocsr()
 
-        print(f"[CUDA-SVD-Safe] k={k}, q={q}, n_iter={n_iter}, batch={batch_size}")
-        
+        if not isinstance(X_sparse, csr_matrix):
+            X_sparse = X_sparse.tocsr()
+
+        # --- Upload sparse matrix to CUDA once ---
+        X_cuda = None
+        try:
+            X_cuda = self._to_cuda_sparse(X_sparse)
+            print(f"[CUDA-SVD] k={k}, q={q}, n_iter={n_iter} | GPU sparse path (no CPU loop)")
+        except Exception as e:
+            print(f"[CUDA-SVD] Sparse upload failed ({e}), fallback to batched CPU-transfer path")
+            print(f"[CUDA-SVD-Safe] k={k}, q={q}, n_iter={n_iter}, batch={batch_size}")
+
+        def _mm(Y):    # X @ Y
+            if X_cuda is not None:
+                return self._cuda_spmm(X_cuda, Y)
+            return self._sparse_mm_batched(X_sparse, Y, batch_size, device)
+
+        def _mm_t(Y):  # X^T @ Y
+            if X_cuda is not None:
+                return self._cuda_spmm_t(X_cuda, Y)
+            return self._sparse_mm_transposed_batched(X_sparse, Y, batch_size, device)
+
         # Phase 1: Sketching + Power Iteration
         G = torch.randn(N, q, device=device, dtype=torch.float32)
-        Y = self._sparse_mm_batched(X_sparse, G, batch_size, device)
+        Y = _mm(G)
         Q = self._orthonormalize(Y, device)
         del G, Y
 
-        for i in range(n_iter):
-            Z = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device)
+        for _ in range(n_iter):
+            Z   = _mm_t(Q)
             Q_z = self._orthonormalize(Z, device)
-            
-            Y = self._sparse_mm_batched(X_sparse, Q_z, batch_size, device)
-            Q = self._orthonormalize(Y, device)
+            Y   = _mm(Q_z)
+            Q   = self._orthonormalize(Y, device)
             del Z, Y, Q_z
-        
-        # Phase 2: Project
-        B = self._sparse_mm_transposed_batched(X_sparse, Q, batch_size, device).t()
 
-        # Phase 3: Small SVD via eigen trick
+        # Phase 2: Project
+        B = _mm_t(Q).t()   # shape: (q, N)
+
+        # Phase 3: Small eigen decomposition on CPU (q×q matrix, tiny)
         C = torch.mm(B, B.t())
         try:
             S2, U_hat = torch.linalg.eigh(C.cpu())
@@ -983,15 +1041,16 @@ class SVDCacheManager(GlobalCacheManager):
         except Exception:
             U_hat, S_vals, _ = torch.linalg.svd(C.cpu(), full_matrices=False)
 
-        U_hat, S_vals = U_hat.to(device), S_vals.to(device)
-        
-        # Recover V and U
+        U_hat  = U_hat.to(device)
+        S_vals = S_vals.to(device)
+
+        # Recover U, V
         S_inv = torch.where(S_vals > 1e-12, 1.0 / S_vals, torch.zeros_like(S_vals))
-        V = torch.mm(B.t(), U_hat) * S_inv
-        U = torch.mm(Q, U_hat)
-        
+        V = torch.mm(B.t(), U_hat) * S_inv   # (N, q)
+        U = torch.mm(Q, U_hat)               # (M, q)
+
         U, S_vals, V = U[:, :k].cpu(), S_vals[:k].cpu(), V[:, :k].cpu()
-        print(f"[CUDA-SVD-Safe] Done! σ range: [{S_vals[-1]:.4f}, {S_vals[0]:.4f}]")
+        print(f"[CUDA-SVD] Done! σ range: [{S_vals[-1]:.4f}, {S_vals[0]:.4f}]")
         return U, S_vals, V
 
     @torch.no_grad()

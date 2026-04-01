@@ -102,27 +102,48 @@ _GramCache = GramMatrixCacheManager
 
 class AspireFilter:
     """
-    ASPIRE 단일 파라미터(1-Parameter) 필터링 유틸리티.
-    h(σ_k; γ) = σ_k^γ / (σ_k^γ + σ_max^γ)
+    ASPIRE 싱글 파라미터(1-Parameter) 필터링 유틸리티.
+    h(σ_k; γ) = σ_k^γ / (σ_k^γ + τ^γ)
 
-    - γ (gamma): Global Compression 파라미터. 
-      [이론] True-MSE 최소화를 위한 수학적 정답은 γ ≈ 0.8 수준이나,
-      [실제] NDCG 랭킹 공간에서 거대한 Head 아웃라이어를 억제하기 위해 HPO는 γ → 0 에 가까운
-      극단적 평탄화(Over-compression)를 선택함. 이는 복원(MSE)과 랭킹(NDCG)의 목적 함수 충돌을 증명함.
-    - α (alpha): Ranking Invariance 정리에 의해, 선형 추천 모델에서 스케일 계수 α는 
-      최종 추천 리스트의 순위에 어떠한 수학적 영향도 미치지 못함. (gamma_only 모드 사용 권장)
+    - γ (gamma): Global Compression 파라미터.
+    - sigma_ref: gamma_only 모드에서 정규화 기준값 선택
+        * 'sigma1'      (기본): 최대 특이값 σ_1 사용 (원본 ASPIRE)
+        * 'sigma_median': 특이값 중앙값 σ_median 사용
+        * 'sigma_mean'  : 특이값 평균값 σ_mean 사용
+        * 'sigma_k'     : 마지막 특이값 σ_k 사용
+    - α (alpha): Ranking Invariance 정리에 의해, 선형 추천 모델에서 스케일 계수 α는
+      최종 추천 리스트의 순위에 어떠한 수학적 영향도 미치지 못함. (gamma_only 모드 권장)
     """
     @staticmethod
-    def apply_filter(vals: torch.Tensor, gamma: float = 1.0, alpha: float = 1.0, 
-                    mode: str = 'gamma_only', is_gram: bool = False) -> tuple[torch.Tensor, float, float]:
+    def apply_filter(vals: torch.Tensor, gamma: float = 1.0, alpha: float = 1.0,
+                    mode: str = 'gamma_only', is_gram: bool = False,
+                    sigma_ref: str = 'sigma1', custom_lambda: float = None) -> tuple[torch.Tensor, float, float]:
         s = torch.clamp(vals.float(), min=1e-12)
         exp = float(gamma) if not is_gram else float(gamma) / 2.0
         s_gamma = torch.pow(s, exp)
         
         if mode == 'gamma_only':
-            # 1-Parameter 모드: 최상위 특이값의 에너지를 기준으로 스케일링 (Ranking Invariant)
-            s_max_gamma = s_gamma.max().item()
-            effective_lambda = s_max_gamma
+            # --- Normalization reference selection ---
+            # 의미론: "해당 σ 참조값에서 h(σ_ref) = 0.5" 가 되도록 τ = σ_ref^γ 로 설정.
+            # 외부에서 동적으로 산출된 람다(custom_lambda = τ^γ)가 있다면 이를 우선 적용.
+            if custom_lambda is not None:
+                effective_lambda = float(custom_lambda)
+            elif sigma_ref == 'sigma_median':
+                # τ = median(σ)^γ  →  h(σ_median) = 0.5
+                effective_lambda = float(torch.median(s).item()) ** exp
+            elif sigma_ref == 'sigma_mean':
+                # τ = mean(σ)^γ   →  h(σ_mean) = 0.5
+                # (주의: mean(σ^γ) ≠ mean(σ)^γ — Jensen 부등식. 후자가 의미론적으로 정확)
+                effective_lambda = float(s.mean().item()) ** exp
+            elif sigma_ref == 'sigma_k':
+                # τ = σ_k^γ  →  h(σ_k) = 0.5 at the truncation boundary.
+                # 가장 작은 retention 특이값(σ_k = s[-1])을 기준으로 삼아
+                # 모든 retained 성분에서 h ≥ 0.5 를 보장.
+                # k가 크면 σ_k ↓ → τ ↓ → 전체 필터 완화; k가 작으면 반대.
+                # → k와 γ가 자연스럽게 coupling 되는 효과.
+                effective_lambda = s_gamma[-1].item()  # s_gamma[-1] = σ_k^exp
+            else:  # 'sigma1' (default): τ = σ₁^γ  →  h(σ₁) = 0.5
+                effective_lambda = s_gamma.max().item()  # max(σ^γ) == (max σ)^γ, same by monotonicity
             alpha_val = 1.0
         else:
             effective_lambda = float(alpha)
@@ -162,13 +183,17 @@ class AspireFilter:
 # ==============================================================================
 
 class ASPIRELayer(nn.Module):
-    def __init__(self, k: int = 200, gamma: float = 1.0, alpha: float = 1.0, filter_mode: str = "gamma_only", **kwargs):
+    def __init__(self, k: int = 200, gamma: float = 1.0, alpha: float = 1.0,
+                 filter_mode: str = "gamma_only", sigma_ref: str = 'sigma1', **kwargs):
         super().__init__()
         self.k = k
         self.gamma = float(gamma)
         self.alpha = float(alpha)
         self.target_energy = kwargs.get("target_energy", 0.9)
         self.filter_mode = filter_mode
+        # sigma_ref: normalization reference in gamma_only mode
+        # 'sigma1' (default) | 'sigma_median' | 'sigma_mean'
+        self.sigma_ref = sigma_ref
 
         self.register_buffer("singular_values", torch.empty(0))
         self.register_buffer("V_raw",           torch.empty(0, 0))
@@ -204,14 +229,38 @@ class ASPIRELayer(nn.Module):
         self.register_buffer("singular_values", s.to(dev))
         self.register_buffer("V_raw", v.to(dev))
 
+        custom_lam = None
+        if self.sigma_ref in ['sigma_global', 'sigma_tail']:
+            total_energy = X_sparse.nnz
+            max_rank = min(X_sparse.shape)
+            
+            if self.sigma_ref == 'sigma_global':
+                # λ = M / min(U,I)  (에너지 평균)
+                custom_lam = total_energy / max_rank
+            else:  # 'sigma_tail'
+                # λ = (M - sum(s_retained^2)) / (min(U,I) - K)  (꼬리 노이즈 에너지 평균)
+                explained_energy = (self.singular_values ** 2).sum().item()
+                if max_rank > self.k:
+                    custom_lam = max(0.0, total_energy - explained_energy) / (max_rank - self.k)
+                else:
+                    custom_lam = total_energy / max_rank
+
         h, self.alpha, self.alpha_abs = AspireFilter.apply_filter(
-            self.singular_values, gamma=self.gamma, alpha=self.alpha, mode=self.filter_mode
+            self.singular_values, gamma=self.gamma, alpha=self.alpha,
+            mode=self.filter_mode, sigma_ref=self.sigma_ref, custom_lambda=custom_lam
         )
         self.register_buffer("filter_diag", h)
         self.rho = AspireFilter.compute_rho(self.singular_values)
 
         if verbose:
+            ref_desc = {
+                'sigma1': 'σ₁', 'sigma_median': 'σ_median',
+                'sigma_mean': 'σ_mean', 'sigma_k': 'σ_k',
+                'sigma_global': 'E_avg', 'sigma_tail': 'E_tail'
+            }.get(self.sigma_ref, self.sigma_ref)
+            
             print(f"[ASPIRELayer] Built | γ={self.gamma:.2f} α={self.alpha:.2f} ρ={self.rho:.4f}")
+            print(f"             | ref={ref_desc}, λ(τᵞ)={self.alpha_abs:.4f}")
 
     @torch.no_grad()
     def forward(self, X_batch: torch.Tensor) -> torch.Tensor:
@@ -231,7 +280,7 @@ class ASPIRELayer(nn.Module):
 # ==============================================================================
 
 class ChebyASPIRELayer(nn.Module):
-    def __init__(self, degree: int = 20, gamma: float = 1.0, 
+    def __init__(self, degree: int = 20, gamma: float = 1.0,
                  alpha: float = 1.0, filter_mode: str = "gamma_only",
                  lambda_max_estimate: float | str = "auto", **kwargs):
         super().__init__()
@@ -240,6 +289,8 @@ class ChebyASPIRELayer(nn.Module):
         self.lambda_max_estimate = lambda_max_estimate
         self.filter_mode = filter_mode
         self.alpha = float(alpha)
+        # sigma_ref: normalization reference in gamma_only mode (inherited from ASPIRE config)
+        self.sigma_ref = kwargs.get('sigma_ref', 'sigma1')
 
         self.register_buffer("cheby_coeffs", torch.empty(0))
         self.register_buffer("t_mid",        torch.tensor(0.0))
@@ -251,7 +302,7 @@ class ChebyASPIRELayer(nn.Module):
         self.X_torch_csr = None
         self.Xt_torch_csr = None
         self.sparse_device = None
-        self.scores_cache = None  
+        self.scores_cache = None
         self.matrix_id = None
 
     @torch.no_grad()
@@ -285,8 +336,12 @@ class ChebyASPIRELayer(nn.Module):
         lam_nodes = mid + half * np.cos(theta)
 
         lam_torch = torch.from_numpy(lam_nodes).float()
+        # sigma_ref는 Chebyshev 노드들(라무다 샘플링 포인트) 기준으로 적용—
+        # is_gram=True 이므로 lam_torch^(gamma/2) = sigma_k^gamma 스케일에서의 median/mean헤다.
         h_nodes, self.alpha, self.alpha_abs = AspireFilter.apply_filter(
-            lam_torch, gamma=self.gamma, alpha=self.alpha, mode=self.filter_mode, is_gram=True
+            lam_torch, gamma=self.gamma, alpha=self.alpha,
+            mode=self.filter_mode, is_gram=True, sigma_ref=self.sigma_ref,
+            custom_lambda=getattr(self, '_custom_lam', None)
         )
 
         f_nodes = h_nodes.numpy()
@@ -312,6 +367,14 @@ class ChebyASPIRELayer(nn.Module):
         self.Xt_torch_csr = torch.sparse_coo_tensor(torch.stack([indices[1], indices[0]]), values, (X_coo.shape[1], X_coo.shape[0]), device=self.sparse_device).coalesce().to_sparse_csr()
 
         self.matrix_id = EVDCacheManager._generate_matrix_id(X_sparse)
+        
+        self._custom_lam = None
+        if self.sigma_ref in ['sigma_global', 'sigma_tail']:
+            total_energy = X_sparse.nnz
+            max_rank = min(X_sparse.shape)
+            # Chebyshev 기반에선 SVD를 구하지 않으므로, tail도 global 평균으로 Fallback
+            self._custom_lam = total_energy / max_rank
+
         lambda_max = _ChebyCache.get_lambda(dataset_name, self.matrix_id)
         
         if lambda_max is None:

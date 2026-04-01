@@ -19,10 +19,12 @@ class EASE(BaseModel):
         # [MEMORY FIX] Do NOT allocate large dense zero matrix on CPU at init.
         # This prevents the "DefaultCPUAllocator: not enough memory" error for large datasets.
         self.register_buffer('weight_matrix', torch.empty(0, 0))
-        self.is_sparse = False 
-        
+        self.is_sparse = False
+
         # 학습에 사용된 희소 행렬을 저장 (Inference 시 사용)
         self.train_matrix_csr = None
+        # CUDA sparse version of train_matrix — populated in fit() for GPU inference
+        self._X_cuda = None
 
     def fit(self, data_loader):
         self._log(f"Fitting (λ={self.reg_lambda})...")
@@ -65,6 +67,17 @@ class EASE(BaseModel):
         
         self._log(f"Fitted on {self.device}. B: {self.n_items}x{self.n_items} (Sparse={self.is_sparse})")
 
+        # [CUDA OPT] Pre-upload train matrix as CUDA sparse CSR tensor.
+        # Avoids repeated .toarray() → numpy → GPU transfer on every forward() call.
+        self._X_cuda = None
+        if self.device.type == 'cuda':
+            try:
+                from src.utils.gpu_accel import SVDCacheManager
+                self._X_cuda = SVDCacheManager._to_cuda_sparse(X)
+                self._log("Train matrix uploaded to CUDA sparse (forward acceleration).")
+            except Exception as e:
+                self._log(f"CUDA sparse upload failed ({e}), using CPU fallback.")
+
     def forward(self, user_ids, item_ids=None):
         if self.train_matrix_csr is None:
              raise RuntimeError("EASE model has not been fitted yet. Call fit() first.")
@@ -72,20 +85,36 @@ class EASE(BaseModel):
         if isinstance(user_ids, torch.Tensor):
             u_ids_np = user_ids.cpu().numpy()
         else:
-            u_ids_np = user_ids
-            
-        user_input_sparse = self.train_matrix_csr[u_ids_np]
-        user_input = torch.from_numpy(user_input_sparse.toarray()).float().to(self.device)
-        
+            u_ids_np = np.asarray(user_ids)
+
+        # --- User vector retrieval ---
+        if self._X_cuda is not None:
+            # [CUDA Sparse Path] Row-selection via sparse E @ X:
+            # E is (B x N_users) selection matrix; E @ X_cuda → (B, N_items) dense, no .toarray()
+            B = len(u_ids_np)
+            row_idx = torch.arange(B, device=self.device)
+            col_idx = torch.from_numpy(u_ids_np.astype(np.int64)).to(self.device)
+            vals    = torch.ones(B, device=self.device)
+            E = torch.sparse_coo_tensor(
+                torch.stack([row_idx, col_idx]), vals,
+                (B, self.n_users), device=self.device
+            ).to_sparse_csr()
+            user_input = torch.mm(E, self._X_cuda)  # (B, N_items) dense
+        else:
+            # [CPU Fallback] .toarray() + async non-blocking GPU transfer
+            user_np = self.train_matrix_csr[u_ids_np].toarray()
+            t = torch.from_numpy(user_np).float()
+            if self.device.type == 'cuda':
+                user_input = t.pin_memory().to(self.device, non_blocking=True)
+            else:
+                user_input = t.to(self.device)
+
         if self.is_sparse:
-            # [CUDA OPT] Sparse-Dense Multiplication
-            # user_input: (B, I), weight_matrix: Sparse(I, I)
-            # torch.sparse.mm only supports Sparse @ Dense or Sparse @ Sparse.
-            # So we use (W @ X^T)^T
+            # weight_matrix: Sparse(I, I), torch.sparse.mm only supports Sparse @ Dense
             scores = torch.sparse.mm(self.weight_matrix, user_input.t()).t()
         else:
             scores = user_input @ self.weight_matrix
-        
+
         return scores
 
     def calc_loss(self, batch_data):

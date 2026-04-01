@@ -25,11 +25,14 @@ class ASPIRE(BaseModel):
         self.k = model_config.get('k', None)
         self.filter_mode = model_config.get('filter_mode', 'standard')
         self.visualize = model_config.get('visualize', True)
-        
+        # sigma_ref: normalization reference in gamma_only mode
+        # 'sigma1' (default) | 'sigma_median' | 'sigma_mean'
+        self.sigma_ref = model_config.get('sigma_ref', 'sigma1')
+
         # ASPIRE Layer
         # Remove explicitly passed args from kwargs to avoid 'multiple values for keyword argument' error
         layer_kwargs = model_config.copy()
-        for key in ['k', 'gamma', 'target_energy', 'filter_mode', 'alpha']:
+        for key in ['k', 'gamma', 'target_energy', 'filter_mode', 'alpha', 'sigma_ref']:
             layer_kwargs.pop(key, None)
 
         self.lira_layer = ASPIRELayer(
@@ -38,11 +41,16 @@ class ASPIRE(BaseModel):
             alpha=self.alpha,
             filter_mode=self.filter_mode,
             target_energy=self.target_energy,
+            sigma_ref=self.sigma_ref,
             **layer_kwargs
         )
         self.lira_layer.to(self.device)
-        
-        self._log(f"Initialized (k={self.k}, mode=gamma_only, gamma={self.gamma:.2f})")
+
+        ref_desc = {
+            'sigma1': 'σ₁', 'sigma_median': 'σ_median',
+            'sigma_mean': 'σ_mean', 'sigma_k': 'σ_k'
+        }.get(self.sigma_ref, self.sigma_ref)
+        self._log(f"Initialized (k={self.k}, mode={self.filter_mode}, γ={self.gamma:.2f}, ref={ref_desc})")
         
         # Build Sparse Matrix from DataLoader
         self.train_matrix_csr = self._build_sparse_matrix(data_loader)
