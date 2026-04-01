@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
+import json
+import matplotlib.pyplot as plt
 from scipy.sparse import csr_matrix
 
 from src.models.base_model import BaseModel
@@ -99,8 +101,92 @@ class ASPIRE_Zero(BaseModel):
             
             if abs(gamma - prev_gamma) < self.tol:
                 break
+            prev_gamma = gamma
                 
         return gamma, abs(b)
+
+    def _save_spectral_analysis(self, lambda_obs, tau, h, s, k1, k2, anchor_ext):
+        """
+        ASPIRE-Zero Integrated Self-Analysis (Pro Version):
+        Saves professional spectral dashboard and detailed JSON metadata.
+        """
+        output_dir = os.path.join(self.output_path, "spectral_analysis")
+        os.makedirs(output_dir, exist_ok=True)
+        dataset_name = self.config.get('dataset_name', 'unknown')
+        
+        # 1. Save Detailed JSON Metadata (aspire_visualizer style)
+        metadata = {
+            "config": {
+                "dataset": dataset_name,
+                "gamma_final": float(self.gamma),
+                "beta_final": float(self.beta),
+                "lambda_ext": float(anchor_ext)
+            },
+            "spectral_stats": {
+                "lambda_obs_max": float(lambda_obs.max()),
+                "lambda_obs_mean": float(lambda_obs.mean()),
+                "signal_plateau_range": [int(k1), int(k2)]
+            },
+            "filter_stats": {
+                "h_max": float(h.max()),
+                "h_min": float(h.min()),
+                "h_mean": float(h.mean())
+            }
+        }
+        with open(os.path.join(output_dir, "analysis.json"), "w") as f:
+            json.dump(metadata, f, indent=4)
+            
+        # 2. Professional Plotting (3-Panel Analysis)
+        plt.style.use('seaborn-v0_8-muted') if 'seaborn-v0_8-muted' in plt.style.available else plt.style.use('ggplot')
+        
+        n = len(lambda_obs)
+        ranks = np.arange(1, n + 1)
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        fig.suptitle(f"ASPIRE-Zero Spectral Analysis: {dataset_name.upper()}\n"
+                     rf"(Fixed-Point Equilibrium: $\gamma^*={self.gamma:.4f}$, $\beta={self.beta:.4f}$)", 
+                     fontsize=15, fontweight='bold', y=1.02)
+        
+        # [Panel 1] Spectral Power-law (Log-Log)
+        ax = axes[0]
+        ax.loglog(ranks, lambda_obs, label=r'Observed ($\lambda_{obs}$)', color='#3498db', alpha=0.3)
+        ax.loglog(ranks, tau, label=r'Undistorted ($\tau$)', color='#2ecc71', linewidth=2)
+        ax.axvspan(ranks[k1], ranks[k2], color='yellow', alpha=0.1, label="Plateau (Bulk)")
+        ax.set_title("Spectral Distortion Recovery", fontsize=12, fontweight='bold')
+        ax.set_xlabel("Rank (k)", fontsize=10)
+        ax.set_ylabel("Eigenvalue Scale", fontsize=10)
+        ax.grid(True, which="both", ls="-", alpha=0.2)
+        ax.legend()
+        
+        # [Panel 2] Filter Transfer Function
+        ax = axes[1]
+        ax.plot(ranks, h, color='#e67e22', linewidth=2, label=r'Wiener Filter $h(\lambda)$')
+        ax.fill_between(ranks, h, color='#e67e22', alpha=0.1)
+        ax.set_title(f"Filter Shape ($\lambda_{{ext}}={anchor_ext:.2f}$)", fontsize=12, fontweight='bold')
+        ax.set_xlabel("Rank (k)", fontsize=10)
+        ax.set_ylabel("Filter Gain", fontsize=10)
+        ax.set_ylim(0, 1.1)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # [Panel 3] Spectral Restoration (Effective)
+        ax = axes[2]
+        ax.loglog(ranks, s, color='#9b59b6', label=r'Filtered Signal $s = \tau \cdot h$')
+        # Regression for Flatness check
+        bulk_ranks = ranks[k1:k2]
+        bulk_s = s[k1:k2]
+        z = np.polyfit(np.log(bulk_ranks), np.log(bulk_s + 1e-12), 1)
+        ax.loglog(bulk_ranks, np.exp(z[0]*np.log(bulk_ranks) + z[1]), 'k--', alpha=0.8, label=f"Fit Slope: {z[0]:.4f}")
+        ax.set_title("Self-Consistent Equilibrium", fontsize=12, fontweight='bold')
+        ax.set_xlabel("Rank (k)", fontsize=10)
+        ax.set_ylabel("Signal Intensity", fontsize=10)
+        ax.grid(True, which="both", ls="-", alpha=0.2)
+        ax.legend()
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "dashboard.png"), dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        
+        self._log(f"Spectral diagnostics saved to: {output_dir}")
 
     @torch.no_grad()
     def _build(self, X_sparse, dataset_name):
@@ -133,6 +219,9 @@ class ASPIRE_Zero(BaseModel):
         
         self.register_buffer("V_raw", torch.from_numpy(v_np).float().to(self.device))
         self.register_buffer("filter_diag", torch.from_numpy(h_np).float().to(self.device))
+
+        # 6. Save Analysis (Integrated Dashboard & JSON in output_path)
+        self._save_spectral_analysis(lambda_obs, tau_final, h_np, tau_final * h_np, k1, k2, anchor_ext)
 
         self._log(
             f"Fixed-Point Engine | Plateau: [{k1}~{k2}] | Converged γ*: {self.gamma:.4f} | β: {self.beta:.4f} | λ_ext: {anchor_ext:.4f}"
