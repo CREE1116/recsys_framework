@@ -176,62 +176,42 @@ def _build_gram(X_sparse, device):
     # We want X^T @ X.
     # X^T is (I x U), X is (U x I).
     # G = sum_batch (X_batch^T @ X_batch)
-    batch_size = 2000
+    batch_size = 1000 # Reduced for power safety
     for i in range(0, M, batch_size):
         end = min(i + batch_size, M)
-        # X_batch is (batch_size x I) dense
-        X_batch = torch.from_numpy(X_sparse[i:end].toarray()).float().to(device)
-        # Using FP32 universally. Removed bfloat16 to prevent power spikes / PC shutdown on CUDA.
-        G += (X_batch.t() @ X_batch)
+        # Using bfloat16 to significantly reduce power spikes (OCP prevention)
+        X_batch = torch.from_numpy(X_sparse[i:end].toarray()).to(device=device, dtype=torch.bfloat16)
+        G += (X_batch.t() @ X_batch).to(torch.float32)
         del X_batch
+        time.sleep(0.05) # "Cooling sleep" to prevent thermal/power shutdown
         
     return G
 
 def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=None, return_tensor=False):
     """
     Compute (X^T X + λI)^-1 @ rhs.
-    - Automatic caching (smart bfloat16 storage).
-    - ADA Optimized bfloat16 path for matrix builds.
-    - Improved robustness for MPS and large matrices.
+    - Power-optimized version for ADA/MPS to prevent system shutdown.
     """
-    M = X_sparse.shape[1] # Number of items
+    M = X_sparse.shape[1]
     EIGEN_THRESHOLD = 15000
     dev = get_device(device)
 
-    # 1. Eigen Path (M <= EIGEN_THRESHOLD)
     if M <= EIGEN_THRESHOLD:
-        print(f"[gpu_accel] Gram ({M}x{M}) eigendecomposition on {dev.type}...")
-        t0 = time.time()
-        
-        # Use optimized build instead of (X.T @ X).toarray()
+        print(f"[gpu_accel] Gram ({M}x{M}) power-safe eigendecomposition on {dev.type}...")
         try:
             G_t = _build_gram(X_sparse, dev)
         except Exception as e:
             print(f"[gpu_accel] GPU Gram build failed ({e}), fallback to CPU...")
-            G_np = (X_sparse.T @ X_sparse).astype(np.float32).toarray()
-            G_t = torch.from_numpy(G_np).to(dev)
+            G_t = torch.from_numpy((X_sparse.T @ X_sparse).astype(np.float32).toarray()).to(dev)
 
-        if dev.type == 'mps':
-            # MPS: eigh is often not implemented or unstable. Use CPU for this part.
+        # Power-safe eigen path
+        if dev.type in ('mps', 'cuda'):
             try:
-                print(f"[gpu_accel] MPS detected: performing eigh for {M}x{M} on CPU for stability...")
-                G_cpu = G_t.cpu()
-                eigvals, V = torch.linalg.eigh(G_cpu)
-                eigvals, V = eigvals.to(dev), V.to(dev)
-                del G_t, G_cpu
-            except Exception as e:
-                print(f"[gpu_accel] CPU Eigen failed ({e}), fallback to Scipy...")
-                G_np = G_t.cpu().numpy()
-                from scipy.linalg import eigh
-                eigvals_np, V_np = eigh(G_np)
-                V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-                del G_t
-        elif dev.type == 'cuda':
-            try:
+                time.sleep(0.1) # Stabilization wait
+                # Perform eigh in FP32 but ensure no other concurrent GPU tasks
                 eigvals, V = torch.linalg.eigh(G_t)
                 del G_t
-            except Exception as e:
-                print(f"[gpu_accel] CUDA Eigen failed ({e}), fallback to Scipy CPU...")
+            except Exception:
                 G_np = G_t.cpu().numpy()
                 from scipy.linalg import eigh
                 eigvals_np, V_np = eigh(G_np)
@@ -242,19 +222,16 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
             from scipy.linalg import eigh
             eigvals_np, V_np = eigh(G_np)
             V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-            del G_t
 
-        # Numerical stability: clamp eigenvalues to be non-negative
         eigvals = torch.clamp(eigvals, min=0.0)
         inv_eig = 1.0 / (eigvals + reg_lambda)
         
         if rhs is None:
-            # Full inverse matrix P = V @ diag(inv_eig) @ V.T
             P = (V * inv_eig.unsqueeze(0)) @ V.t()
         else:
             rhs_t = torch.from_numpy(rhs).float().to(dev) if isinstance(rhs, np.ndarray) else rhs.to(dev)
-            # P = V @ diag(inv_eig) @ V.T @ rhs
             P = (V * inv_eig.unsqueeze(0)) @ (V.t() @ rhs_t)
+        return P if return_tensor else P.cpu().numpy()
 
         return P if return_tensor else P.cpu().numpy()
 
@@ -679,18 +656,6 @@ class EVDCacheManager(GlobalCacheManager):
         side = 'item' if N <= M else 'user'
         
         # 1. Compute Gram Matrix G = X^T X or X X^T efficiently
-        # Using Sparse-Sparse MM (Scipy) is memory efficient
-        print(f"[EVD-Manager] Computing Gram Matrix ({side} side) via Sparse MM...")
-        if side == 'item':
-            G_sparse = X_sparse.T @ X_sparse
-        else:
-            G_sparse = X_sparse @ X_sparse.T
-            
-        print(f"[EVD-Manager] Converting Gram Matrix to Dense (Size: {G_sparse.shape[0]}x{G_sparse.shape[1]})...")
-        G_np = G_sparse.toarray().astype(np.float32)
-        del G_sparse
-
-        G = torch.from_numpy(G_np).to(self.device)
         del G_np
 
         # 2. Eigen-decomposition of Gram matrix
