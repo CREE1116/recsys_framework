@@ -1,0 +1,7 @@
+model:
+  name: "aspire_chebyshev"
+  cheb_order: 10
+  n_lanczos: 50
+  max_iter: 20
+  tol: 1.0e-5
+  lambda_base: "auto"

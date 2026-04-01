@@ -56,6 +56,8 @@ from .csar.CGLIRA import CGLIRA
 from .csar.ASPIRE import ASPIRE, ASPIRE_Norm
 from .csar.ChebyASPIRE import ChebyASPIRE
 from .csar.ASPIRE_Zero import ASPIRE_Zero
+from .csar.ASPIRE_Chebyshev import ASPIRE_Chebyshev
+from .csar.ASPIRE_Naked import ASPIRE_Naked
 
 MODEL_REGISTRY = {
     # General Models
@@ -118,6 +120,8 @@ MODEL_REGISTRY = {
     'aspire_norm': ASPIRE_Norm,
     'cheby_aspire': ChebyASPIRE,
     'aspire_zero': ASPIRE_Zero,
+    'aspire_chebyshev': ASPIRE_Chebyshev,
+    'aspire_naked': ASPIRE_Naked,
 }
 
 def get_model(model_name, config, data_loader):
