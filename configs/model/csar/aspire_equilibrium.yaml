@@ -1,0 +1,5 @@
+model:
+  name: aspire_equilibrium
+  max_iter: 400
+  k: null  # null for Full EVD, or integer for Truncated SVD
+  lambda_base: "auto"

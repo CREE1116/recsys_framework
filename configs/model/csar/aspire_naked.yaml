@@ -3,3 +3,4 @@ model:
   max_iter: 20
   tol: 1.0e-4
   lambda_base: "auto" # RMT-based noise floor
+  k: null
