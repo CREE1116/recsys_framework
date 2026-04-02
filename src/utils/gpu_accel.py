@@ -656,7 +656,32 @@ class EVDCacheManager(GlobalCacheManager):
         side = 'item' if N <= M else 'user'
         
         # 1. Compute Gram Matrix G = X^T X or X X^T efficiently
-        del G_np
+        # M: users, N: items. side=='item' means N <= M, so we compute N x N Gram (X.T @ X)
+        dim = N if side == 'item' else M
+        G = torch.zeros((dim, dim), device=self.device, dtype=torch.float32)
+        
+        batch_size = 1000  # Safe batch size to prevent OCP/thermal issues
+        print(f"[EVD-Manager] Building {dim}x{dim} Gram Matrix ({side}-side) on {self.device}...")
+        
+        if side == 'item':
+            # G = X.T @ X = sum(X_batch.T @ X_batch)
+            for i in range(0, M, batch_size):
+                end = min(i + batch_size, M)
+                X_batch = torch.from_numpy(X_sparse[i:end].toarray()).to(device=self.device, dtype=torch.bfloat16)
+                G += (X_batch.t() @ X_batch).to(torch.float32)
+                del X_batch
+                time.sleep(0.05)  # Cooling sleep
+        else:
+            # G = X @ X.T = sum(X_batch @ X_batch.T)
+            # This requires access by items (columns), assuming X is in CSR or we use .T
+            X_T = X_sparse.T.tocsr()
+            for i in range(0, N, batch_size):
+                end = min(i + batch_size, N)
+                X_batch_T = torch.from_numpy(X_T[i:end].toarray()).to(device=self.device, dtype=torch.bfloat16)
+                G += (X_batch_T.t() @ X_batch_T).to(torch.float32)
+                del X_batch_T
+                time.sleep(0.05)
+            del X_T
 
         # 2. Eigen-decomposition of Gram matrix
         print(f"[EVD-Manager] Solving EVD for {G.shape[0]}x{G.shape[1]} Gram Matrix...")

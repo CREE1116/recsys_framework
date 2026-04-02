@@ -11,7 +11,7 @@ from src.utils.gpu_accel import EVDCacheManager
 
 class ASPIRE_Naked(BaseModel):
     """
-    ASPIRE-Naked: Primitive Fixed-Point Engine
+    ASPIRE-Naked: Primitive Fixed-Point Engine (The Original)
     
     [핵심 메커니즘]
     - 안전장치(Damping, OLS, Derivative Plateau)를 모두 제거.
@@ -25,7 +25,7 @@ class ASPIRE_Naked(BaseModel):
 
         model_config = config.get('model', {})
         self.max_iter  = model_config.get('max_iter', 20)
-        self.k         = model_config.get('k', 500)
+        self.k         = model_config.get('k', None)
         self.tol       = 1e-4
         self.lambda_base_config = model_config.get('lambda_base', 'auto')
 
@@ -61,38 +61,36 @@ class ASPIRE_Naked(BaseModel):
         curv_in_range = curvature[start_idx:end_idx]
         peaks = np.argsort(curv_in_range)[-2:] + start_idx
         k1, k2 = np.sort(peaks)
-        return k1, k2
+        return int(k1), int(k2)
 
     def _infer_gamma_naked(self, lambda_obs, k1, k2, anchor_ext):
-        """Standard ASPIRE-Zero Fixed-point engine for Naked"""
-        n_components = len(lambda_obs)
-        ranks = np.arange(k1 + 1, k2 + 1, dtype=np.float64)
-        x = np.log(ranks)
-        x_centered = x - np.mean(x)
-        x_var = np.sum(x_centered ** 2) + 1e-12
+        """Extreme Simplification: No OLS, No Damping. Pure Geometric Slope."""
+        log_ranks = np.log(np.arange(1, len(lambda_obs) + 1, dtype=np.float64))
         
         gamma = 1.0
+        b_final = 0.0
         for i in range(self.max_iter):
             prev_gamma = gamma
             tau = lambda_obs ** gamma
             h = tau / (tau + anchor_ext + 1e-12)
-            s = tau * h
+            s = lambda_obs * h
             
-            log_s = np.log(s[k1:k2] + 1e-12)
-            y_centered = log_s - np.mean(log_s)
-            b = np.sum(x_centered * y_centered) / x_var
+            # 2-Point Derivative between plateau edges (Primitive Way)
+            log_s = np.log(s + 1e-12)
+            b = (log_s[k2] - log_s[k1]) / (log_ranks[k2] - log_ranks[k1] + 1e-12)
+            b = abs(b)
             
-            gamma = 1.0 / (1.0 + abs(b))
-            # No Damping: Direct Fixed-Point Update
+            gamma = 1.0 / (1.0 + b + 1e-12)
+            b_final = b
             
             if abs(gamma - prev_gamma) < self.tol:
                 break
-        return gamma, abs(b)
+        return gamma, b_final
 
     @torch.no_grad()
     def _build(self, X_sparse, dataset_name):
         manager = EVDCacheManager(device=self.device.type)
-        _, s, v, _ = manager.get_evd(X_sparse, k=None, dataset_name=dataset_name)
+        _, s, v, _ = manager.get_evd(X_sparse, k=self.k, dataset_name=dataset_name)
 
         # 1. Eigenvalues Base
         lambda_obs = s.cpu().numpy() ** 2
@@ -123,11 +121,9 @@ class ASPIRE_Naked(BaseModel):
         self.register_buffer("filter_diag", torch.from_numpy(h_np).float().to(self.device))
 
         # 6. Save Analysis Dashboard
-        self._save_spectral_analysis(lambda_obs, tau_final, h_np, tau_final * h_np, k1, k2, anchor_ext)
+        self._save_spectral_analysis(lambda_obs, tau_final, h_np, lambda_obs * h_np, k1, k2, anchor_ext)
 
-        self._log(
-            f"Naked Engine Built (Legacy) | Plateau: [{k1}~{k2}] | Gamma*: {self.gamma:.4f} | λ_ext: {anchor_ext:.4f}"
-        )
+        print(f"[ASPIRE-Naked] Primitive Engine Built | Plateau: [{k1}~{k2}] | Gamma*: {self.gamma:.4f}")
 
     def _save_spectral_analysis(self, lambda_obs, tau, h, s, k1, k2, anchor_ext):
         """
@@ -137,22 +133,6 @@ class ASPIRE_Naked(BaseModel):
         os.makedirs(output_dir, exist_ok=True)
         dataset_name = self.config.get('dataset_name', 'unknown')
         
-        # Metadata JSON
-        metadata = {
-            "config": {
-                "dataset": dataset_name,
-                "gamma_final": float(self.gamma),
-                "beta_final": float(self.beta),
-                "lambda_ext": float(anchor_ext)
-            },
-            "spectral_stats": {
-                "lambda_obs_max": float(lambda_obs.max()),
-                "signal_plateau_range": [int(k1), int(k2)]
-            }
-        }
-        with open(os.path.join(output_dir, "analysis.json"), "w") as f:
-            json.dump(metadata, f, indent=4)
-            
         # 3-Panel Plotting
         plt.style.use('seaborn-v0_8-muted') if 'seaborn-v0_8-muted' in plt.style.available else plt.style.use('ggplot')
         
@@ -160,7 +140,7 @@ class ASPIRE_Naked(BaseModel):
         ranks = np.arange(1, n + 1)
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         fig.suptitle(f"ASPIRE-Naked Spectral Analysis: {dataset_name.upper()}\n"
-                     rf"(Physical Equilibrium: $\gamma^*={self.gamma:.4f}$, $\beta={self.beta:.4f}$)", 
+                     rf"(Physical Equilibrium: $\gamma^*={self.gamma:.4f}$, $b={self.beta:.4f}$)", 
                      fontsize=15, fontweight='bold', y=1.02)
         
         # [Panel 1] Recovery
@@ -183,7 +163,7 @@ class ASPIRE_Naked(BaseModel):
 
         # [Panel 3] Restoration
         ax = axes[2]
-        ax.loglog(ranks, s, color='#9b59b6', label=r'Filtered Signal $s$')
+        ax.loglog(ranks, s, color='#9b59b6', label=r'Filtered Signal $s = \lambda_{obs} \cdot h$')
         bulk_ranks = ranks[k1:k2]
         bulk_s = s[k1:k2]
         z = np.polyfit(np.log(bulk_ranks), np.log(bulk_s + 1e-12), 1)
@@ -194,19 +174,23 @@ class ASPIRE_Naked(BaseModel):
         
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, "dashboard.png"), dpi=150, bbox_inches='tight')
+        plt.savefig("spectral_audit.png") # For root monitoring
         plt.close(fig)
-        self._log(f"Spectral diagnostics saved to: {output_dir}")
 
     @torch.no_grad()
     def forward(self, users):
-        batch = users.cpu().numpy()
-        X_u   = torch.from_numpy(self.train_matrix_csr[batch].toarray()).float().to(self.device)
+        if torch.is_tensor(users) and users.dtype in (torch.int64, torch.long):
+            batch = users.cpu().numpy()
+            X_u   = torch.from_numpy(self.train_matrix_csr[batch].toarray()).float().to(self.device)
+        else:
+            X_u = users.float().to(self.device)
+            
         XV    = torch.mm(X_u, self.V_raw)
         scores = torch.mm(XV * self.filter_diag, self.V_raw.t())
         return scores
 
     def predict_for_pairs(self, users, items):
-        batch  = users.cpu().numpy()
+        batch = users.cpu().numpy()
         X_u    = torch.from_numpy(self.train_matrix_csr[batch].toarray()).float().to(self.device)
         XV     = torch.mm(X_u, self.V_raw)
         scores = torch.mm(XV * self.filter_diag, self.V_raw.t())
@@ -216,4 +200,7 @@ class ASPIRE_Naked(BaseModel):
         return self.V_raw
 
     def calc_loss(self, batch_data):
-        return (torch.tensor(0.0, device=self.device),), None
+        return (torch.tensor(0.0, device=self.device),), {}
+
+    def score(self, users):
+        return self.forward(users)

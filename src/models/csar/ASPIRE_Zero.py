@@ -5,6 +5,7 @@ import os
 import json
 import matplotlib.pyplot as plt
 from scipy.sparse import csr_matrix
+from scipy.optimize import minimize_scalar
 
 from src.models.base_model import BaseModel
 from src.utils.gpu_accel import EVDCacheManager
@@ -48,64 +49,63 @@ class ASPIRE_Zero(BaseModel):
             shape=(self.n_users, self.n_items)
         )
 
-    def _find_plateau(self, lambda_obs):
-        """신호 대역(Signal Plateau)의 경계를 곡률 피크 기반으로 자동 탐색"""
-        log_lambda = np.log(lambda_obs + 1e-12)
-        log_rank = np.log(np.arange(1, len(lambda_obs) + 1))
-        
+
+    def _infer_gamma_ratio_matched(self, lambda_obs, anchor_ext, max_iter=50):
+        """
+        [Wiener Ratio Slope Matching Core]
+        Wiener Ratio(r = tau/(tau+lambda))의 로그 기울기가 -(1-gamma)에 근사한다는 점을 이용함.
+        - gamma_new = 1.0 + slope(log_r)
+        - Fixed weights based on lambda_obs (Robust against iteration noise)
+        """
         n = len(lambda_obs)
-        start_idx = int(n * 0.02)
-        end_idx = int(n * 0.5)
+        log_k = np.log(np.arange(1, n + 1))
+        log_ext = np.log(anchor_ext + 1e-12)
         
-        slope = np.diff(log_lambda) / (np.diff(log_rank) + 1e-12)
-        curvature = np.abs(np.diff(slope))
+        # 1. 고정 가중치 (원본 신호 중심)
+        w = np.exp(- (np.log(lambda_obs + 1e-12) - log_ext)**2 )
+        w /= (w.sum() + 1e-12)
         
-        curv_in_range = curvature[start_idx:end_idx]
-        peaks = np.argsort(curv_in_range)[-2:] + start_idx
-        k1, k2 = np.sort(peaks)
-        return k1, k2
-
-    def _infer_gamma_fixed_point(self, lambda_obs, k1, k2, anchor_ext):
-        """
-        Self-Consistent Fixed-Point Iteration Engine (Eigenvalue Power Base)
-        """
-        n_components = len(lambda_obs)
-        ranks = np.arange(k1 + 1, k2 + 1, dtype=np.float64)
-        x = np.log(ranks)
-        x_centered = x - np.mean(x)
-        x_var = np.sum(x_centered ** 2) + 1e-12
+        gamma = 0.7  # 초기값
         
-        # 1. Initialize gamma = 1.0
-        gamma = 1.0
-        
-        for i in range(self.max_iter):
-            prev_gamma = gamma
-            
-            # (1) Wiener Filtering on λ spectrum directly
+        for _ in range(max_iter):
+            # 2. 복원 및 Ratio 계산
             tau = lambda_obs ** gamma
-            h = tau / (tau + anchor_ext + 1e-12)
-            s = tau * h # Filtered Power Spectrum
+            r = tau / (tau + anchor_ext + 1e-12)
+            log_r = np.log(r + 1e-12)
             
-            # (2) Measure New Slope b from s
-            log_s = np.log(s[k1:k2] + 1e-12)
-            y_centered = log_s - np.mean(log_s)
-            b = np.sum(x_centered * y_centered) / x_var
+            # 3. Log-Ratio Slope (Weighted)
+            x_m = np.sum(w * log_k)
+            y_m = np.sum(w * log_r)
+            slope = np.sum(w * (log_k - x_m) * (log_r - y_m)) / \
+                    (np.sum(w * (log_k - x_m)**2) + 1e-12)
             
-            # (3) Update beta & gamma
-            # β = |b|, γ = 1 / (1 + β)
-            beta_new = abs(b)
-            gamma = 1.0 / (1.0 + beta_new)
+            # 4. Gamma 업데이트 근사식
+            gamma_new = 1.0 + slope
+            gamma_new = np.clip(gamma_new, 0.2, 1.0)
             
-            # Damping for stability
-            gamma = 0.5 * prev_gamma + 0.5 * gamma
-            
-            if abs(gamma - prev_gamma) < self.tol:
+            if abs(gamma - gamma_new) < 1e-4:
+                gamma = gamma_new
                 break
-            prev_gamma = gamma
-                
-        return gamma, abs(b)
+            
+            gamma = 0.7 * gamma + 0.3 * gamma_new  # Damping
+            
+        # [Final Diagnostics]
+        tau_f = lambda_obs ** gamma
+        h_f = tau_f / (tau_f + anchor_ext + 1e-12)
+        s_f = tau_f * h_f
+        # 진단용 기울기 (ASPIRE-Zero 표준 정의)
+        x_m = np.sum(w * log_k)
+        y_m = np.sum(w * np.log(s_f + 1e-12))
+        beta_diag = abs(np.sum(w * (log_k - x_m) * (np.log(s_f + 1e-12) - y_m)) / (np.sum(w * (log_k - x_m)**2) + 1e-12))
+        
+        # 시각화용 대역 추출
+        w_peak = w.max()
+        active_idx = np.where(w >= w_peak * 0.1)[0]
+        k1, k2 = (active_idx[0], active_idx[-1]) if len(active_idx) > 0 else (0, n-1)
+        
+        return float(gamma), float(beta_diag), k1, k2
 
-    def _save_spectral_analysis(self, lambda_obs, tau, h, s, k1, k2, anchor_ext):
+    def _save_spectral_analysis(self, lambda_obs, tau, h, s, beta, k1, k2, anchor_ext):
         """
         ASPIRE-Zero Integrated Self-Analysis (Pro Version):
         Saves professional spectral dashboard and detailed JSON metadata.
@@ -150,7 +150,7 @@ class ASPIRE_Zero(BaseModel):
         ax = axes[0]
         ax.loglog(ranks, lambda_obs, label=r'Observed ($\lambda_{obs}$)', color='#3498db', alpha=0.3)
         ax.loglog(ranks, tau, label=r'Undistorted ($\tau$)', color='#2ecc71', linewidth=2)
-        ax.axvspan(ranks[k1], ranks[k2], color='yellow', alpha=0.1, label="Plateau (Bulk)")
+        ax.axvspan(ranks[k1], ranks[k2], color='yellow', alpha=0.1, label="Transition Band")
         ax.set_title("Spectral Distortion Recovery", fontsize=12, fontweight='bold')
         ax.set_xlabel("Rank (k)", fontsize=10)
         ax.set_ylabel("Eigenvalue Scale", fontsize=10)
@@ -171,11 +171,16 @@ class ASPIRE_Zero(BaseModel):
         # [Panel 3] Spectral Restoration (Effective)
         ax = axes[2]
         ax.loglog(ranks, s, color='#9b59b6', label=r'Filtered Signal $s = \tau \cdot h$')
-        # Regression for Flatness check
-        bulk_ranks = ranks[k1:k2]
-        bulk_s = s[k1:k2]
-        z = np.polyfit(np.log(bulk_ranks), np.log(bulk_s + 1e-12), 1)
-        ax.loglog(bulk_ranks, np.exp(z[0]*np.log(bulk_ranks) + z[1]), 'k--', alpha=0.8, label=f"Fit Slope: {z[0]:.4f}")
+        
+        # Weighted OLS Fit line for visualization
+        log_k_full = np.log(ranks)
+        # Using converged beta and a reference point from the center of transition band
+        ref_idx = (k1 + k2) // 2
+        ref_y = np.log(s[ref_idx] + 1e-12)
+        ref_x = log_k_full[ref_idx]
+        fit_y = -beta * (log_k_full - ref_x) + ref_y
+        
+        ax.loglog(ranks[k1:k2], np.exp(fit_y[k1:k2]), 'k--', alpha=0.8, label=f"W-OLS Slope: {-beta:.4f}")
         ax.set_title("Self-Consistent Equilibrium", fontsize=12, fontweight='bold')
         ax.set_xlabel("Rank (k)", fontsize=10)
         ax.set_ylabel("Signal Intensity", fontsize=10)
@@ -207,11 +212,8 @@ class ASPIRE_Zero(BaseModel):
         else:
             anchor_ext = float(self.lambda_base_config)
         
-        # 3. Plateau Detection
-        k1, k2 = self._find_plateau(lambda_obs)
-        
-        # 4. Fixed-Point Iteration Engine
-        self.gamma, self.beta = self._infer_gamma_fixed_point(lambda_obs, k1, k2, anchor_ext)
+        # 3. Wiener Ratio Slope Matching 기반 Gamma 최적화
+        self.gamma, self.beta, k1, k2 = self._infer_gamma_ratio_matched(lambda_obs, anchor_ext)
         
         # 5. Final Wiener Filter Build (λ base)
         tau_final = lambda_obs ** self.gamma
@@ -221,10 +223,10 @@ class ASPIRE_Zero(BaseModel):
         self.register_buffer("filter_diag", torch.from_numpy(h_np).float().to(self.device))
 
         # 6. Save Analysis (Integrated Dashboard & JSON in output_path)
-        self._save_spectral_analysis(lambda_obs, tau_final, h_np, tau_final * h_np, k1, k2, anchor_ext)
+        self._save_spectral_analysis(lambda_obs, tau_final, h_np, tau_final * h_np, self.beta, k1, k2, anchor_ext)
 
         self._log(
-            f"Fixed-Point Engine | Plateau: [{k1}~{k2}] | Converged γ*: {self.gamma:.4f} | β: {self.beta:.4f} | λ_ext: {anchor_ext:.4f}"
+            f"Ratio-Matched Engine | Band: [{k1}~{k2}] | Optimized γ*: {self.gamma:.4f} | β(diag): {self.beta:.4f} | λ_ext: {anchor_ext:.4f}"
         )
 
     @torch.no_grad()
