@@ -50,60 +50,58 @@ class ASPIRE_Zero(BaseModel):
         )
 
 
-    def _infer_gamma_ratio_matched(self, lambda_obs, anchor_ext, max_iter=50):
+    def _infer_gamma_consistency(self, lambda_obs, anchor_ext):
         """
-        [Wiener Ratio Slope Matching Core]
-        Wiener Ratio(r = tau/(tau+lambda))의 로그 기울기가 -(1-gamma)에 근사한다는 점을 이용함.
-        - gamma_new = 1.0 + slope(log_r)
-        - Fixed weights based on lambda_obs (Robust against iteration noise)
+        [Log-Space Wiener Self-Consistency Engine]
+        위너 필터링의 물리적 고정점 조건 (s = tau)을 로그 공간에서 최적화.
+        - s = lambda_obs * h (위너 필터링된 관측 신호)
+        - tau = lambda_obs ** gamma (재구성된 신호)
+        - Goal: Find gamma s.t. log(s) ≈ log(tau)
         """
+        from scipy.optimize import minimize_scalar
         n = len(lambda_obs)
-        log_k = np.log(np.arange(1, n + 1))
-        log_ext = np.log(anchor_ext + 1e-12)
+        eps = 1e-12
         
-        # 1. 고정 가중치 (원본 신호 중심)
-        w = np.exp(- (np.log(lambda_obs + 1e-12) - log_ext)**2 )
-        w /= (w.sum() + 1e-12)
-        
-        gamma = 0.7  # 초기값
-        
-        for _ in range(max_iter):
-            # 2. 복원 및 Ratio 계산
+        # 유효 신호 영역 (Noise Floor 이상의 의미 있는 신호)
+        # 전체의 80% 정도 혹은 lambda_ext 이상의 영역에 가중치를 둠
+        w = np.exp(- (np.maximum(0, np.log(anchor_ext + eps) - np.log(lambda_obs + eps)))**2)
+        w /= (w.sum() + eps)
+
+        def objective(gamma):
             tau = lambda_obs ** gamma
-            r = tau / (tau + anchor_ext + 1e-12)
-            log_r = np.log(r + 1e-12)
+            h = tau / (tau + anchor_ext + eps)
+            s = lambda_obs * h
             
-            # 3. Log-Ratio Slope (Weighted)
-            x_m = np.sum(w * log_k)
-            y_m = np.sum(w * log_r)
-            slope = np.sum(w * (log_k - x_m) * (log_r - y_m)) / \
-                    (np.sum(w * (log_k - x_m)**2) + 1e-12)
-            
-            # 4. Gamma 업데이트 근사식
-            gamma_new = 1.0 + slope
-            gamma_new = np.clip(gamma_new, 0.2, 1.0)
-            
-            if abs(gamma - gamma_new) < 1e-4:
-                gamma = gamma_new
-                break
-            
-            gamma = 0.7 * gamma + 0.3 * gamma_new  # Damping
-            
-        # [Final Diagnostics]
-        tau_f = lambda_obs ** gamma
-        h_f = tau_f / (tau_f + anchor_ext + 1e-12)
-        s_f = tau_f * h_f
-        # 진단용 기울기 (ASPIRE-Zero 표준 정의)
-        x_m = np.sum(w * log_k)
-        y_m = np.sum(w * np.log(s_f + 1e-12))
-        beta_diag = abs(np.sum(w * (log_k - x_m) * (np.log(s_f + 1e-12) - y_m)) / (np.sum(w * (log_k - x_m)**2) + 1e-12))
+            # log-error: log(s) - log(tau) = log(s/tau) = log(lambda_obs / (tau + lambda))
+            # 이 차이가 0에 가까울수록 lambda_obs ≈ tau + lambda 물리 법칙에 정합함.
+            error = np.log(s + eps) - np.log(tau + eps)
+            return np.sum(w * (error ** 2))
+
+        # 정밀 최적화 수행
+        res = minimize_scalar(objective, bounds=(0.1, 1.1), method='bounded')
+        gamma = float(res.x)
+
+        # [Final Diagnostics & Visualization]
+        tau_final = lambda_obs ** gamma
+        h_final = tau_final / (tau_final + anchor_ext + eps)
+        s_final = tau_final * h_final
+        log_k = np.log(np.arange(1, n + 1))
+        log_ext = np.log(anchor_ext + eps)
         
-        # 시각화용 대역 추출
-        w_peak = w.max()
-        active_idx = np.where(w >= w_peak * 0.1)[0]
+        # 진단용 가중치 (Display beta) 
+        w_f = np.exp(- (np.log(tau_final + eps) - log_ext)**2 )
+        w_f /= (w_f.sum() + eps)
+        
+        # 진단용 기울기 산출
+        x_m = np.sum(w_f * log_k)
+        y_m = np.sum(w_f * np.log(s_final + eps))
+        beta_diag = abs(np.sum(w_f * (log_k - x_m) * (np.log(s_final + eps) - y_m)) / (np.sum(w_f * (log_k - x_m)**2) + eps))
+        
+        # 시각화 대역 k1, k2 (Wiener Transition 구역)
+        active_idx = np.where((h_final > 0.2) & (h_final * 1.0 < 0.8))[0]
         k1, k2 = (active_idx[0], active_idx[-1]) if len(active_idx) > 0 else (0, n-1)
         
-        return float(gamma), float(beta_diag), k1, k2
+        return gamma, float(beta_diag), k1, k2
 
     def _save_spectral_analysis(self, lambda_obs, tau, h, s, beta, k1, k2, anchor_ext):
         """
@@ -212,8 +210,8 @@ class ASPIRE_Zero(BaseModel):
         else:
             anchor_ext = float(self.lambda_base_config)
         
-        # 3. Wiener Ratio Slope Matching 기반 Gamma 최적화
-        self.gamma, self.beta, k1, k2 = self._infer_gamma_ratio_matched(lambda_obs, anchor_ext)
+        # 3. Log-Space Wiener Self-Consistency 기반 Gamma 최적화
+        self.gamma, self.beta, k1, k2 = self._infer_gamma_consistency(lambda_obs, anchor_ext)
         
         # 5. Final Wiener Filter Build (λ base)
         tau_final = lambda_obs ** self.gamma
@@ -226,7 +224,7 @@ class ASPIRE_Zero(BaseModel):
         self._save_spectral_analysis(lambda_obs, tau_final, h_np, tau_final * h_np, self.beta, k1, k2, anchor_ext)
 
         self._log(
-            f"Ratio-Matched Engine | Band: [{k1}~{k2}] | Optimized γ*: {self.gamma:.4f} | β(diag): {self.beta:.4f} | λ_ext: {anchor_ext:.4f}"
+            f"Self-Consistency Engine | Band: [{k1}~{k2}] | Optimized γ*: {self.gamma:.4f} | β(diag): {self.beta:.4f} | λ_ext: {anchor_ext:.4f}"
         )
 
     @torch.no_grad()

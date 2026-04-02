@@ -22,46 +22,35 @@ class LIRALayer(nn.Module):
 
     @torch.no_grad()
     def build(self, X_sparse):
+        """
+        Optimized Build using Identity: S = I - lambda * (X^T X + lambda I)^-1
+        Eliminates toarray() and explicit double Gram matrix multiplication.
+        Now performs at EASE-level speed with Sparse input support.
+        """
         n_users, n_items = X_sparse.shape
         if torch.cuda.is_available(): dev = 'cuda'
         elif torch.backends.mps.is_available(): dev = 'mps'
         else: dev = 'cpu'
         
-        calc_dev = dev
+        from src.utils.gpu_accel import gpu_gram_solve
         
-        # [OPTIMIZATION] Switch between Primal (Item-Item) and Dual (User-User) form
-        # chooses the smaller dimension for inversion to save O(N^3) time and O(N^2) memory.
-        if n_items <= n_users:
-            print(f"[{self.__class__.__name__}] Using Primal Form (Item-Item: {n_items}x{n_items}) since I <= U")
-            # Convert to dense (only items)
-            X_dense = torch.from_numpy(X_sparse.toarray()).float().to(calc_dev)
-            # G = X^T X
-            G = torch.mm(X_dense.t(), X_dense)
-            # G_reg = G + λI
-            G_target = G.clone() # Keep original G for the rhs
-            G.diagonal().add_(self.reg_lambda)
-            
-            from src.utils.gpu_accel import gpu_cholesky_solve
-            # S = (X^T X + λI)^-1 (X^T X)
-            S = gpu_cholesky_solve(G, G_target, device=calc_dev, dataset_name=self.dataset_name, return_tensor=True)
-            del X_dense, G, G_target
-        else:
-            print(f"[{self.__class__.__name__}] Using Dual Form (User-User: {n_users}x{n_users}) since U < I")
-            X_dense = torch.from_numpy(X_sparse.toarray()).float().to(calc_dev)
-            # K = X X^T
-            K = torch.mm(X_dense, X_dense.t())
-            # K_reg = K + λI
-            K.diagonal().add_(self.reg_lambda)
-            
-            from src.utils.gpu_accel import gpu_cholesky_solve
-            # CX = (X X^T + λI)^-1 X
-            CX = gpu_cholesky_solve(K, X_dense, device=calc_dev, dataset_name=self.dataset_name, return_tensor=True)
-            # S = X^T CX
-            S = torch.mm(X_dense.t(), CX)
-            del X_dense, K, CX
-
+        # 1. Solve Inverse P = (X^T X + lambda I)^-1 using High-performance Sparse Kernel
+        # This kernel internally handles Primal/Dual forms and optimization.
+        P = gpu_gram_solve(
+            X_sparse, self.reg_lambda, 
+            device=dev, 
+            dataset_name=self.dataset_name, 
+            return_tensor=True
+        )
+        
+        # 2. Derive LIRA Weights: S = I - lambda * P
+        # Ridge normal equation identity: (X^TX + λI)^-1 X^TX = I - λ(X^TX + λI)^-1
+        S = -self.reg_lambda * P
+        S.diagonal().add_(1.0)
+        
+        del P
         self.register_buffer('S', S.to(dev))
-        print(f"[{self.__class__.__name__}] Build complete. Calculation Device: {calc_dev}, Model Device: {dev}")
+        print(f"[{self.__class__.__name__}] Optimized Build complete on {dev}.")
 
     @torch.no_grad()
     def forward(self, X_batch, user_ids=None):

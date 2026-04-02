@@ -73,7 +73,7 @@ class ASPIRE_Naked(BaseModel):
             prev_gamma = gamma
             tau = lambda_obs ** gamma
             h = tau / (tau + anchor_ext + 1e-12)
-            s = lambda_obs * h
+            s = tau * h
             
             # 2-Point Derivative between plateau edges (Primitive Way)
             log_s = np.log(s + 1e-12)
