@@ -1,5 +1,8 @@
 model:
   name: aspire_beta
   k: null
-  max_iter: 20
+  max_iter: 100
   lambda_base: 100.0
+  slope_mode: "lad" # hill, lad, median
+
+device: "auto" # auto, cpu, cuda

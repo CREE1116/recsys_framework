@@ -8,11 +8,11 @@ from src.utils.gpu_accel import EVDCacheManager
 
 class ASPIRE_Beta(BaseModel):
     """
-    ASPIRE_Beta: Beta Fixed-point Equilibrium Engine
-    [Algebraic Logic]
+    ASPIRE_Beta: Universal Fixed-point Equilibrium Engine
+    [Universal Logic]
+    - Unified engine supporting multiple slope estimators (Hill, LAD, Median).
     - Uses Beta (b) as the direct target for fixed-point iteration.
     - Beta = b(Beta) where gamma = 1 / (1 + beta).
-    - Identity-centric root-finding for superior convergence.
     """
     def __init__(self, config, data_loader):
         super(ASPIRE_Beta, self).__init__(config, data_loader)
@@ -20,9 +20,10 @@ class ASPIRE_Beta(BaseModel):
         self.n_items = data_loader.n_items
 
         model_config = config.get('model', {})
-        self.k         = model_config.get('k', None)
-        self.max_iter  = model_config.get('max_iter', 20)
-        self.tol       = 1e-4
+        self.k          = model_config.get('k', None)
+        self.max_iter   = model_config.get('max_iter', 20)
+        self.slope_mode = model_config.get('slope_mode', 'hill') # hill, lad, median
+        self.tol        = 1e-4
 
         # Buffers
         self.register_buffer("V_raw",       torch.empty(0, 0))
@@ -43,11 +44,10 @@ class ASPIRE_Beta(BaseModel):
 
     def _infer_gamma_slope_consistency(self, lambda_obs, anchor_ext):
         """
-        [Beta Fixed-point Engine]
-        gamma = 1 / (1 + beta)
-        beta_new = Hill_Estimator(s_k)
+        [Universal Equilibrium Engine]
+        Finds gamma such that the signal slope matches the chosen estimator's output.
         """
-        beta = 1.0     # Initial beta (corresponds to gamma=0.5)
+        beta = 1.0     
         gamma_L = 1.0 / (1.0 + beta)
         eps = 1e-12
         final_b = 0.0
@@ -60,30 +60,55 @@ class ASPIRE_Beta(BaseModel):
             tau_k = lambda_obs ** gamma_L
             s_k = tau_k * (tau_k / (tau_k + anchor_ext + eps))
             
-            # 2. Measure Slope using Hill Estimator
-            # We measure the entire signal as per user request
-            valid_mask = np.ones_like(s_k, dtype=bool)
-            b = self._get_plateau_slope_mle(s_k, valid_mask, s_min=s_k[-1]+eps)
+            # 2. Estimate Slope using the chosen mode
+            if self.slope_mode == 'lad':
+                b = self._get_plateau_slope_lad(s_k)
+            elif self.slope_mode == 'median':
+                b = self._get_plateau_slope_median(s_k)
+            else: # default: hill
+                b = self._get_plateau_slope_mle(s_k) 
             
-            # 3. Fixed-point Update: beta = b
+            # 3. Fixed-point Update
             beta = b
-            
-            self._log(f"[ASPIRE-Beta] Iter {i+1:2d} | \u03b2: {prev_beta:.4f} -> {beta:.4f} | \u03b3_L: {gamma_L:.4f}")
+            self._log(f"[ASPIRE-Beta] Mode={self.slope_mode} | Iter {i+1:2d} | \u03b2: {prev_beta:.4f} -> {beta:.4f} | \u03b3_L: {gamma_L:.4f}")
             
             final_b = b
             if abs(beta - prev_beta) < self.tol:
-                self._log(f"[ASPIRE-Beta] Engine Converged at Iter {i+1}")
+                self._log(f"[ASPIRE-Beta] {self.slope_mode.upper()} Engine Converged at Iter {i+1}")
                 break
                 
         return 1.0 / (1.0 + beta + eps), final_b
 
-    def _get_plateau_slope_mle(self, s_k, valid_mask, s_min=None):
-        s_valid = s_k[valid_mask]
+    def _get_plateau_slope_mle(self, s_valid):
+        """Hill-based MLE for power-law slope."""
         if len(s_valid) < 2: return 0.0
-        if s_min is None: s_min = s_valid[-1] + 1e-12
+        s_min = s_valid[-1] + 1e-12
         zeta = np.mean(np.log((s_valid + 1e-12) / s_min))
-        # Zipf slope b = zeta
         return np.abs(zeta)
+
+    def _get_plateau_slope_lad(self, s_valid):
+        """L1 (LAD) Robust Regression for power-law slope."""
+        if len(s_valid) < 5: return self._get_plateau_slope_mle(s_valid)
+        from scipy.optimize import minimize
+        log_s = np.log(s_valid + 1e-12)
+        log_r = np.log(np.arange(1, len(s_valid) + 1))
+        # Initial guess from MLE
+        b_init = self._get_plateau_slope_mle(s_valid)
+        c_init = log_s[0]
+        def l1_loss(params):
+            b, c = params
+            pred = -b * log_r + c
+            return np.sum(np.abs(log_s - pred))
+        res = minimize(l1_loss, [b_init, c_init], method='Nelder-Mead')
+        return np.abs(res.x[0]) if res.success else b_init
+
+    def _get_plateau_slope_median(self, s_valid):
+        """Robust Median Slope Estimator."""
+        if len(s_valid) < 2: return 0.0
+        log_s = np.log(s_valid + 1e-12)
+        log_r = np.log(np.arange(1, len(s_valid) + 1))
+        local_slopes = -np.diff(log_s) / (np.diff(log_r) + 1e-12)
+        return np.abs(np.median(local_slopes))
 
     @torch.no_grad()
     def _build(self, X_sparse, dataset_name):
@@ -117,9 +142,15 @@ class ASPIRE_Beta(BaseModel):
         ranks = np.arange(1, n + 1)
         fig, axes = plt.subplots(1, 1, figsize=(10, 8))
         l0 = lambda_obs[0] + 1e-12
+        
+        # Plot Base Lines
         axes.loglog(ranks, lambda_obs/l0, label='Observed', color='#3498db', alpha=0.3)
         axes.loglog(ranks, tau/l0, label=rf'Signal ($\gamma_L={self.gamma_L:.4f}$)', color='#2ecc71', linewidth=2)
-        axes.set_title(f"{self.__class__.__name__} Analysis", fontsize=15)
+        
+        # Plot lambda_base threshold
+        axes.axhline(y=anchor_ext/l0, color='#95a5a6', linestyle=':', label='Noise Floor')
+            
+        axes.set_title(f"{self.__class__.__name__} Analysis | {self.slope_mode.upper()} Estimator", fontsize=15)
         axes.grid(True, which="both", ls="-", alpha=0.2)
         axes.legend()
         plt.savefig(os.path.join(output_dir, "analysis.png"), dpi=150)
