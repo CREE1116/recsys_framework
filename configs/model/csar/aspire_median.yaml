@@ -1,0 +1,5 @@
+model:
+  name: aspire_median
+  k: null
+  max_iter: 20
+  lambda_base: 100.0

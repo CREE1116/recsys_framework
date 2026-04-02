@@ -44,13 +44,13 @@ class ASPIRE_Equilibrium(BaseModel):
 
     def _infer_gamma_slope_consistency(self, lambda_obs, anchor_ext):
         """
-        [Momentum-driven Equilibrium Engine]
-        Find gamma_L using Adam-like resistance (Momentum=0.9) to prevent oscillation.
-        Ensures a minimum of 50 samples for statistically valid Hill Estimation.
+        [Full-Spectrum Equilibrium Engine]
+        Uses the ENTIRE spectrum with 0.5 Damping (Momentum).
+        Balances responsiveness and stability for global scale restoration.
         """
         gamma_L = 0.5  
         eps = 1e-12
-        momentum = 0.5  # High resistance to change
+        momentum = 0.5 
         final_b = 0.0
 
         for i in range(self.max_iter):
@@ -59,49 +59,38 @@ class ASPIRE_Equilibrium(BaseModel):
             # 1. Reconstruct Distorted Signal 
             tau_k = lambda_obs ** gamma_L
             
-            # 2. Apply Wiener Filter (Naked Scale)
+            # 2. Apply Wiener Filter
             h_k = tau_k / (tau_k + anchor_ext + eps)
             
             # 3. Get Filtered Signal Corrected by Filter
             s_k = tau_k * h_k
             
-            # 4. Identify Plateau Band with Sample Size Protection (n >= 50)
-            threshold_factors = [2.0, 1.5, 1.0, 0.5, 0.1, 0.01]
-            valid_mask = None
-            n_valid = 0
-            for factor in threshold_factors:
-                valid_mask = tau_k > (factor * anchor_ext)
-                n_valid = np.sum(valid_mask)
-                if n_valid >= 50:
-                    break
+            # 4. Global Band Detection (Full Spectrum)
+            # We measure the entire signal to find the global scale-invariant point.
+            valid_mask = np.ones_like(tau_k, dtype=bool)
+            n_valid = len(tau_k)
             
             if n_valid < 2:
-                b = 1.0 # fallback to steep
-            else:
-                # [Theoretical Reference] Index right before noise boundary
-                global_valid = tau_k > (anchor_ext + eps)
-                
-                # Defensive check: if no signal is above anchor_ext, fallback to the last element
-                if np.sum(global_valid) > 0:
-                    s_min_anchor = tau_k[global_valid][-1]
-                else:
-                    s_min_anchor = tau_k[-1] + eps
-                
-                # Measure slope (b) on the FILTERED signal s_k
-                b = self._get_plateau_slope_mle(s_k, valid_mask, s_min=s_min_anchor)
+                print(f"[ASPIRE-Eq] Iter {i+1:2d} | Insufficient signal. Stopping.")
+                break
+            
+            # Global reference point (last element)
+            s_min_anchor = tau_k[-1] + eps
+            
+            # 5. Measure GLOBAL slope (b) on the FILTERED signal s_k
+            b = self._get_plateau_slope_mle(s_k, valid_mask, s_min=s_min_anchor)
 
-            # 5. Momentum Update: gamma_L = (0.9 * current) + (0.1 * target)
-            # target_gamma_L = 1 / (1 + b)
+            # 6. Damped Update (No Momentum)
             target_gamma_L = 1.0 / (1.0 + b + eps)
             gamma_L = (momentum * prev_gamma_L) + (1.0 - momentum) * target_gamma_L
             gamma_L = np.clip(gamma_L, 0.01, 1.0)
             
-            # 6. Log Convergence Step with Momentum Info
-            print(f"[ASPIRE-Eq] Iter {i+1:2d} | γ_L: {prev_gamma_L:.4f} | Target: {target_gamma_L:.4f} | b: {b:.4f} | n: {n_valid}")
+            # 7. Log Convergence
+            print(f"[ASPIRE-Eq] Iter {i+1:2d} | γ_L: {prev_gamma_L:.4f} | b: {b:.4f} | n: {n_valid}")
             
             final_b = b
             if abs(gamma_L - prev_gamma_L) < self.tol:
-                print(f"[ASPIRE-Eq] Engine Converged at Iter {i+1} | Final γ_L: {gamma_L:.4f}")
+                print(f"[ASPIRE-Eq] Engine Converged at Iter {i+1}")
                 break
                 
         return gamma_L, final_b
@@ -143,32 +132,24 @@ class ASPIRE_Equilibrium(BaseModel):
         sort_idx = np.argsort(lambda_obs)[::-1]
         lambda_obs = lambda_obs[sort_idx]
         
-        nnz, U, I = X_sparse.nnz, X_sparse.shape[0], X_sparse.shape[1]
-        
-        # [Pure Eigenvalue Scale] Unify everything to Eigenvalue domain
-        if self.lambda_base_config == 'auto':
-            # RMT noise floor for eigenvalues is exactly nnz / min(U, I)
-            anchor_ext = nnz / min(U, I)
-        else:
-            # Treat config value as a raw Eigenvalue scale floor
-            anchor_ext = float(self.lambda_base_config)
+        # Set Noise Floor (Directly from config)
+        anchor_ext = float(self.config['model'].get('lambda_base', 100.0))
         
         # Execute Slope-Consistency Engine (Raw Scale)
         self.gamma_L, self.final_b = self._infer_gamma_slope_consistency(lambda_obs, anchor_ext)
         
-        # Build Final Filter (Standard ASPIRE Scale)
+        # Build Final Weight Matrix W = (V * h) @ V.T (EASE-style single-pass)
         tau_final = lambda_obs ** self.gamma_L
         h_np = tau_final / (tau_final + anchor_ext + 1e-12)
         
-        # Register Buffers
         V_np = v.cpu().numpy()[:, sort_idx]
-        self.register_buffer("V_raw",       torch.from_numpy(V_np).float().to(self.device))
-        self.register_buffer("filter_diag", torch.from_numpy(h_np).float().to(self.device))
-
-        # Save Analysis
+        # Pre-calculating W to reduce 2 MMs to 1 during inference
+        W_np = (V_np * h_np) @ V_np.T
+        self.register_buffer("W", torch.from_numpy(W_np).float().to(self.device))
+        
+        # Keep original V only if needed for saving analysis
         self._save_spectral_analysis(lambda_obs, tau_final, h_np, anchor_ext)
-
-        print(f"[ASPIRE-Eq] Slope Engine Converged | \u03b3_L: {self.gamma_L:.4f} | Final Slope |b|: {self.final_b:.4f}")
+        print(f"[ASPIRE-Eq] Accelerated Build Complete | \u03b3_L: {self.gamma_L:.4f} | W: {W_np.shape}")
 
     def _save_spectral_analysis(self, lambda_obs, tau, h, anchor_ext):
         output_dir = os.path.join(self.output_path, "spectral_analysis")
@@ -222,9 +203,20 @@ class ASPIRE_Equilibrium(BaseModel):
     @torch.no_grad()
     def forward(self, users):
         batch = users.cpu().numpy()
-        X_u = torch.from_numpy(self.train_matrix_csr[batch].toarray()).float().to(self.device)
-        XV = torch.mm(X_u, self.V_raw)
-        return torch.mm(XV * self.filter_diag, self.V_raw.t())
+        # Choice of acceleration based on device compatibility
+        if self.device.type == 'mps':
+            # MPS: Standard Dense MM is stable and fast for Mac unified memory
+            X_u = torch.from_numpy(self.train_matrix_csr[batch].toarray()).float().to(self.device)
+            return torch.mm(X_u, self.W)
+        elif self.device.type == 'cuda':
+            # CUDA: Sparse-Dense MM is memory efficient
+            from src.utils.gpu_accel import to_torch_sparse_csr
+            X_u_sparse = to_torch_sparse_csr(self.train_matrix_csr[batch], device=self.device)
+            return torch.sparse.mm(X_u_sparse, self.W)
+        else:
+            # CPU fallback
+            X_u = torch.from_numpy(self.train_matrix_csr[batch].toarray()).float()
+            return torch.mm(X_u, self.W.cpu())
 
     @torch.no_grad()
     def predict_full(self, users, items=None):

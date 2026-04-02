@@ -34,6 +34,31 @@ def get_device(preference='auto'):
 
 
 # ============================================================
+# Sparse Matrix Utilities
+# ============================================================
+
+def to_torch_sparse_csr(X_sparse, device='cuda'):
+    """
+    Convert scipy CSR sparse matrix to torch sparse CSR tensor.
+    Efficient for CUDA SpMM operations.
+    """
+    if not isinstance(X_sparse, csr_matrix):
+        X_sparse = X_sparse.tocsr()
+    
+    X_csr = X_sparse.astype(np.float32)
+    crow = torch.from_numpy(X_csr.indptr.astype(np.int64))
+    col  = torch.from_numpy(X_csr.indices.astype(np.int64))
+    val  = torch.from_numpy(X_csr.data)
+    
+    return torch.sparse_csr_tensor(
+        crow, col, val,
+        size=X_csr.shape,
+        dtype=torch.float32,
+        device=device
+    )
+
+
+# ============================================================
 # GPU-Accelerated Cholesky Solver
 # ============================================================
 
