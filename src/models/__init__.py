@@ -57,25 +57,9 @@ from .csar.ASPIRE import ASPIRE, ASPIRE_Norm
 from .csar.ChebyASPIRE import ChebyASPIRE
 from .csar.ASPIRE_Zero import ASPIRE_Zero
 
-from .csar.ASPIRE_Chebyshev import ASPIRE_Chebyshev
-from .csar.ASPIRE_Naked import ASPIRE_Naked
-from .csar.ASPIRE_Equilibrium import ASPIRE_Equilibrium
-from .csar.ASPIRE_Beta import ASPIRE_Beta
 
-class ASPIRE_Beta_Hill(ASPIRE_Beta):
-    def __init__(self, config, data_loader):
-        config['model']['slope_mode'] = 'hill'
-        super().__init__(config, data_loader)
-
-class ASPIRE_Beta_LAD(ASPIRE_Beta):
-    def __init__(self, config, data_loader):
-        config['model']['slope_mode'] = 'lad'
-        super().__init__(config, data_loader)
-
-class ASPIRE_Beta_Median(ASPIRE_Beta):
-    def __init__(self, config, data_loader):
-        config['model']['slope_mode'] = 'median'
-        super().__init__(config, data_loader)
+from .csar.EASE_MNAR import EASE_MNAR
+from .csar.SpectralEASE import SpectralEASE
 
 MODEL_REGISTRY = {
     # General Models
@@ -138,13 +122,8 @@ MODEL_REGISTRY = {
     'aspire_norm': ASPIRE_Norm,
     'cheby_aspire': ChebyASPIRE,
     'aspire_zero': ASPIRE_Zero,
-    'aspire_chebyshev': ASPIRE_Chebyshev,
-    'aspire_naked': ASPIRE_Naked,
-    'aspire_equilibrium': ASPIRE_Equilibrium,
-    'aspire_beta': ASPIRE_Beta,
-    'aspire_beta_hill': ASPIRE_Beta_Hill,
-    'aspire_beta_lad': ASPIRE_Beta_LAD,
-    'aspire_beta_median': ASPIRE_Beta_Median,
+    'ease_mnar': EASE_MNAR,
+    'spectral_ease': SpectralEASE,
 }
 
 def get_model(model_name, config, data_loader):
