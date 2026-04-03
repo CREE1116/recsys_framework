@@ -46,19 +46,23 @@ class SpectralEASE(BaseModel):
 
     @torch.no_grad()
     def _estimate_d_spectral_fp(self, G):
-        """Estimate normalization factor d using fixed-point iteration (Sinkhorn extension)."""
+        """Estimate normalization factor d using fixed-point iteration with momentum."""
         self._log(f"Estimating d via Spectral Balancing (max_iter={self.max_iter_d})...")
         d = G.sum(dim=1) + self.eps
-        # Change: Use absolute value (Linear) instead of squared (Energy) to be less aggressive.
-        G_abs = torch.abs(G)
 
         for it in range(self.max_iter_d):
+            prev_d = d.clone()
             inv_d = 1.0 / (d + self.eps)
-            d_new = torch.mv(G_abs, inv_d)
-            d_new = d_new / (d_new.mean() + self.eps)
-            diff = torch.norm(d_new - d) / (torch.norm(d) + self.eps)
             
-            # Per-iteration logging
+            # Linear balancing based on Gram matrix G
+            d_next = torch.mv(G, inv_d)
+            d_next = d_next / (d_next.mean() + self.eps)
+            
+            # Apply 0.5 Momentum for stability
+            d_new = 0.5 * d_next + 0.5 * prev_d
+            
+            diff = torch.norm(d_new - prev_d) / (torch.norm(prev_d) + self.eps)
+            
             if (it + 1) % 5 == 0 or it == 0:
                 self._log(f"  Iteration {it+1:2d}: diff = {diff:.2e}")
             
@@ -71,25 +75,24 @@ class SpectralEASE(BaseModel):
     @torch.no_grad()
     def _build(self, R_sparse, dataset_name):
         n, m = R_sparse.shape
-        self._log(f"Building SpectralEASE (lambda={self.reg_lambda}) on {self.device}")
+        self._log(f"Building SpectralEASE-Wiener (lambda={self.reg_lambda}) on {self.device}")
         t0 = time.time()
 
         # 1. G_obs = R^T R
         from src.utils.gpu_accel import _build_gram
         G = _build_gram(R_sparse, self.device)
         
-        # 2. Fixed-Point for Energy Normalization (Sinkhorn style)
+        # 2. Fixed-Point for Spectral Balancing
         d = self._estimate_d_spectral_fp(G)
         
-        # 3. Spectral Pre-conditioning
+        # 3. Spectral Pre-conditioning (Full Balancing)
+        # G_tilde = D^(-1/2) @ G @ D^(-1/2)
         inv_sqrt_d = 1.0 / torch.sqrt(d + self.eps)
-        sqrt_d = torch.sqrt(d + self.eps)
         
-        # G_tilde = D^-1/2 @ G @ D^-1/2
         G_tilde = G * inv_sqrt_d.unsqueeze(1) * inv_sqrt_d.unsqueeze(0)
         del G
 
-        # 4. Unconstrained Wiener Filter Solve
+        # 4. Unconstrained Wiener Filter Solve (No diag=0 constraint)
         self._log(f"Solving unconstrained Wiener filter for {m}x{m} matrix...")
         I = torch.eye(m, device=self.device, dtype=torch.float32)
         A = G_tilde + self.reg_lambda * I
@@ -102,16 +105,12 @@ class SpectralEASE(BaseModel):
             P = torch.from_numpy(np.linalg.inv(A.cpu().numpy())).to(self.device).float()
         del A, G_tilde
 
-        # W_tilde = I - lambda * P
+        # W_tilde = I - lambda * P (Unconstrained optimal solution)
         W_tilde = I - (self.reg_lambda * P)
         del P
 
-        # 5. Domain Translation (Scale Back to Original Space)
-        # We restore the D^1/2 multiplier to map the spectral signal back to item space.
-        W_eff = W_tilde * inv_sqrt_d.unsqueeze(1) * sqrt_d.unsqueeze(0)
-        
-        # Self-loop removal (Post-hoc)
-        W_eff.fill_diagonal_(0.0)
+        # 5. Domain Translation (Skipped as requested)
+        W_eff = W_tilde
         
         self.W.copy_(W_eff)
         self._log(f"SpectralEASE Build completed in {time.time()-t0:.2f}s")
