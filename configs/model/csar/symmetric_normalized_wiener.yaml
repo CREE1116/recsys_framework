@@ -1,0 +1,5 @@
+model:
+  name: "symmetric_normalized_wiener"
+  reg_lambda: 500.0
+
+device: "auto"

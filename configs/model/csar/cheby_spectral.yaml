@@ -1,0 +1,10 @@
+model:
+  name: "cheby_spectral"
+  reg_lambda: 10.0
+  cheb_order: 30
+  use_lagrange: True
+  max_iter_d: 50
+  tol_d: 1e-7
+  use_multi_hop: True
+
+device: "auto"

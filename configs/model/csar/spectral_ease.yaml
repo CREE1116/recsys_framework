@@ -1,7 +1,7 @@
 model:
   name: "spectral_ease"
-  reg_lambda: 0.5
+  reg_lambda: 0.145
   max_iter_d: 50
-  tol_d: 1e-6
+  tol_d: 1e-7
 
 device: "auto"
