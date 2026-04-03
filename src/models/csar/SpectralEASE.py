@@ -29,6 +29,7 @@ class SpectralEASE(BaseModel):
         self.reg_lambda = float(model_config.get('reg_lambda', 0.5))
         self.max_iter_d = int(model_config.get('max_iter_d', 50))
         self.tol_d      = float(model_config.get('tol_d', 1e-6))
+        self.use_multi_hop = bool(model_config.get('use_multi_hop', True))
         self.eps        = 1e-12
 
         # Filter Buffer
@@ -47,8 +48,13 @@ class SpectralEASE(BaseModel):
     @torch.no_grad()
     def _estimate_d_spectral_fp(self, G):
         """Estimate normalization factor d using fixed-point iteration with momentum."""
-        self._log(f"Estimating d via Spectral Balancing (max_iter={self.max_iter_d})...")
+        self._log(f"Estimating d via Spectral Balancing (max_iter={self.max_iter_d}, multi_hop={self.use_multi_hop})...")
+        
+        # Initialize d with Weighted Item Degree (Row sum of G)
         d = G.sum(dim=1) + self.eps
+        
+        d_sum = d.clone()
+        count = 1
 
         for it in range(self.max_iter_d):
             prev_d = d.clone()
@@ -56,7 +62,6 @@ class SpectralEASE(BaseModel):
             
             # Linear balancing based on Gram matrix G
             d_next = torch.mv(G, inv_d)
-            d_next = d_next / (d_next.mean() + self.eps)
             
             # Apply 0.5 Momentum for stability
             d_new = 0.5 * d_next + 0.5 * prev_d
@@ -67,9 +72,16 @@ class SpectralEASE(BaseModel):
                 self._log(f"  Iteration {it+1:2d}: diff = {diff:.2e}")
             
             d = d_new
+            d_sum += d
+            count += 1
+
             if diff < self.tol_d:
                 self._log(f"  Fixed-point converged at iteration {it+1}, diff={diff:.2e}")
                 break
+        
+        if self.use_multi_hop:
+            self._log(f"  Using Multi-Hop Average across {count} iterations.")
+            return d_sum / count
         return d
 
     @torch.no_grad()
@@ -85,28 +97,34 @@ class SpectralEASE(BaseModel):
         # 2. Fixed-Point for Spectral Balancing
         d = self._estimate_d_spectral_fp(G)
         
-        # 3. Spectral Pre-conditioning (Full Balancing)
-        # G_tilde = D^(-1/2) @ G @ D^(-1/2)
+        # 3. Spectral Pre-conditioning (Full Balancing: D^-1/2 on each side)
+        # G_tilde = D^-1/2 @ G @ D^-1/2
         inv_sqrt_d = 1.0 / torch.sqrt(d + self.eps)
         
         G_tilde = G * inv_sqrt_d.unsqueeze(1) * inv_sqrt_d.unsqueeze(0)
         del G
 
-        # 4. Unconstrained Wiener Filter Solve (No diag=0 constraint)
-        self._log(f"Solving unconstrained Wiener filter for {m}x{m} matrix...")
+        # 4. Constrained SpectralEASE with Lagrange (Zero-Diagonal Constraint)
+        # Formula: W_tilde = I - P * diag(1/diag(P))
+        # This ensures diag(W_tilde) = 0 explicitly.
+        self._log(f"Solving Constrained SpectralEASE (lambda={self.reg_lambda})...")
         I = torch.eye(m, device=self.device, dtype=torch.float32)
-        A = G_tilde + self.reg_lambda * I
+        
+        # A = G_tilde + lambda * I
+        G_tilde.diagonal().add_(self.reg_lambda)
+        A = G_tilde
         
         try:
-            # P = (G_tilde + lambda I)^-1
             P = torch.linalg.inv(A)
         except RuntimeError:
             self._log("Linalg inv failed, using CPU fallback.")
             P = torch.from_numpy(np.linalg.inv(A.cpu().numpy())).to(self.device).float()
         del A, G_tilde
 
-        # W_tilde = I - lambda * P (Unconstrained optimal solution)
-        W_tilde = I - (self.reg_lambda * P)
+        # W_tilde = I - P * diag(1/diag(P))
+        diag_P = P.diagonal()
+        # Ensure numerical stability for division
+        W_tilde = I - (P / torch.clamp(diag_P.unsqueeze(0), min=self.eps))
         del P
 
         # 5. Domain Translation (Skipped as requested)
