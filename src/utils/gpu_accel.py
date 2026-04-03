@@ -37,25 +37,47 @@ def get_device(preference='auto'):
 # Sparse Matrix Utilities
 # ============================================================
 
-def to_torch_sparse_csr(X_sparse, device='cuda'):
+def to_torch_sparse(X_sparse, device='cuda'):
     """
-    Convert scipy CSR sparse matrix to torch sparse CSR tensor.
-    Efficient for CUDA SpMM operations.
+    Convert scipy sparse matrix to torch sparse tensor.
+    - Uses CSR for CUDA (Optimum for SpMM)
+    - Uses COO for MPS (CSR not fully supported)
+    - Fallback to COO for others
     """
     if not isinstance(X_sparse, csr_matrix):
         X_sparse = X_sparse.tocsr()
     
-    X_csr = X_sparse.astype(np.float32)
-    crow = torch.from_numpy(X_csr.indptr.astype(np.int64))
-    col  = torch.from_numpy(X_csr.indices.astype(np.int64))
-    val  = torch.from_numpy(X_csr.data)
+    device_obj = get_device(device)
     
-    return torch.sparse_csr_tensor(
-        crow, col, val,
-        size=X_csr.shape,
-        dtype=torch.float32,
-        device=device
-    )
+    if device_obj.type == 'cuda':
+        # CUDA optimizations: CSR is superior
+        X_csr = X_sparse.astype(np.float32)
+        crow = torch.from_numpy(X_csr.indptr.astype(np.int64))
+        col  = torch.from_numpy(X_csr.indices.astype(np.int64))
+        val  = torch.from_numpy(X_csr.data)
+        return torch.sparse_csr_tensor(
+            crow, col, val, size=X_csr.shape, dtype=torch.float32, device=device_obj
+        )
+    elif device_obj.type == 'mps':
+        # MPS: CSR creation is not supported. Use COO as a robust alternative.
+        X_coo = X_sparse.tocoo()
+        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col)).astype(np.int64))
+        values = torch.from_numpy(X_coo.data.astype(np.float32))
+        return torch.sparse_coo_tensor(
+            indices, values, size=X_coo.shape, dtype=torch.float32, device=device_obj
+        )
+    else:
+        # CPU or others: Use COO for general compatibility
+        X_coo = X_sparse.tocoo()
+        indices = torch.from_numpy(np.vstack((X_coo.row, X_coo.col)).astype(np.int64))
+        values = torch.from_numpy(X_coo.data.astype(np.float32))
+        return torch.sparse_coo_tensor(
+            indices, values, size=X_coo.shape, dtype=torch.float32, device=device_obj
+        )
+
+def to_torch_sparse_csr(X_sparse, device='cuda'):
+    """Legacy wrapper for CSR (Deprecated)"""
+    return to_torch_sparse(X_sparse, device)
 
 
 # ============================================================
