@@ -23,6 +23,7 @@ class ChebySpectral(BaseModel):
         model_config = config.get('model', {})
         self.reg_lambda = float(model_config.get('reg_lambda', 10.0))
         self.cheb_order = int(model_config.get('cheb_order', 20))
+        self.use_lagrange = bool(model_config.get('use_lagrange', True))
         self.max_iter_d = int(model_config.get('max_iter_d', 50))
         self.tol_d      = float(model_config.get('tol_d', 1e-6))
         self.use_multi_hop = bool(model_config.get('use_multi_hop', True))
@@ -154,12 +155,24 @@ class ChebySpectral(BaseModel):
             b2 = b1
             b1 = tmp
             
-        # Final result: W = 0.5 * c0 * I + G_hat * b1 - b2
-        W = torch.mm(G_hat, b1) - b2
-        W.diagonal().add_(0.5 * coeffs[0])
+        # Final result: W_wiener = 0.5 * c0 * I + G_hat * b1 - b2
+        W_wiener = torch.mm(G_hat, b1) - b2
+        W_wiener.diagonal().add_(0.5 * coeffs[0])
         
+        if self.use_lagrange:
+            self._log("Applying Lagrange Zero-Diagonal Constraint...")
+            # P = (G + lambda I)^-1 = (I - W_wiener) / lambda
+            P = (torch.eye(m, device=self.device) - W_wiener) / (self.reg_lambda + self.eps)
+            diag_P = P.diagonal()
+            # W_constrained = I - P * diag(1/diag(P))
+            W = torch.eye(m, device=self.device) - (P / torch.clamp(diag_P.unsqueeze(0), min=self.eps))
+        else:
+            W = W_wiener
+
         self.W.copy_(W)
-        self._log(f"ChebySpectral Build completed in {time.time()-t0:.2f}s")
+        diag_W = torch.diag(self.W)
+        self._log(f"ChebySpectral Build completed. W_diag_abs_max: {diag_W.abs().max().item():.2e}")
+        self._log(f"Build completed in {time.time()-t0:.2f}s")
 
     @torch.no_grad()
     def forward(self, users):
@@ -186,10 +199,12 @@ class ChebySpectral(BaseModel):
         return (torch.tensor(0.0, device=self.device),), {}
 
     def diagnostics(self):
-        diag_val = float(torch.diag(self.W).abs().max())
+        diag_W = torch.diag(self.W)
         return {
             "lambda": self.reg_lambda,
             "order": self.cheb_order,
+            "use_lagrange": self.use_lagrange,
             "W_mean": float(self.W.mean()),
-            "W_max_diag": diag_val,
+            "W_diag_abs_max": float(diag_W.abs().max()),
+            "W_diag_mean": float(diag_W.mean()),
         }
