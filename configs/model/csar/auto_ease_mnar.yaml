@@ -1,0 +1,3 @@
+model:
+  name: "auto_ease_mnar"
+  reg_lambda: 10.0

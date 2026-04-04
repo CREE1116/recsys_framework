@@ -1,0 +1,5 @@
+model:
+  name: vd_ips_ease
+  reg_lambda: 500.0
+  ips_power: 0.5
+  eps: 1e-8

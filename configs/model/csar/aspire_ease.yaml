@@ -1,0 +1,5 @@
+
+model:
+  name: aspire_ease
+  reg_lambda: 10.0
+  max_iter_equilibrium: 5

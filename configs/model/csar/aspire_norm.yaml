@@ -1,9 +1,0 @@
-model:
-  name: "aspire_norm"
-  beta: "auto"
-  estimator_type: "slope_ratio"
-  weight_mode: "normal"
-  symmetric_norm: true
-  spp_pow: null
-  target_energy: 0.99
-  visualize: true

@@ -1,0 +1,4 @@
+# SymmetricNormalizedEASE configuration
+model:
+  name: "symmetric_normalized_ease"
+  reg_lambda: 500.0

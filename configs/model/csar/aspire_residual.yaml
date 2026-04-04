@@ -1,6 +1,0 @@
-model:
-  name: aspire_residual
-  k: null
-  max_iter: 50
-  lr: 0.1
-  lambda_base: 100.0

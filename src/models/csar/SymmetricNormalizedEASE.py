@@ -5,15 +5,16 @@ from scipy.sparse import csr_matrix
 from src.models.base_model import BaseModel
 from src.utils.gpu_accel import get_device, _build_gram
 
-class SymmetricNormalizedWiener(BaseModel):
+class SymmetricNormalizedEASE(BaseModel):
     """
-    Symmetric Normalized Wiener Filter (Ablation Model).
-    --------------------------------------------------
+    Symmetric Normalized EASE (Closed-form Constrained Spectral Filter).
+    ------------------------------------------------------------------
     1. Build Gram Matrix G = R^T R.
-    2. Extract Item Degree vector d (raw popularity).
-    3. Normalize G: G_tilde = D^-1/2 G D^-1/2  where D = diag(d).
-    4. Solve Unconstrained Wiener Filter on G_tilde:
-       W = I - lambda * (G_tilde + lambda I)^-1.
+    2. Extract Item Degree vector d.
+    3. Normalize G: G_tilde = D^-1/2 G D^-1/2.
+    4. Solve Constrained EASE on G_tilde:
+       P = (G_tilde + lambda I)^-1
+       W_tilde = I - P @ diag(1 / diag(P))
     """
     def __init__(self, config, data_loader):
         super().__init__(config, data_loader)
@@ -22,8 +23,6 @@ class SymmetricNormalizedWiener(BaseModel):
         
         model_config = config.get('model', {})
         self.reg_lambda = float(model_config.get('reg_lambda', 500.0))
-        # use_lagrange: True (Strict), False (None), or "adaptive" (Item-specific density aware)
-        self.use_lagrange = model_config.get('use_lagrange', "adaptive")
         self.device = get_device()
         self.eps = 1e-8
 
@@ -42,7 +41,7 @@ class SymmetricNormalizedWiener(BaseModel):
     @torch.no_grad()
     def _build(self, R_sparse):
         m = self.n_items
-        self._log(f"Building SymmetricNormalizedWiener (lambda={self.reg_lambda}) on {self.device}")
+        self._log(f"Building SymmetricNormalizedEASE (lambda={self.reg_lambda}) on {self.device}")
         t0 = time.time()
 
         # 1. G_obs = R^T R
@@ -56,8 +55,8 @@ class SymmetricNormalizedWiener(BaseModel):
         G_tilde = G * inv_sqrt_d.unsqueeze(1) * inv_sqrt_d.unsqueeze(0)
         del G
 
-        # 4. Unconstrained Wiener Filter Solve
-        self._log(f"Solving unconstrained Wiener filter for {m}x{m} matrix...")
+        # 4. Constrained Solve
+        self._log(f"Solving Constrained Symmetric EASE (lambda={self.reg_lambda})...")
         I = torch.eye(m, device=self.device, dtype=torch.float32)
         A = G_tilde + self.reg_lambda * I
         
@@ -66,35 +65,17 @@ class SymmetricNormalizedWiener(BaseModel):
         except RuntimeError:
             self._log("Linalg inv failed, using CPU fallback.")
             P = torch.from_numpy(np.linalg.inv(A.cpu().numpy())).to(self.device).float()
-        
-        # 4. Hybrid Lagrange / Wiener Optimization
-        diag_val = G_tilde.diagonal()
-        # Item-wise density ratio: high for sparse items, low for dense items
-        diag_ratio = diag_val / (diag_val + G_tilde.mean(dim=1) + self.eps)
-        
-        self._log(f"Solving SymmetricNormalizedWiener (lambda={self.reg_lambda}, lagrange={self.use_lagrange})...")
+        del A, G_tilde
+
+        # Formula: W_tilde = I - P * diag(1/diag(P))
+        # This ensures diag(W_tilde) = 0 explicitly.
         diag_P = P.diagonal()
-        I = torch.eye(m, device=self.device, dtype=torch.float32)
+        W_tilde = I - (P / torch.clamp(diag_P.unsqueeze(0), min=self.eps))
+        del P
 
-        if self.use_lagrange == "adaptive":
-            self._log("  Applying Adaptive Lagrange Constraint...")
-            # Hybrid: Sparse -> Lagrange (Identity penalty), Dense -> Wiener (Global penalty)
-            # W = I - P * (diag_ratio / diag_P + (1 - diag_ratio) * lambda)
-            scaling = (diag_ratio.unsqueeze(0) / torch.clamp(diag_P.unsqueeze(0), min=self.eps)) + \
-                      (1.0 - diag_ratio).unsqueeze(0) * self.reg_lambda
-            W_tilde = I - (P * scaling)
-        elif self.use_lagrange is True:
-            self._log("  Applying Strict Lagrange Constraint (Zero-Diagonal)...")
-            W_tilde = I - (P / torch.clamp(diag_P.unsqueeze(0), min=self.eps))
-        else:
-            self._log("  Solving Unconstrained Wiener (No Diagonal Constraint)...")
-            W_tilde = I - (P * self.reg_lambda)
-
-        del P, G_tilde
-
-        # 5. Direct weight copy (No reconstruction, matches ASPIRE-Wiener setup)
+        # 5. Direct weight copy
         self.W.copy_(W_tilde)
-        self._log(f"SymmetricNormalizedWiener Build completed in {time.time()-t0:.2f}s")
+        self._log(f"SymmetricNormalizedEASE Build completed in {time.time()-t0:.2f}s")
 
     @torch.no_grad()
     def forward(self, users):

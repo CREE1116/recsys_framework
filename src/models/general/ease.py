@@ -26,8 +26,9 @@ class EASE(BaseModel):
         # CUDA sparse version of train_matrix — populated in fit() for GPU inference
         self._X_cuda = None
 
+
     def fit(self, data_loader):
-        self._log(f"Fitting (λ={self.reg_lambda})...")
+        self._log(f"Fitting (λ={self.reg_lambda}) with advanced GPU solver...")
         train_df = data_loader.train_df
         rows = train_df['user_id'].values
         cols = train_df['item_id'].values
@@ -36,25 +37,21 @@ class EASE(BaseModel):
         X = sp.csr_matrix((values, (rows, cols)), shape=(self.n_users, self.n_items), dtype=np.float32)
         self.train_matrix_csr = X
         
-        # 1. Solve (X^T X + λI)^-1 via GPU Cholesky/Eigen
-        # Now returns a PyTorch tensor directly on the target device
+        # 1. Solve (X^T X + λI)^-1 via improved GPU solver
         from src.utils.gpu_accel import gpu_gram_solve
         dataset_name = self.config.get('dataset_name', 'unknown')
+        # This now uses torch.linalg.inv -> np.linalg.inv native fallback internally
         P = gpu_gram_solve(X, self.reg_lambda, device=self.device, dataset_name=dataset_name, return_tensor=True)
         
-        # 2. Post-process B = -P / diag(P) on GPU
-        # shape P: (M, M)
-        diag = torch.diagonal(P).clone() # shape (M,)
+        # 2. Post-process B = I - P / diag(P) (Exact EASE Constraint)
+        # Numerical stability epsilon
+        eps = 1e-12
+        diag_P = torch.diagonal(P)
+        I = torch.eye(self.n_items, device=self.device, dtype=torch.float32)
+        B = I - (P / torch.clamp(diag_P.unsqueeze(0), min=eps))
+        del P, I
         
-        # B = -P / diag_j
-        # Broadcase diag to (1, M) for division
-        B = -P / diag.view(1, -1)
-        del P
-        
-        # Set diagonal to ZERO
-        B.fill_diagonal_(0)
-        
-        # 3. Sparsification if requested (still on GPU)
+        # 6. Sparsification if requested (still on GPU)
         threshold = self.config['model'].get('threshold', 0.0)
         if threshold > 0:
             mask = torch.abs(B) >= threshold

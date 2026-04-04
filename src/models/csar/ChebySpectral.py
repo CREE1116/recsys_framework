@@ -21,13 +21,12 @@ class ChebySpectral(BaseModel):
         self.n_items = data_loader.n_items
 
         model_config = config.get('model', {})
-        self.reg_lambda = float(model_config.get('reg_lambda', 10.0))
         self.cheb_order = int(model_config.get('cheb_order', 20))
-        self.use_lagrange = bool(model_config.get('use_lagrange', True))
-        self.max_iter_d = int(model_config.get('max_iter_d', 50))
+        # use_lagrange: True (Always), False (Never), or "adaptive" (Item-specific)
+        self.use_lagrange = model_config.get('use_lagrange', True)
+        self.num_hops   = int(model_config.get('num_hops', 3))
         self.tol_d      = float(model_config.get('tol_d', 1e-6))
-        self.use_multi_hop = bool(model_config.get('use_multi_hop', True))
-        self.eps        = 1e-12
+        self.eps        = 1e-8
 
         # Filter Buffer
         self.register_buffer("W", torch.empty(self.n_items, self.n_items))
@@ -44,26 +43,36 @@ class ChebySpectral(BaseModel):
 
     @torch.no_grad()
     def _estimate_d_spectral_fp(self, G):
-        """Estimate normalization factor d using fixed-point iteration."""
-        self._log(f"Estimating d via Spectral Balancing (max_iter={self.max_iter_d})...")
-        d = G.sum(dim=1) + self.eps
-        d_sum = d.clone()
-        count = 1
-
-        for it in range(self.max_iter_d):
-            prev_d = d.clone()
-            inv_d = 1.0 / (d + self.eps)
-            d_next = torch.mv(G, inv_d)
-            d_new = 0.5 * d_next + 0.5 * prev_d
-            diff = torch.norm(d_new - prev_d) / (torch.norm(prev_d) + self.eps)
-            
-            d = d_new
-            d_sum += d
-            count += 1
-            if diff < self.tol_d:
-                break
+        """
+        Estimate d using Symmetric Sinkhorn Balancing (Row/Col scaling).
+        This reaches a deeper equilibrium than simple fixed-point iterations.
+        """
+        self._log(f"Estimating d via Sinkhorn Balancing (Max Iters={self.num_hops}, tol={self.tol_d})...")
+        n = G.shape[0]
+        # Initialize factors
+        d_row = torch.ones(n, device=self.device)
+        d_col = torch.ones(n, device=self.device)
         
-        return d_sum / count if self.use_multi_hop else d
+        for it in range(self.num_hops):
+            # Row scaling: d_row_new = sqrt( (G @ d_col) / d_row )
+            row_sums = torch.mv(G, d_col) / (d_row + self.eps)
+            d_row_new = torch.sqrt(row_sums + self.eps)
+            
+            # Column scaling: d_col_new = sqrt( (G @ d_row_new) / d_col )
+            col_sums = torch.mv(G, d_row_new) / (d_col + self.eps)
+            d_col_new = torch.sqrt(col_sums + self.eps)
+            
+            diff = max(torch.norm(d_row_new - d_row), torch.norm(d_col_new - d_col)) / (torch.norm(d_row) + self.eps)
+            d_row, d_col = d_row_new, d_col_new
+            
+            if diff < self.tol_d:
+                self._log(f"  Sinkhorn converged at iter {it+1}, diff={diff:.2e}")
+                break
+                
+        # Final balancing factor d = d_row * d_col
+        # This ensures the spectral energy is evenly distributed as per ASPIRE theory.
+        d = d_row * d_col
+        return d
 
     @torch.no_grad()
     def _power_iteration(self, A, n_iter=10):
@@ -108,13 +117,20 @@ class ChebySpectral(BaseModel):
         from src.utils.gpu_accel import _build_gram
         G = _build_gram(R_sparse, self.device)
         
-        # 2. Spectral Balancing
+        # 2. Fixed-Point for Spectral Balancing
         d = self._estimate_d_spectral_fp(G)
+        
+        # 3. Spectral Pre-conditioning (Full Balancing: D^-1/2 on each side)
+        # G_tilde = D^-1/2 @ G @ D^-1/2
         inv_sqrt_d = 1.0 / torch.sqrt(d + self.eps)
         
-        # 3. G_tilde = D^-1/2 G D^-1/2
         G_tilde = G * inv_sqrt_d.unsqueeze(1) * inv_sqrt_d.unsqueeze(0)
         del G
+        
+        # 4. Adaptive Bias density estimation
+        # Calculate diag_ratio BEFORE normalization/filtering
+        diag_val = G_tilde.diagonal()
+        diag_ratio = diag_val / (diag_val + G_tilde.mean(dim=1) + self.eps)
 
         # 4. Accurate Eigenvalue Scaling for Stability
         # Estimate lambda_max to map range [0, lambda_max] -> [-1, 1]
@@ -159,12 +175,19 @@ class ChebySpectral(BaseModel):
         W_wiener = torch.mm(G_hat, b1) - b2
         W_wiener.diagonal().add_(0.5 * coeffs[0])
         
-        if self.use_lagrange:
-            self._log("Applying Lagrange Zero-Diagonal Constraint...")
+        if self.use_lagrange == "adaptive":
+            self._log("  Applying Adaptive Lagrange Constraint...")
             # P = (G + lambda I)^-1 = (I - W_wiener) / lambda
             P = (torch.eye(m, device=self.device) - W_wiener) / (self.reg_lambda + self.eps)
             diag_P = P.diagonal()
-            # W_constrained = I - P * diag(1/diag(P))
+            # Scaling: W = I - P * (diag_ratio / diag_P + (1 - diag_ratio) * lambda)
+            scaling = (diag_ratio.unsqueeze(0) / torch.clamp(diag_P.unsqueeze(0), min=self.eps)) + \
+                      (1.0 - diag_ratio).unsqueeze(0) * self.reg_lambda
+            W = torch.eye(m, device=self.device) - (P * scaling)
+        elif self.use_lagrange is True:
+            self._log("  Applying Strict Lagrange Constraint (Zero-Diagonal)...")
+            P = (torch.eye(m, device=self.device) - W_wiener) / (self.reg_lambda + self.eps)
+            diag_P = P.diagonal()
             W = torch.eye(m, device=self.device) - (P / torch.clamp(diag_P.unsqueeze(0), min=self.eps))
         else:
             W = W_wiener

@@ -244,43 +244,53 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
     dev = get_device(device)
 
     if M <= EIGEN_THRESHOLD:
-        print(f"[gpu_accel] Gram ({M}x{M}) power-safe eigendecomposition on {dev.type}...")
         try:
             G_t = _build_gram(X_sparse, dev)
         except Exception as e:
             print(f"[gpu_accel] GPU Gram build failed ({e}), fallback to CPU...")
             G_t = torch.from_numpy((X_sparse.T @ X_sparse).astype(np.float32).toarray()).to(dev)
 
-        # Power-safe eigen path
-        if dev.type in ('mps', 'cuda'):
+        if rhs is None:
+            # [Optimization] Skip eigh for full matrix inversion (Standard for EASE fit)
+            print(f"[gpu_accel] Gram ({M}x{M}) calculating inv on {dev.type}...")
             try:
-                time.sleep(0.1) # Stabilization wait
-                # Perform eigh in FP32 but ensure no other concurrent GPU tasks
-                eigvals, V = torch.linalg.eigh(G_t)
-                del G_t
-            except Exception:
+                # G + λI (Modify in-place)
+                G_t.diagonal().add_(reg_lambda)
+                P = torch.linalg.inv(G_t)
+                print(f"[gpu_accel] Gram ({M}x{M}) solved via torch.linalg.inv (GPU)")
+            except (RuntimeError, NotImplementedError):
+                print(f"[gpu_accel] Gram ({M}x{M}) GPU linalg.inv failed, using CPU fallback...")
+                G_np = G_t.cpu().numpy()
+                P_np = np.linalg.inv(G_np)
+                P = torch.from_numpy(P_np).to(dev).float()
+            return P if return_tensor else P.cpu().numpy()
+        else:
+            # Power-safe eigen path (Standard for Ax=b path)
+            print(f"[gpu_accel] Gram ({M}x{M}) power-safe eigendecomposition on {dev.type}...")
+            if dev.type in ('mps', 'cuda'):
+                try:
+                    time.sleep(0.1) # Stabilization wait
+                    # Perform eigh in FP32 but ensure no other concurrent GPU tasks
+                    eigvals, V = torch.linalg.eigh(G_t)
+                    del G_t
+                except Exception:
+                    G_np = G_t.cpu().numpy()
+                    from scipy.linalg import eigh
+                    eigvals_np, V_np = eigh(G_np)
+                    V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
+                    del G_t
+            else:
                 G_np = G_t.cpu().numpy()
                 from scipy.linalg import eigh
                 eigvals_np, V_np = eigh(G_np)
                 V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
-                del G_t
-        else:
-            G_np = G_t.cpu().numpy()
-            from scipy.linalg import eigh
-            eigvals_np, V_np = eigh(G_np)
-            V, eigvals = torch.from_numpy(V_np).to(dev), torch.from_numpy(eigvals_np).to(dev)
 
-        eigvals = torch.clamp(eigvals, min=0.0)
-        inv_eig = 1.0 / (eigvals + reg_lambda)
-        
-        if rhs is None:
-            P = (V * inv_eig.unsqueeze(0)) @ V.t()
-        else:
+            # Standard Ax = b path via Eigen (Efficient for single/few RHS)
+            eigvals = torch.clamp(eigvals, min=0.0)
+            inv_eig = 1.0 / (eigvals + reg_lambda)
             rhs_t = torch.from_numpy(rhs).float().to(dev) if isinstance(rhs, np.ndarray) else rhs.to(dev)
             P = (V * inv_eig.unsqueeze(0)) @ (V.t() @ rhs_t)
-        return P if return_tensor else P.cpu().numpy()
-
-        return P if return_tensor else P.cpu().numpy()
+            return P if return_tensor else P.cpu().numpy()
 
     # 2. Cholesky Path (M > EIGEN_THRESHOLD)
     if dev.type in ('cuda', 'mps'):
@@ -297,10 +307,21 @@ def gpu_gram_solve(X_sparse, reg_lambda, rhs=None, device='auto', dataset_name=N
             else:
                 print(f"[gpu_accel] Gram ({M}x{M}) cache hit (bfloat16 optimized)")
 
-            # G + λI (Modify in-place)
-            G_t.diagonal().add_(reg_lambda)
-            P = gpu_cholesky_solve(G_t, rhs, device=dev, dataset_name=None, return_tensor=return_tensor)
-            # Revert to keep cached G clean
+            if rhs is None:
+                # G + λI 
+                G_t.diagonal().add_(reg_lambda)
+                try:
+                    P = torch.linalg.inv(G_t)
+                    print(f"[gpu_accel] Gram ({M}x{M}) Cholesky-Path Solve via torch.linalg.inv (GPU)")
+                except RuntimeError:
+                    print(f"[gpu_accel] Gram ({M}x{M}) Cholesky-Path Solve failed, using CPU fallback...")
+                    P = torch.from_numpy(np.linalg.inv(G_t.cpu().numpy())).to(dev).float()
+            else:
+                # G + λI (Modify in-place)
+                G_t.diagonal().add_(reg_lambda)
+                P = gpu_cholesky_solve(G_t, rhs, device=dev, dataset_name=None, return_tensor=return_tensor)
+            
+            # Revert diagonal for cache consistency (G_t is often cached)
             G_t.diagonal().sub_(reg_lambda)
             return P
         except Exception as e:

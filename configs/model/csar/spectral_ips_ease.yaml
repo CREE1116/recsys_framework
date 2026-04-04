@@ -1,0 +1,4 @@
+model:
+  name: spectral_ips_ease
+  # k: 128
+  reg_lambda: 500.0

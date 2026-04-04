@@ -5,6 +5,6 @@ model:
   filter_mode: "gamma_only"
   target_energy: 1.0
   visualize: true
-  sigma_ref: sigma_mean   # 'sigma1' | 'sigma_median' | 'sigma_mean
+  sigma_ref: sigma1   # 'sigma1' | 'sigma_median' | 'sigma_mean
 
 device: "auto"

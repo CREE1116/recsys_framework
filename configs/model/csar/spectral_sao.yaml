@@ -1,0 +1,7 @@
+# SpectralSAO (Spectral Alignment Optimization) configuration
+model:
+  name: "spectral_sao"
+  reg_lambda: 0.177 # ML-1M best found in previous experiments, or default
+  num_alpha_steps: 16
+  power_iters: 20
+  use_lagrange: false # Default to adaptive per user's earlier discussion

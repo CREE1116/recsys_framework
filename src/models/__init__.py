@@ -62,6 +62,7 @@ from .csar.EASE_MNAR import EASE_MNAR
 from .csar.AutoEASE_MNAR import AutoEASE_MNAR
 from .csar.SpectralEASE import SpectralEASE
 from .csar.SymmetricNormalizedWiener import SymmetricNormalizedWiener
+from .csar.SymmetricNormalizedEASE import SymmetricNormalizedEASE
 from .csar.SpectralIPS_EASE import SpectralIPS_EASE
 from .csar.ASPIRE_EASE import ASPIRE_EASE
 from .csar.VD_IPS_EASE import VD_IPS_EASE
@@ -132,6 +133,7 @@ MODEL_REGISTRY = {
     'auto_ease_mnar': AutoEASE_MNAR,
     'spectral_ease': SpectralEASE,
     'symmetric_normalized_wiener': SymmetricNormalizedWiener,
+    'symmetric_normalized_ease': SymmetricNormalizedEASE,
     'spectral_ips_ease': SpectralIPS_EASE,
     'aspire_ease': ASPIRE_EASE,
     'vd_ips_ease': VD_IPS_EASE,

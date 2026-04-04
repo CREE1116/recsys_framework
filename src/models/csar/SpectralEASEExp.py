@@ -6,9 +6,9 @@ from scipy.sparse import csr_matrix
 from src.models.base_model import BaseModel
 from src.utils.gpu_accel import get_device
 
-class SpectralEASE(BaseModel):
+class SpectralEASEExp(BaseModel):
     """
-    SpectralEASE (Fixed-Point Spectral Energy Balance + Exact EASE Constraint)
+    SpectralEASE Experimental (Extends base with propensity_type and alpha flags for Exp 5)
     
     [핵심 메커니즘]
     1. Spectral Energy Balance (Sinkhorn-style): 
@@ -21,7 +21,7 @@ class SpectralEASE(BaseModel):
     """
 
     def __init__(self, config, data_loader):
-        super(SpectralEASE, self).__init__(config, data_loader)
+        super(SpectralEASEExp, self).__init__(config, data_loader)
         self.n_users = data_loader.n_users
         self.n_items = data_loader.n_items
 
@@ -33,6 +33,10 @@ class SpectralEASE(BaseModel):
         self.tol_d      = float(model_config.get('tol_d', 1e-6))
         # use_lagrange: True (Always), False (Never), or "adaptive" (Item-specific)
         self.use_lagrange = model_config.get('use_lagrange', True)
+        # propensity_type: "sinkhorn" (Balanced) or "frequency" (Degree-based)
+        self.propensity_type = model_config.get('propensity_type', 'sinkhorn')
+        # alpha: Propensity exponent (1.0 = Standard ASPIRE/Balanced, 0.5 = Square-root smoothing)
+        self.alpha      = float(model_config.get('alpha', 1.0))
         self.eps        = 1e-8
 
         # Filter Parameter (Instead of buffer, to follow user's snippet preference)
@@ -93,18 +97,25 @@ class SpectralEASE(BaseModel):
         from src.utils.gpu_accel import _build_gram
         G = _build_gram(R_sparse, self.device)
         
-        # 2. Fixed-Point for Spectral Balancing
-        d = self._estimate_d_spectral_fp(G)
+        # 2. Estimate Propensity Factor D
+        if self.propensity_type == "frequency":
+            # Simple item popularity (Degree of the Gram matrix)
+            # In implicit R, this is precisely the number of interactions per item.
+            d = torch.from_numpy(np.array(R_sparse.sum(axis=0)).flatten()).to(self.device).float()
+            self._log(f"Using frequency-based propensity (alpha={self.alpha})")
+        else:
+            # Full Spectral Balancing (Sinkhorn)
+            d = self._estimate_d_spectral_fp(G)
+            self._log(f"Using Sinkhorn-based spectral propensity (alpha={self.alpha})")
         
-        # Diagnostic: Compare Sinkhorn d with simple RowSum
+        # Diagnostic: Compare d with simple RowSum
         d_rowsum = G.sum(dim=1)
         corr = torch.corrcoef(torch.stack([d, d_rowsum]))[0, 1]
-        self._log(f"Sinkhorn vs RowSum correlation: {corr:.4f}")
+        self._log(f"Estimated d vs RowSum correlation: {corr:.4f}")
         
-        # 3. Spectral Pre-conditioning (Full Balancing: D^-1/2 on each side)
-        # G_tilde = D^-1/2 @ G @ D^-1/2
-        inv_sqrt_d = 1.0 / torch.sqrt(d + self.eps)
-        
+        # 3. Spectral Pre-conditioning (Exponent-based D Correction: D^-alpha/2 @ G @ D^-alpha/2)
+        # alpha=1.0 is full balancing, alpha=0.5 is popularity-preserving smoothing.
+        inv_sqrt_d = 1.0 / torch.sqrt(torch.pow(d + self.eps, self.alpha))
         G_tilde = G * inv_sqrt_d.unsqueeze(1) * inv_sqrt_d.unsqueeze(0)
         del G
 
